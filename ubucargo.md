@@ -1,57 +1,314 @@
 # Ubucargo design notes
 
-## Objective
+## High-level overview
 
 Ubucargo adapts Debian's Rust packaging model for Ubuntu. It should remain
 compatible with Debian packaging policy while using an Ubuntu-specific process
 for generating and maintaining packages.
 
-## Source and repository model
+Ubucargo treats the source package published in the Ubuntu Archive as
+authoritative. There is no analogue to the `debcargo-conf` monorepo used
+in Debian. Each source package contains its complete packaging state: 
+debcargo/ubucargo generator input, generated files, and maintainer-owned files
+or overrides. Pending work can live in ordinary local source trees or in
+whatever version-control workflow the maintainer already uses.
 
-The source package published in the Ubuntu Archive is authoritative. A
-`debcargo-conf`-style monorepo is unnecessary: git-ubuntu's Launchpad imports
-provide an editable history of published packages, while pending work can live
-on local or personal branches.
-
-Each source package should contain both the generator input and generated
-packaging, for example:
+Each source package should therefore be self-contained, for example:
 
 ```text
-upstream source/
-debian/
-  debcargo.toml
-  control
-  rules
-  tests/control
-  patches/
-  changelog
-  copyright
-  copyright.debcargo.hint    # when copyright is manually maintained
+<source-package>/
+  Cargo.toml
+  src/
+  debian/
+    debcargo.toml             # generator input
+    control                   # generated or overridden
+    rules                     # generated or overridden
+    tests/control             # generated or overridden
+    patches/                  # maintainer-owned
+    changelog                 # maintainer-owned
+    copyright                 # generated or overridden
+    copyright.debcargo.hint   # generated alternative for an override
 ```
 
 Ubucargo is a maintainer tool, not a build dependency. Generated files such as
 `debian/control` must be included in the source package; Launchpad must not run
 ubucargo or access crates.io during a build.
 
-The in-tree interface should be:
-
-```console
-ubucargo update
-```
-
-`update` should generate deterministic output in a staging area, update only
-files it owns, preserve manual files, and leave an ordinary Git diff for
-review.
-
-The normal flow is:
-
-```text
-Ubuntu Archive -> git-ubuntu import -> working branch -> ubucargo update
-               -> review, build, test, and upload
-```
+Source trees may be downloaded from the Ubuntu or Debian Archive or a PPA,
+imported from crates.io, or placed in the workspace by the maintainer. Once
+present, they can be inspected, packaged, upgraded, or built independently as
+needed.
 
 Coordinated transitions may use local packages or a staging PPA as an overlay
-on the Archive. They do not require another canonical packaging repository.
+on the Archive. A ubucargo workspace is a local coordination area for such work.
+It selects an Ubuntu series, pockets, components, and optional PPAs, and may
+contain multiple source packages. Those packages form a local overlay on the
+configured Ubuntu Archive view and are both inputs to dependency resolution
+and destinations for newly packaged crates.
+
+## Command-line interface
+
+The core commands are:
+
+```console
+ubucargo init [DIR] --series SERIES --pockets POCKET,... \
+  --components COMPONENT,... [--ppa ppa:OWNER/NAME]...
+ubucargo download SOURCE \
+  [--from ubuntu:SUITE|debian:SUITE|ppa:OWNER/NAME] \
+  [--version VERSION]
+ubucargo import CRATE [--version VERSION]
+ubucargo package [PACKAGE] [--check]
+ubucargo upgrade [PACKAGE] [--version VERSION]
+ubucargo deps [PACKAGE]
+ubucargo build [PACKAGE]
+```
+
+Except for `init`, commands run inside a workspace. Ubucargo should find the
+workspace by walking up to the nearest `ubucargo.toml`. `PACKAGE` is a source
+package directory; it may be omitted when the current directory is inside that
+source package.
+
+### Workspace layout
+
+Each source package is an immediate child of the workspace root and is named
+after its Debian source package. The name remains stable across upstream and
+Debian revisions:
+
+```text
+rust-transition/
+  ubucargo.toml
+  rust-serde/
+    Cargo.toml
+    src/
+    debian/
+      debcargo.toml
+      control
+      ...
+  rust-syn/
+    Cargo.toml
+    src/
+    debian/
+      ...
+  rust-syn-1/
+    Cargo.toml
+    src/
+    debian/
+      ...
+```
+
+An upgrade such as `syn` 2.0.106 to 2.0.107 updates `rust-syn/` in place. A
+parallel upstream line uses another directory only when it has a distinct
+source package name, such as `rust-syn-1`. A resolver view contains at most one
+checkout of each source-package identity; comparing two revisions of the same
+source package should use separate ubucargo workspaces.
+
+Ubucargo should discover only immediate child source-package directories and
+validate their Debian source-package identity from package metadata. A
+directory whose name does not match that identity is invalid. Packages that
+ubucargo downloads or imports use this naming convention; existing source
+trees placed in the workspace must use it as well.
+
+### Initialize a workspace
+
+For example:
+
+```console
+ubucargo init rust-transition \
+  --series noble \
+  --pockets release,updates,security \
+  --components main,universe \
+  --ppa ppa:example/rust-staging
+```
+
+This creates `rust-transition/ubucargo.toml`:
+
+```toml
+series = "noble"
+pockets = ["release", "updates", "security"]
+components = ["main", "universe"]
+ppas = ["ppa:example/rust-staging"]
+```
+
+The PPA list is ordered because repository order is part of candidate
+selection when priorities and versions are otherwise equal. `init` should
+record the requested configuration and refuse to overwrite an existing
+workspace.
+
+### Download source packages
+
+Download the source-package candidate selected by the configured build view:
+
+```console
+ubucargo download rust-syn
+ubucargo download rust-syn --version 2.0.106-1
+```
+
+Restrict selection to a specific Ubuntu or Debian suite or configured PPA
+with:
+
+```console
+ubucargo download rust-syn --from ubuntu:noble
+ubucargo download rust-syn --from ubuntu:noble-updates
+ubucargo download rust-syn --from debian:sid
+ubucargo download rust-syn --from ppa:example/rust-staging
+```
+
+`download` downloads the selected `.dsc` and its associated source files, then
+unpacks them with standard Debian source-package tools into a directory named
+after the source package. Without `--from` or `--version`, it should select the
+external candidate that the same configured APT policy would make available to
+`build`. `--from` restricts the candidate set to one Ubuntu suite, Debian
+suite, or PPA, while `--version` requires an exact Debian source version. When
+both are present, both constraints apply.
+
+Candidate selection must use the same repository priorities, pinning, Debian
+version ordering, and repository order as the build environment. If an exact
+version exists in multiple origins, repository order breaks the tie unless
+`--from` identifies one explicitly. Before downloading, ubucargo should print
+the selected version and origin, for example:
+
+```text
+Downloading rust-syn 2.0.107-1 from ubuntu:noble-proposed/universe
+```
+
+Official archive origins are qualified as `ubuntu:SUITE` or `debian:SUITE`.
+For Ubuntu, the release pocket is the series name itself, such as
+`ubuntu:noble`, while other pockets use names such as `ubuntu:noble-updates`
+or `ubuntu:noble-security`. An explicitly selected PPA must be present in
+`ubucargo.toml`.
+
+A Debian suite is a source-acquisition origin only. Downloading from
+`debian:sid`, for example, must not add Debian repositories or binaries to the
+configured Ubuntu build view. Once downloaded, the source tree can be adapted
+and built against the workspace's Ubuntu Archive and PPA configuration.
+
+Downloading preserves the complete existing `debian/` directory and does not
+regenerate it automatically. The command should refuse to overwrite an
+existing source-package directory. The initial implementation should not
+create or modify a version-control repository.
+
+### Import crates
+
+Import one crate from crates.io into a new source-package tree:
+
+```console
+ubucargo import serde
+ubucargo import serde --version 1.0.219
+```
+
+Without `--version`, ubucargo should select the newest non-yanked stable
+release and immediately resolve it to an exact version. The source package is
+created in the workspace root under its Debian source package name, such as
+`rust-serde/`. Existing Debian naming, feature, and versioning conventions
+determine that name and the eventual binary package names.
+
+`import` should download and verify the crate, unpack its upstream source, and
+create a fresh `debian/debcargo.toml`. It should leave generation of the rest
+of `debian/` to `package`, refuse to overwrite an existing source-package
+directory, and suggest `upgrade` when that package already exists.
+
+### Package source trees
+
+Generate packaging for an existing source tree with:
+
+```console
+ubucargo package ./rust-serde
+```
+
+From inside the source package, the shorter form is:
+
+```console
+ubucargo package
+```
+
+`package` should read the effective patched source and
+`debian/debcargo.toml`, generate ubucargo-owned files in a staging area, and
+reconcile them with the source tree. The same operation initially populates
+`debian/` after a crates.io import and refreshes generated files in a downloaded
+or previously packaged source tree.
+
+```console
+ubucargo package ./rust-serde --check
+```
+
+`--check` should report whether packaging would change without writing it.
+The command must not acquire source, add packages to the workspace, replace
+manual files, or require network access.
+
+### Upgrade source packages
+
+Upgrade the upstream crate release in an existing source package with:
+
+```console
+ubucargo upgrade ./rust-syn --version 2.0.107
+```
+
+From inside the source package, the shorter form is:
+
+```console
+ubucargo upgrade --version 2.0.107
+```
+
+Without `--version`, ubucargo should select the newest non-yanked stable
+release that can retain the existing Debian source-package identity. An
+upgrade downloads and verifies the crate, constructs the replacement upstream
+tree in a staging area, preserves `debian/`, applies the existing Debian patch
+series, and runs the same generated-file reconciliation as `package`. It should
+replace the working tree only after those steps succeed. Manual files such as
+changelog entries and patches remain for maintainer review, and patch failures
+must be reported rather than rewritten automatically.
+
+The initial implementation operates only on the source-tree contents. It does
+not import upstream history, create commits, switch branches, or otherwise
+update a version-control repository.
+
+If the requested release requires a different Debian source-package identity,
+`upgrade` should fail rather than rename the directory or silently create a new
+package. The maintainer can then use `import` for the new source package and
+handle the transition explicitly.
+
+### Inspect dependencies
+
+Show direct Rust library dependencies with:
+
+```console
+ubucargo deps ./rust-my-crate
+```
+
+The output should show every relevant candidate for each direct dependency,
+not only the one the resolver selects. For example:
+
+```text
+DEPENDENCY  REQUIREMENT  STATUS        ORIGIN                    VERSION      LOCATION
+serde       ^1 +derive   selected      workspace                 1.0.219-1    rust-serde/
+                         available     ppa:example/rust-staging  1.0.218-2    noble/main
+                         available     Ubuntu Archive            1.0.217-1    noble-updates/universe
+syn         ^2           incompatible  Ubuntu Archive            1.0.109-2    noble/universe
+foo         ^3           missing       -                         -            -
+```
+
+The status should distinguish the selected candidate, other usable candidates,
+present but incompatible candidates, and missing dependencies. Archive
+locations include the pocket and component. PPA locations include the PPA
+identity and its series and component; PPAs should not be presented as Ubuntu
+Archive pockets. The selected candidate must be the same one `build` will use.
+
+### Build packages
+
+Build a source package with:
+
+```console
+ubucargo build ./rust-my-crate
+```
+
+`build` should build only the requested source package. It should expose
+already-built binary packages from the workspace and the configured PPAs to
+`sbuild`, but it should not automatically build other workspace source trees.
+If a required package is unavailable, it should report the missing dependency
+and whether a suitable source is available from the Archive, a configured PPA,
+or crates.io.
+
+The result remains ordinary Ubuntu source and binary packages.
 
 ## Relationship with debcargo
 
@@ -67,33 +324,79 @@ settings belong under a validated `[ubucargo]` namespace; existing debcargo
 keys must not be reinterpreted. Unsupported settings that affect generation
 should fail clearly.
 
-Imported source packages should already contain `debcargo.toml` and any
+Downloaded source packages should already contain `debcargo.toml` and any
 `*.debcargo.hint` files. If configuration is absent, recovering it from
 debcargo-conf history or recreating it remains a manual packaging task. On
-first import, ubucargo should compare its generated output with the existing
-packaging so version-related changes are visible for review.
+the first `package` run after download, ubucargo should compare its generated
+output with the existing packaging so version-related changes are visible for
+review.
 
 ## Stable generation boundaries
 
-The normal input is an existing source tree. Ubucargo should invoke
-`cargo metadata --format-version=1`, deserialize only the JSON fields it uses,
+The normal input is an existing conventional Debian source tree. Ubucargo
+should create a staging copy, apply its Debian patch series using standard
+source-package tooling, and invoke `cargo metadata --format-version=1` on the
+effective patched source. It should deserialize only the JSON fields it uses,
 ignore unknown additive fields, and reject unsupported semantic cases. When a
 workspace contains multiple applicable packages, selection must be explicit.
 
-Crate acquisition is separate from regeneration. An optional fetch operation
-may download a crate through the registry protocol and verify its checksum,
-but updating an imported source tree must not require crates.io access.
+Source acquisition is separate from packaging generation. `download` retrieves
+an already-packaged source from the Archive or a configured PPA. `import` and
+`upgrade` download crates through the registry protocol and must verify their
+checksums. `package` operates only on the existing source tree and must not
+require network access.
 
 Generation should produce an in-memory set of relative paths and contents. A
 separate reconciliation step should compare that set with `debian/`, enforce
 ownership, and write accepted changes atomically. Generator code should not
 choose the workspace location or write directly to it.
 
+## Version-control integration
+
+Version-control integration is outside the initial implementation. Ubucargo
+should not require Git or invoke git-ubuntu, git-buildpackage, git-debrebase, or
+other repository-management tools. Its contract is the source-package
+filesystem: a package must be materialized in a form that standard Debian tools
+can patch and build.
+
+This keeps the core commands independent of repository layout:
+
+```text
+materialized Debian source tree
+  -> ubucargo package, deps, or upgrade
+
+exportable Debian source tree
+  -> standard Debian tools produce a source package
+  -> ubucargo build
+```
+
+Maintainers may place checkouts managed by existing tools in a workspace, but
+they are responsible for presenting an exportable source tree before running
+ubucargo. In the initial implementation, exportable means that standard tools
+such as `dpkg-source` can produce a valid source package without
+repository-specific preparation. States such as an unexported patch queue are
+not part of that contract.
+
+A future integration layer may adapt repository-specific operations behind a
+small boundary:
+
+```text
+initialize repository history from a downloaded .dsc
+import a new upstream tarball into repository history
+export repository state as a buildable source package
+```
+
+Potential adapters include git-buildpackage, git-debrebase, and git-ubuntu.
+The choice belongs to each package checkout rather than the workspace or
+`debcargo.toml`, since different maintainers may use different history models
+for the same source package. A plugin system or VCS configuration should wait
+until at least one real integration is needed.
+
 ## In-tree reconciliation
 
 Debcargo's overlay behavior cannot be reused literally: it copies an overlay
-into an empty directory and treats existing paths as manual overrides. In an
-imported source tree, that would classify every generated file as manual.
+into an empty directory and treats existing paths as manual overrides. In a
+downloaded source tree, that would classify every generated file as manual.
 
 Ubucargo should instead:
 
@@ -104,13 +407,13 @@ Ubucargo should instead:
 4. Reconcile them with the working tree according to explicit ownership.
 5. Apply changes atomically.
 
-| File state | Update behavior |
-|---|---|
-| Generator-owned | Replace with staged output |
-| Manual override | Preserve; optionally refresh its generated hint |
-| Always manual | Never replace |
-| Unknown | Preserve |
-| Obsolete generated | Remove only when ownership is known |
+| File state         | Package behavior                                |
+| ------------------ | ----------------------------------------------- |
+| Generator-owned    | Replace with staged output                      |
+| Manual override    | Preserve; optionally refresh its generated hint |
+| Always manual      | Never replace                                   |
+| Unknown            | Preserve                                        |
+| Obsolete generated | Remove only when ownership is known             |
 
 Known generated files without companion hints can normally be treated as
 generator-owned. A file paired with `FILE.debcargo.hint` is manual, with the
@@ -129,59 +432,73 @@ Changelog and patches are always manual. Files such as control, rules, tests,
 watch, and copyright may be generated or explicitly overridden. Unknown files
 must never be deleted merely because the generator did not emit them.
 
-## Ubuntu Archive index
+## Archive index and resolver
 
-Regenerating or building one crate does not require a package index. Optional
-archive-aware operations need one to determine dependency and feature-provider
-availability, enforce component and architecture constraints, identify missing
-packages, and plan transitions or test runs.
+Packaging or upgrading an existing source tree, or importing one explicitly
+named crate, does not require an Archive index. Archive-aware operations such
+as `download`, `deps`, and `build` need one to select source versions,
+determine dependency and feature-provider availability, enforce component and
+architecture constraints, identify missing packages, and plan test runs.
 
-The index should represent an explicit Ubuntu series and pocket view, including
-staging PPAs where requested. It needs source and binary versions, component
-and architecture availability, dependency and `Provides` data, Cargo identity
-from `X-Cargo-*` fields, and relevant test metadata. Release, updates,
+The build index should represent an explicit Ubuntu series and pocket view,
+including staging PPAs where requested. It needs source and binary versions,
+component and architecture availability, dependency and `Provides` data, Cargo
+identity from `X-Cargo-*` fields, and relevant test metadata. Release, updates,
 security, proposed, backports, and staging sources must remain distinguishable.
 
-Signed Archive metadata should be the authority for current availability. The
-indexer can build a catalog from that metadata and download source packages on
-demand for details such as `Cargo.toml`, patches, and `debcargo.toml`. Cache or
-database design should wait until the access pattern requires it.
+The resolver must use the same candidate-selection policy that `build` gives
+to APT: configured priorities and pinning first, Debian version ordering next,
+and repository order when otherwise equal. `download`, `deps`, and `build`
+must share this resolver so they cannot disagree about the selected version or
+origin.
 
-Pending packages form an overlay:
+Signed Archive metadata should be the authority for current availability. The
+first archive-aware command should load a cached catalog for the configured
+view or construct one from that metadata. A stale catalog should be refreshed
+before use. The indexer can download source packages on demand for details such
+as `Cargo.toml`, patches, and `debcargo.toml`; database design should wait until
+the access pattern requires it.
+
+An explicit `download --from debian:SUITE` may load signed source metadata for
+that Debian suite, but those candidates remain outside the configured build
+index and resolver view.
+
+The resolver view combines:
 
 ```text
-signed Ubuntu archive snapshot
-+ staging PPA or locally built packages
-= ubucargo resolver view
+signed Ubuntu Archive sources
++ configured PPA sources
++ already-built workspace packages
+= configured APT resolver view
 ```
 
-Git and Launchpad history may supplement deleted or superseded versions but
-must not override the current signed Archive view.
+These sources are not a simple last-wins overlay; their candidates remain
+distinguishable and are selected using the policy above.
 
-## Local builds and dependency chains
+Launchpad publication history may supplement deleted or superseded versions
+but must not override the current signed Archive view.
+
+## Local builds
 
 Ubucargo should not create a private Cargo registry or a separate build system.
 A normal build should use Ubuntu's standard package tools:
 
 ```text
 source tree with generated debian/ files
+  -> standard Debian tools produce a source package
   -> sbuild installs Build-Depends
   -> librust-*-dev packages populate /usr/share/cargo/registry
   -> dh-cargo builds and tests the crate
 ```
 
-An optional ubucargo wrapper may invoke `sbuild`, but it must not change package
-dependency semantics.
+`ubucargo build` should invoke `sbuild` without changing package dependency
+semantics.
 
-Dependency-chain building is needed only when required crates are absent from
-the target Archive view. Given an explicit series and pockets, it should:
-
-1. Combine the Archive with pending source trees, built packages, or a staging
-   PPA.
-2. Determine an order for missing source packages.
-3. Build each package in a fresh `sbuild` environment.
-4. Expose previously built packages to later builds and autopkgtests through a
-   temporary apt repository or sbuild extra packages.
+The initial implementation builds one requested source package at a time. It
+may expose already-built workspace packages through a temporary apt repository
+or sbuild extra packages, but it does not discover or build a dependency
+closure. Maintainers choose which source packages to download, import, package,
+and build.
 
 The result is ordinary Ubuntu source and binary packages, not a synthetic
 Cargo registry. Feature policy must come from package configuration rather
@@ -216,9 +533,10 @@ patches, backported toolchains, or coordinated dependency updates.
    data required by the fixtures.
 3. Import `debcargo.toml` and support validated `[ubucargo]` settings.
 4. Implement deterministic reconciliation, ownership, hints, and
-   `update --check`.
+   `package --check`.
 5. Validate generated packages with clean `sbuild` builds and autopkgtests.
-6. Add crates.io fetching and archive-aware checks only when imported source
-   trees and apt/sbuild are insufficient.
-7. Add dependency ordering and local-package overlays when a real transition
-   requires them.
+6. Implement workspace initialization, importing one crate from crates.io,
+   packaging it, and upgrading it in place.
+7. Add the Archive catalog, source-package download, and dependency reporting.
+8. Add a narrow version-control adapter only if a real git-buildpackage,
+   git-debrebase, or git-ubuntu workflow requires it.
