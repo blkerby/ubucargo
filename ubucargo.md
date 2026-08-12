@@ -52,7 +52,8 @@ The core commands are:
 
 ```console
 ubucargo init [DIR] --series SERIES --pockets POCKET,... \
-  --components COMPONENT,... [--ppa ppa:OWNER/NAME]...
+  --components COMPONENT,... [--ppa ppa:OWNER/NAME]... \
+  [--rust-version VERSION]
 ubucargo download SOURCE \
   [--from ubuntu:SUITE|debian:SUITE|ppa:OWNER/NAME] \
   [--version VERSION]
@@ -134,6 +135,18 @@ selection when priorities and versions are otherwise equal. `init` should
 record the requested configuration and refuse to overwrite an existing
 workspace.
 
+The workspace may explicitly set a Rust compatibility target:
+
+```toml
+rust-version = "1.75"
+```
+
+When omitted, ubucargo should derive the effective Rust version from the
+APT-selected binary package named `rustc` in the configured build view. It
+should extract the upstream Rust version from that package's Debian version.
+An explicit value may be lower than the available compiler when a workspace
+needs to remain compatible with an older toolchain.
+
 ### Download source packages
 
 Download the source-package candidate selected by the configured build view:
@@ -158,8 +171,8 @@ unpacks them with standard Debian source-package tools into a directory named
 after the source package. Without `--from` or `--version`, it should select the
 external candidate that the same configured APT policy would make available to
 `build`. `--from` restricts the candidate set to one Ubuntu suite, Debian
-suite, or PPA, while `--version` requires an exact Debian source version. When
-both are present, both constraints apply.
+suite, or PPA, while `--version` requires an exact Debian/Ubuntu source version.
+When both are present, both constraints apply.
 
 Candidate selection must use the same repository priorities, pinning, Debian
 version ordering, and repository order as the build environment. If an exact
@@ -174,8 +187,7 @@ Downloading rust-syn 2.0.107-1 from ubuntu:noble-proposed/universe
 Official archive origins are qualified as `ubuntu:SUITE` or `debian:SUITE`.
 For Ubuntu, the release pocket is the series name itself, such as
 `ubuntu:noble`, while other pockets use names such as `ubuntu:noble-updates`
-or `ubuntu:noble-security`. An explicitly selected PPA must be present in
-`ubucargo.toml`.
+or `ubuntu:noble-security`.
 
 A Debian suite is a source-acquisition origin only. Downloading from
 `debian:sid`, for example, must not add Debian repositories or binaries to the
@@ -196,11 +208,27 @@ ubucargo import serde
 ubucargo import serde --version 1.0.219
 ```
 
-Without `--version`, ubucargo should select the newest non-yanked stable
-release and immediately resolve it to an exact version. The source package is
-created in the workspace root under its Debian source package name, such as
+Without `--version`, ubucargo should select a stable, non-yanked release using
+the same MSRV policy as `cargo add`. A release whose published `rust_version`
+is newer than the workspace Rust version is incompatible and should be
+skipped. A release without `rust_version` is treated as compatible, but
+ubucargo should warn that its compatibility is unverified. The newest
+remaining release is resolved immediately to an exact version.
+
+When an exact version is requested, a known MSRV incompatibility should be an
+error; an undeclared MSRV should remain a warning. The source package is created
+in the workspace root under its Debian source package name, such as
 `rust-serde/`. Existing Debian naming, feature, and versioning conventions
 determine that name and the eventual binary package names.
+
+For example:
+
+```text
+Workspace rustc: 1.75
+Ignoring foo 4.2.0: requires Rust 1.81
+Importing foo 4.1.0
+warning: foo 4.1.0 does not declare rust-version; compatibility is unverified
+```
 
 `import` should download and verify the crate, unpack its upstream source, and
 create a fresh `debian/debcargo.toml`. It should leave generation of the rest
@@ -223,9 +251,9 @@ ubucargo package
 
 `package` should read the effective patched source and
 `debian/debcargo.toml`, generate ubucargo-owned files in a staging area, and
-reconcile them with the source tree. The same operation initially populates
-`debian/` after a crates.io import and refreshes generated files in a downloaded
-or previously packaged source tree.
+reconcile them with the source tree. The same operation can be used to initially
+populate `debian/` after a crates.io import, or to refresh generated files in a
+downloaded or previously packaged source tree.
 
 ```console
 ubucargo package ./rust-serde --check
@@ -261,6 +289,9 @@ must be reported rather than rewritten automatically.
 The initial implementation operates only on the source-tree contents. It does
 not import upstream history, create commits, switch branches, or otherwise
 update a version-control repository.
+
+`upgrade` should apply the same workspace Rust-version selection and validation
+rules as `import`.
 
 If the requested release requires a different Debian source-package identity,
 `upgrade` should fail rather than rename the directory or silently create a new
@@ -345,6 +376,13 @@ an already-packaged source from the Archive or a configured PPA. `import` and
 `upgrade` download crates through the registry protocol and must verify their
 checksums. `package` operates only on the existing source tree and must not
 require network access.
+
+Rust-version filtering during `import` and `upgrade` rejects only known
+incompatibilities. A missing upstream `rust_version` is not evidence of
+compatibility, and the filter does not prove that the selected features,
+dependencies, build scripts, or Debian patches work with the target compiler.
+`build` against the configured Archive toolchain remains the authoritative
+compatibility check.
 
 Generation should produce an in-memory set of relative paths and contents. A
 separate reconciliation step should compare that set with `debian/`, enforce
@@ -434,23 +472,26 @@ must never be deleted merely because the generator did not emit them.
 
 ## Archive index and resolver
 
-Packaging or upgrading an existing source tree, or importing one explicitly
-named crate, does not require an Archive index. Archive-aware operations such
-as `download`, `deps`, and `build` need one to select source versions,
-determine dependency and feature-provider availability, enforce component and
-architecture constraints, identify missing packages, and plan test runs.
+Packaging an existing source tree does not require an Archive index.
+Archive-aware operations such as `download`, `deps`, and `build` need one to
+select source versions, determine dependency and feature-provider availability,
+enforce component and architecture constraints, identify missing packages, and
+plan test runs. `import` and `upgrade` also need the index when the workspace
+omits `rust-version`, so they can resolve the selected `rustc` binary version.
 
 The build index should represent an explicit Ubuntu series and pocket view,
 including staging PPAs where requested. It needs source and binary versions,
-component and architecture availability, dependency and `Provides` data, Cargo
-identity from `X-Cargo-*` fields, and relevant test metadata. Release, updates,
-security, proposed, backports, and staging sources must remain distinguishable.
+component and architecture availability, dependency and `Provides` data,
+enough binary-package metadata to resolve the selected `rustc`, Cargo identity
+from `X-Cargo-*` fields, and relevant test metadata. Release, updates, security,
+proposed, backports, and staging sources must remain distinguishable.
 
 The resolver must use the same candidate-selection policy that `build` gives
 to APT: configured priorities and pinning first, Debian version ordering next,
 and repository order when otherwise equal. `download`, `deps`, and `build`
 must share this resolver so they cannot disagree about the selected version or
-origin.
+origin. Archive-derived Rust-version checks must use the same selected `rustc`
+candidate.
 
 Signed Archive metadata should be the authority for current availability. The
 first archive-aware command should load a cached catalog for the configured
@@ -535,8 +576,8 @@ patches, backported toolchains, or coordinated dependency updates.
 4. Implement deterministic reconciliation, ownership, hints, and
    `package --check`.
 5. Validate generated packages with clean `sbuild` builds and autopkgtests.
-6. Implement workspace initialization, importing one crate from crates.io,
-   packaging it, and upgrading it in place.
+6. Implement workspace initialization, MSRV-aware importing of one crate from
+   crates.io, packaging it, and upgrading it in place.
 7. Add the Archive catalog, source-package download, and dependency reporting.
 8. Add a narrow version-control adapter only if a real git-buildpackage,
    git-debrebase, or git-ubuntu workflow requires it.
