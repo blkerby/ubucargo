@@ -34,14 +34,17 @@ input, generated files, and maintainer-owned files or overrides, for example:
   Cargo.toml
   src/
   debian/
-    debcargo.toml             # generator input
-    control                   # generated or overridden
-    rules                     # generated or overridden
-    tests/control             # generated or overridden
-    patches/                  # maintainer-owned
-    changelog                 # maintainer-owned
-    copyright                 # generated or overridden
-    copyright.debcargo.hint   # generated alternative for an override
+    debcargo.toml               # generator input
+    control                     # generated or overridden
+    control.debcargo.hint       # previous generated version
+    rules                       # generated or overridden
+    rules.debcargo.hint         # previous generated version
+    tests/control               # generated or overridden
+    tests/control.debcargo.hint # previous generated version
+    patches/                    # maintainer-owned
+    changelog                   # maintainer-owned
+    copyright                   # generated or overridden
+    copyright.debcargo.hint     # previous generated version
 ```
 
 ## Command-line interface
@@ -185,9 +188,11 @@ For Ubuntu, the release pocket is the series name itself, such as
 or `ubuntu:noble-security`.
 
 Downloading preserves the complete existing `debian/` directory and does not
-regenerate it automatically. The command should refuse to overwrite an
-existing source-package directory. The initial implementation should not
-create or modify a version-control repository.
+regenerate it automatically. For each known generated file without a companion
+`.debcargo.hint`, `download` should copy the downloaded file to that hint path.
+This records the downloaded state before local edits. The command should refuse
+to overwrite an existing source-package directory. The initial implementation
+should not create or modify a version-control repository.
 
 ### Import crates
 
@@ -245,13 +250,31 @@ reconcile them with the source tree. The same operation can be used to initially
 populate `debian/` after a crates.io import, or to refresh generated files in a
 downloaded or previously packaged source tree.
 
+Following debcargo, generation produces candidates for the following paths:
+
+- `debian/cargo-checksum.json`
+- `debian/control`
+- `debian/copyright`
+- `debian/rules`
+- `debian/source/format`
+- `debian/watch`
+- `debian/tests/control`, for library packages
+- `debian/<feature-package>.lintian-overrides`, for each generated non-base
+  feature package
+
+For every generated file `<file>`, ubucargo also stores
+`<file>.debcargo.hint`, even when both files have identical contents. The hint
+is the last generated version and can be used as a merge base for later changes.
+`debian/changelog` is create-only: `package` may create an initial entry when
+it is absent, but never replaces or removes an existing changelog.
+`debian/debcargo.toml`, `debian/patches/`, and all other paths are not
+generator-owned.
+
 ```console
 ubucargo package ./rust-serde --check
 ```
 
 `--check` should report whether packaging would change without writing it.
-The command must not acquire source, add packages to the workspace, replace
-manual files, or require network access.
 
 ### Upgrade source packages
 
@@ -363,9 +386,9 @@ workspace contains multiple applicable packages, selection must be explicit.
 
 Source acquisition is separate from packaging generation. `download` retrieves
 an already-packaged source from the Archive or a configured PPA. `import` and
-`upgrade` download crates through the registry protocol and must verify their
-checksums. `package` operates only on the existing source tree and must not
-require network access.
+`upgrade` download crates through the Cargo registry protocol and must verify
+their checksums. `package` operates only on the existing source tree and must
+not require network access.
 
 Rust-version filtering during `import` and `upgrade` rejects only known
 incompatibilities. A missing upstream `rust_version` is not evidence of
@@ -417,14 +440,14 @@ export repository state as a buildable source package
 Potential adapters include git-buildpackage, git-debrebase, and git-ubuntu.
 The choice belongs to each package checkout rather than the workspace or
 `debcargo.toml`, since different maintainers may use different history models
-for the same source package. A plugin system or VCS configuration should wait
-until at least one real integration is needed.
+for the same source package.
 
 ## In-tree reconciliation
 
 Debcargo's overlay behavior cannot be reused literally: it copies an overlay
 into an empty directory and treats existing paths as manual overrides. In a
-downloaded source tree, that would classify every generated file as manual.
+downloaded source tree, that would classify every generated file as manually
+overridden.
 
 Ubucargo should instead:
 
@@ -432,23 +455,48 @@ Ubucargo should instead:
 2. Treat `overlay = "."` as the existing `debian/` directory without copying
    it recursively.
 3. Generate candidate files in a staging area.
-4. Reconcile them with the working tree according to explicit ownership.
+4. Reconcile them with the working tree, creating a merged version if applicable.
 5. Apply changes atomically.
 
-| File state         | Package behavior                                |
-| ------------------ | ----------------------------------------------- |
-| Generator-owned    | Replace with staged output                      |
-| Manual override    | Preserve; optionally refresh its generated hint |
-| Always manual      | Never replace                                   |
-| Unknown            | Preserve                                        |
-| Obsolete generated | Remove only when ownership is known             |
+For each generated path, reconciliation has three inputs:
 
-Known generated files without companion hints can normally be treated as
-generator-owned. A file paired with `FILE.debcargo.hint` is manual, with the
-hint holding the generated alternative. Ubucargo should retain this suffix for
-compatibility rather than introduce `*.ubucargo.hint`.
+- `base`: the old `<file>.debcargo.hint`
+- `old`: the working-tree `<file>`
+- `new`: the newly generated staging file
 
-Ambiguous exceptions can be declared explicitly:
+`ubucargo` ensures that all hint files exist after a package is first downloaded
+or generated, regardless of whether the file is overridden or not. It records
+generator state rather than indicating that the primary file is necessarily
+a manual override. This deviation from `debcargo` behavior is necessary in order
+to reliably distinguish an overridden file from a previously generated one,
+given that overrides are no longer specified in a separate external directory.
+
+| State | Package behavior |
+| ----- | ---------------- |
+| `old` absent | Write `new` to both `old` and `base` |
+| `old == base` | Replace both with `new` |
+| `old != base`, merging disabled | Preserve `old`; replace `base` with `new` |
+| `old != base`, merging enabled | Three-way merge `base`, `old`, and `new`; replace `base` with `new` |
+
+If `base` is absent, it should be treated as though it were an empty file: this
+will result in a merge conflict in case an `old` file existed and differs from `new`.
+This situation should not normally arise because `base` should be initialized
+when the source package is initially downloaded or created.
+
+Three-way merging is enabled by default but may be disabled by
+
+```toml
+[ubucargo]
+merge = "manual"
+```
+
+A clean merge writes the merged result to `<file>` and the pre-merged newly
+generated version to `<file>.debcargo.hint`. In case of a conflict, conflict
+markers are included in the merged result and a warning is output. The merge
+should be compatible with the standard `diff3` base/local/new behavior and
+must not require Git.
+
+Files that must never be replaced or merged can be declared explicitly:
 
 ```toml
 [ubucargo.files]
@@ -456,9 +504,11 @@ Ambiguous exceptions can be declared explicitly:
 "tests/control" = "manual"
 ```
 
+Their primary files remain unchanged while their hints are refreshed.
+
 Changelog and patches are always manual. Files such as control, rules, tests,
-watch, and copyright may be generated or explicitly overridden. Unknown files
-must never be deleted merely because the generator did not emit them.
+watch, and copyright may be generated or edited in place. Unknown files must
+never be deleted merely because the generator did not emit them.
 
 ## Archive index and resolver
 
