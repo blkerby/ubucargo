@@ -23,8 +23,8 @@ consistently respect this layered workspace view when resolving
 dependencies.
 - `ubucargo` aims to be compatible with git-based packaging tooling,
 such as `gbp`. When generated files are overridden by maintainers and
-subsequently regenerated, it can be configured to produce a three-way merge
-based on the stored `.hint` file.
+subsequently regenerated, it produces a three-way merge based on the
+stored `.hint` file.
 
 Each source package contains its complete packaging state: debcargo generator
 input, generated files, and maintainer-owned files or overrides, for example:
@@ -130,10 +130,8 @@ components = ["main", "universe"]
 ppas = ["ppa:example/rust-staging"]
 ```
 
-The PPA list is ordered because repository order is part of candidate
-selection when priorities and versions are otherwise equal. `init` should
-record the requested configuration and refuse to overwrite an existing
-workspace.
+The PPA list order is significant. `init` should record the
+requested configuration and refuse to overwrite an existing workspace.
 
 The workspace may explicitly set a Rust compatibility target:
 
@@ -172,11 +170,8 @@ after the source package. If specified, `--from` restricts the candidate set
 to one Ubuntu suite, Debian suite, or PPA, while `--version` requires an exact
 Debian/Ubuntu source version. When both are present, both constraints apply.
 
-Candidate selection must use the same repository priorities, Debian
-version ordering, and repository order as the build environment. If an exact
-version exists in multiple origins, repository order breaks the tie unless
-`--from` identifies one explicitly. Before downloading, ubucargo should print
-the selected version and origin, for example:
+`download` should use the workspace resolver. Before downloading, it should
+print the selected version and origin, for example:
 
 ```text
 Downloading rust-syn 2.0.107-1 from ubuntu:noble-proposed/universe
@@ -335,7 +330,8 @@ The status should distinguish the selected candidate, other usable candidates,
 present but incompatible candidates, and missing dependencies. Archive
 locations include the pocket and component. PPA locations include the PPA
 identity and its series and component; PPAs should not be presented as Ubuntu
-Archive pockets. The selected candidate must be the same one `build` will use.
+Archive pockets. The selected candidate should predict the one APT will use
+during `build`.
 
 ### Build packages
 
@@ -345,14 +341,46 @@ Build a source package with:
 ubucargo build ./rust-my-crate
 ```
 
+Ubucargo should not create a private Cargo registry or a separate build system.
+A normal build should use Ubuntu's standard package tools:
+
+```text
+source tree with generated debian/ files
+  -> standard Debian tools produce a source package
+  -> sbuild installs Build-Depends
+  -> librust-*-dev packages populate /usr/share/cargo/registry
+  -> dh-cargo builds and tests the crate
+```
+
 `build` should build only the requested source package. It should expose
 already-built binary packages from the workspace and the configured PPAs to
-`sbuild`, but it should not automatically build other workspace source trees.
-If a required package is unavailable, it should report the missing dependency
-and whether a suitable source is available from the Archive, a configured PPA,
-or crates.io.
+`sbuild`, but it should not discover or build a dependency closure or other
+workspace source trees. Maintainers choose which source packages to download,
+import, package, and build. If a required package is unavailable, `build` should
+surface the missing dependency reported by `sbuild`; `deps` provides detailed
+candidate and source availability.
 
-The result remains ordinary Ubuntu source and binary packages.
+The invocation should be equivalent to:
+
+```console
+sbuild --dist=SERIES \
+  --extra-repository='deb [trusted=yes] PPA_HTTPS_URI SERIES main' \
+  --extra-package=/path/to/workspace-package.deb \
+  /path/to/source-package.dsc
+```
+
+`--extra-repository` should be repeated for each configured PPA, using its
+HTTPS URI. The initial implementation uses `trusted=yes`: it trusts Launchpad's
+HTTPS delivery and does not independently verify the PPA's archive signature.
+This is the same broad trust model used for crates.io acquisition, where the
+registry supplies both the package checksum and the package. A future version
+may retrieve and pin PPA signing fingerprints and keys to add independent
+archive verification.
+
+`--extra-package` should be repeated for available workspace binary packages;
+it may instead name a directory containing the applicable `.deb` files.
+`sbuild` exposes those files through its temporary internal APT archive, so
+ubucargo does not need to construct a separate local repository.
 
 ## Relationship with debcargo
 
@@ -483,28 +511,13 @@ will result in a merge conflict in case an `old` file existed and differs from `
 This situation should not normally arise because `base` should be initialized
 when the source package is initially downloaded or created.
 
-Three-way merging is enabled by default but may be disabled by
-
-```toml
-[ubucargo]
-merge = "manual"
-```
-
-A clean merge writes the merged result to `<file>` and the pre-merged newly
-generated version to `<file>.debcargo.hint`. In case of a conflict, conflict
+The merged result is written to `<file>` while the pre-merged newly generated
+version is written to `<file>.debcargo.hint`. In case of a conflict, conflict
 markers are included in the merged result and a warning is output. The merge
-should be compatible with the standard `diff3` base/local/new behavior and
-must not require Git.
+should be compatible with the standard `diff3` behavior and must not require Git.
 
-Files that must never be replaced or merged can be declared explicitly:
-
-```toml
-[ubucargo.files]
-"rules" = "manual"
-"tests/control" = "manual"
-```
-
-Their primary files remain unchanged while their hints are refreshed.
+Three-way merging is initially built into the process; an option to disable it
+may be added later if a need arises.
 
 Changelog and patches are always manual. Files such as control, rules, tests,
 watch, and copyright may be generated or edited in place. Unknown files must
@@ -512,112 +525,30 @@ never be deleted merely because the generator did not emit them.
 
 ## Archive index and resolver
 
-Packaging an existing source tree does not require an Archive index.
-Archive-aware operations such as `download`, `deps`, and `build` need one to
-select source versions, determine dependency and feature-provider availability,
-enforce component and architecture constraints, identify missing packages, and
-plan test runs. `import` and `upgrade` also need the index when the workspace
-omits `rust-version`, so they can resolve the selected `rustc` binary version.
+The Archive index supports source selection, dependency inspection, and
+workspace Rust-version discovery. `download` and `deps` use it to select source
+versions, determine dependency and feature-provider availability, enforce
+component and architecture constraints, and identify missing packages.
+`import` and `upgrade` also use it when the workspace omits `rust-version`, so
+they can resolve the selected `rustc` binary version.
 
-The build index should represent an explicit Ubuntu series and pocket view,
-including staging PPAs where requested. It needs source and binary versions,
-component and architecture availability, dependency and `Provides` data,
-enough binary-package metadata to resolve the selected `rustc`, Cargo identity
-from `X-Cargo-*` fields, and relevant test metadata. Release, updates, security,
-proposed, backports, and staging sources must remain distinguishable.
+The Archive index should represent the workspace's configured Ubuntu series,
+pockets, components, and PPAs. It needs source and binary versions, origin,
+component and architecture availability, dependency and `Provides` data, and
+Cargo identity from `X-Cargo-*` fields. The resolver also considers
+already-built workspace packages while keeping candidates from every origin
+distinguishable.
 
-The resolver must use the same candidate-selection policy that `build` gives
-to APT: configured priorities and pinning first, Debian version ordering next,
-and repository order when otherwise equal. `download`, `deps`, and `build`
-must share this resolver so they cannot disagree about the selected version or
-origin. Archive-derived Rust-version checks must use the same selected `rustc`
-candidate.
+The resolver must model APT's candidate-selection policy: APT policy priority
+first, Debian version ordering among equal-priority versions next, and
+repository order when the same version is available from multiple origins.
+`download`, `deps`, and Archive-derived Rust-version checks must share this
+resolver. `build` should instead construct the same configured repository view
+and leave build-dependency selection to APT inside `sbuild`.
 
-Signed Archive metadata should be the authority for current availability. The
-first archive-aware command should load a cached catalog for the configured
-view or construct one from that metadata. A stale catalog should be refreshed
-before use. The indexer can download source packages on demand for details such
-as `Cargo.toml`, patches, and `debcargo.toml`; database design should wait until
-the access pattern requires it.
-
-An explicit `download --from debian:SUITE` may load signed source metadata for
-that Debian suite, but those candidates remain outside the configured build
-index and resolver view.
-
-The resolver view combines:
-
-```text
-signed Ubuntu Archive sources
-+ configured PPA sources
-+ already-built workspace packages
-= configured APT resolver view
-```
-
-These sources are not a simple last-wins overlay; their candidates remain
-distinguishable and are selected using the policy above.
-
-Launchpad publication history may supplement deleted or superseded versions
-but must not override the current signed Archive view.
-
-## Local builds
-
-Ubucargo should not create a private Cargo registry or a separate build system.
-A normal build should use Ubuntu's standard package tools:
-
-```text
-source tree with generated debian/ files
-  -> standard Debian tools produce a source package
-  -> sbuild installs Build-Depends
-  -> librust-*-dev packages populate /usr/share/cargo/registry
-  -> dh-cargo builds and tests the crate
-```
-
-`ubucargo build` should invoke `sbuild` without changing package dependency
-semantics.
-
-The initial implementation builds one requested source package at a time. It
-may expose already-built workspace packages through a temporary apt repository
-or sbuild extra packages, but it does not discover or build a dependency
-closure. Maintainers choose which source packages to download, import, package,
-and build.
-
-The result is ordinary Ubuntu source and binary packages, not a synthetic
-Cargo registry. Feature policy must come from package configuration rather
-than being silently rewritten during the build.
-
-## Ubuntu-specific concerns
-
-For each Ubuntu series, ubucargo must account for:
-
-- Network-isolated builds and policy-compliant source.
-- Available Rust, Cargo, `dh-cargo`, and debhelper versions, including crate
-  minimum Rust versions.
-- Pocket, component, migration, and Main Inclusion Review constraints.
-- Supported architectures and architecture-specific failures.
-- Bootstrap cycles, coordinated transitions, and reverse-dependency tests.
-- Licensing, repacking, generated files, embedded binaries, and vendored native
-  code.
-- Static linking: security fixes require tracking and rebuilding applications
-  that incorporated affected Rust libraries.
-- Accurate `Built-Using` and `Static-Built-Using` data.
-- Offline, deterministic tests against installed packaged crate sources.
-
-Introducing new crate graphs into stable releases may require older versions,
-patches, backported toolchains, or coordinated dependency updates.
-
-## Suggested implementation sequence
-
-1. Build a small crate dependency closure in an Ubuntu PPA using current
-   debcargo and overlays; retain inputs and outputs as fixtures.
-2. Read an existing source tree through `cargo metadata`, select its package,
-   and generate the minimum compatible naming, dependency, feature, and control
-   data required by the fixtures.
-3. Import `debcargo.toml` and support validated `[ubucargo]` settings.
-4. Implement deterministic reconciliation, ownership, hints, and
-   `package --check`.
-5. Validate generated packages with clean `sbuild` builds and autopkgtests.
-6. Implement workspace initialization, MSRV-aware importing of one crate from
-   crates.io, packaging it, and upgrading it in place.
-7. Add the Archive catalog, source-package download, and dependency reporting.
-8. Add a narrow version-control adapter only if a real git-buildpackage,
-   git-debrebase, or git-ubuntu workflow requires it.
+Signed Ubuntu Archive metadata and configured PPA metadata should be the
+authority for current availability. The first archive-aware command should
+load a cached catalog for the configured view or construct one from that
+metadata. A stale catalog should be refreshed before use. Indexing must not
+download or unpack source packages; source acquisition belongs to explicit
+commands such as `download`.
