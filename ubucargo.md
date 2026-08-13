@@ -4,16 +4,30 @@
 
 Ubucargo adapts Debian's Rust packaging model for Ubuntu. It should remain
 compatible with Debian packaging policy while using an Ubuntu-specific process
-for generating and maintaining packages.
+for generating and maintaining packages. Its basic role in Ubuntu is intended
+to be similar to the role of `debcargo` in Debian. `ubucargo` will consume
+a `debcargo.toml` config and a `Cargo.toml` manifest and use it to generate
+an Ubuntu source package, including a `control` file which translates Cargo
+dependencies into Ubuntu package dependencies.
 
-Ubucargo treats the source package published in the Ubuntu Archive as
-authoritative. There is no analogue to the `debcargo-conf` monorepo used
-in Debian. Each source package contains its complete packaging state: 
-debcargo/ubucargo generator input, generated files, and maintainer-owned files
-or overrides. Pending work can live in ordinary local source trees or in
-whatever version-control workflow the maintainer already uses.
+The design of `ubucargo` deviates from `debcargo` in three main ways:
+- `ubucargo` treats the source package itself as the authoritative location for
+package generator configuration. It has no analogue to Debian's `debcargo-conf`
+monorepo. `ubucargo` reads the file `debian/debcargo.toml` within
+the source package rather than from an external configuration.
+- `ubucargo` is oriented around a concept of a local "workspace" which allows for
+convenient, coordinated work on multiple packages: a workspace defines an Archive
+base configuration, including a selected series, pockets, and components, with
+PPAs and local source trees optionally layered on top. `ubucargo` commands
+consistently respect this layered workspace view when resolving
+dependencies.
+- `ubucargo` aims to be compatible with git-based packaging tooling,
+such as `gbp`. When generated files are overridden by maintainers and
+subsequently regenerated, it can be configured to produce a three-way merge
+based on the stored `.hint` file.
 
-Each source package should therefore be self-contained, for example:
+Each source package contains its complete packaging state: debcargo generator
+input, generated files, and maintainer-owned files or overrides, for example:
 
 ```text
 <source-package>/
@@ -29,22 +43,6 @@ Each source package should therefore be self-contained, for example:
     copyright                 # generated or overridden
     copyright.debcargo.hint   # generated alternative for an override
 ```
-
-Ubucargo is a maintainer tool, not a build dependency. Generated files such as
-`debian/control` must be included in the source package; Launchpad must not run
-ubucargo or access crates.io during a build.
-
-Source trees may be downloaded from the Ubuntu or Debian Archive or a PPA,
-imported from crates.io, or placed in the workspace by the maintainer. Once
-present, they can be inspected, packaged, upgraded, or built independently as
-needed.
-
-Coordinated transitions may use local packages or a staging PPA as an overlay
-on the Archive. A ubucargo workspace is a local coordination area for such work.
-It selects an Ubuntu series, pockets, components, and optional PPAs, and may
-contain multiple source packages. Those packages form a local overlay on the
-configured Ubuntu Archive view and are both inputs to dependency resolution
-and destinations for newly packaged crates.
 
 ## Command-line interface
 
@@ -72,8 +70,7 @@ source package.
 ### Workspace layout
 
 Each source package is an immediate child of the workspace root and is named
-after its Debian source package. The name remains stable across upstream and
-Debian revisions:
+after its Debian/Ubuntu source package:
 
 ```text
 rust-transition/
@@ -99,15 +96,15 @@ rust-transition/
 
 An upgrade such as `syn` 2.0.106 to 2.0.107 updates `rust-syn/` in place. A
 parallel upstream line uses another directory only when it has a distinct
-source package name, such as `rust-syn-1`. A resolver view contains at most one
+source package name, such as `rust-syn-1`. A workspace contains at most one
 checkout of each source-package identity; comparing two revisions of the same
 source package should use separate ubucargo workspaces.
 
-Ubucargo should discover only immediate child source-package directories and
-validate their Debian source-package identity from package metadata. A
-directory whose name does not match that identity is invalid. Packages that
-ubucargo downloads or imports use this naming convention; existing source
-trees placed in the workspace must use it as well.
+Ubucargo discovers immediate child source-package directories and
+validate their Debian source-package name from package metadata. A
+directory whose name does not match the package name is invalid. Packages that
+ubucargo downloads or imports use this naming convention; any source trees
+placed in the workspace by other means must use it as well.
 
 ### Initialize a workspace
 
@@ -141,15 +138,15 @@ The workspace may explicitly set a Rust compatibility target:
 rust-version = "1.75"
 ```
 
-When omitted, ubucargo should derive the effective Rust version from the
-APT-selected binary package named `rustc` in the configured build view. It
+When omitted, `ubucargo` should derive the effective Rust version from the
+APT-selected binary package named `rustc` in the workspace view. It
 should extract the upstream Rust version from that package's Debian version.
 An explicit value may be lower than the available compiler when a workspace
 needs to remain compatible with an older toolchain.
 
 ### Download source packages
 
-Download the source-package candidate selected by the configured build view:
+Download the source-package candidate selected by the configured Archive view:
 
 ```console
 ubucargo download rust-syn
@@ -168,13 +165,11 @@ ubucargo download rust-syn --from ppa:example/rust-staging
 
 `download` downloads the selected `.dsc` and its associated source files, then
 unpacks them with standard Debian source-package tools into a directory named
-after the source package. Without `--from` or `--version`, it should select the
-external candidate that the same configured APT policy would make available to
-`build`. `--from` restricts the candidate set to one Ubuntu suite, Debian
-suite, or PPA, while `--version` requires an exact Debian/Ubuntu source version.
-When both are present, both constraints apply.
+after the source package. If specified, `--from` restricts the candidate set
+to one Ubuntu suite, Debian suite, or PPA, while `--version` requires an exact
+Debian/Ubuntu source version. When both are present, both constraints apply.
 
-Candidate selection must use the same repository priorities, pinning, Debian
+Candidate selection must use the same repository priorities, Debian
 version ordering, and repository order as the build environment. If an exact
 version exists in multiple origins, repository order breaks the tie unless
 `--from` identifies one explicitly. Before downloading, ubucargo should print
@@ -188,11 +183,6 @@ Official archive origins are qualified as `ubuntu:SUITE` or `debian:SUITE`.
 For Ubuntu, the release pocket is the series name itself, such as
 `ubuntu:noble`, while other pockets use names such as `ubuntu:noble-updates`
 or `ubuntu:noble-security`.
-
-A Debian suite is a source-acquisition origin only. Downloading from
-`debian:sid`, for example, must not add Debian repositories or binaries to the
-configured Ubuntu build view. Once downloaded, the source tree can be adapted
-and built against the workspace's Ubuntu Archive and PPA configuration.
 
 Downloading preserves the complete existing `debian/` directory and does not
 regenerate it automatically. The command should refuse to overwrite an
@@ -208,10 +198,10 @@ ubucargo import serde
 ubucargo import serde --version 1.0.219
 ```
 
-Without `--version`, ubucargo should select a stable, non-yanked release using
-the same MSRV policy as `cargo add`. A release whose published `rust_version`
+Without `--version`, ubucargo should select a non-yanked release using
+the same MSRV policy as `cargo add`: A release whose published `rust_version`
 is newer than the workspace Rust version is incompatible and should be
-skipped. A release without `rust_version` is treated as compatible, but
+skipped, while a release without `rust_version` is treated as compatible, but
 ubucargo should warn that its compatibility is unverified. The newest
 remaining release is resolved immediately to an exact version.
 
