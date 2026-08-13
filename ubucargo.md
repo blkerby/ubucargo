@@ -185,9 +185,14 @@ or `ubuntu:noble-security`.
 Downloading preserves the complete existing `debian/` directory and does not
 regenerate it automatically. For each known generated file without a companion
 `.debcargo.hint`, `download` should copy the downloaded file to that hint path.
-This records the downloaded state before local edits. The command should refuse
-to overwrite an existing source-package directory. The initial implementation
-should not create or modify a version-control repository.
+This records the downloaded state before local edits. For a package originating
+from Debian, an absent hint means the generated content was retained unchanged;
+a package that was previously packaged with `ubucargo` should already have
+a full set of `.debcargo.hint` files.
+
+The `download` command should refuse to overwrite an existing source-package
+directory. The initial implementation should not create or modify a
+version-control repository.
 
 ### Import crates
 
@@ -260,6 +265,12 @@ Following debcargo, generation produces candidates for the following paths:
 For every generated file `<file>`, ubucargo also stores
 `<file>.debcargo.hint`, even when both files have identical contents. The hint
 is the last generated version and can be used as a merge base for later changes.
+The fixed paths above and the feature-package override naming pattern form
+generator-owned filename spaces. A primary file with a companion
+`.debcargo.hint` is also generator-owned. Ubucargo reconciles existing paths in
+these spaces even when the current generator no longer emits them; files outside
+these spaces are ignored.
+
 `debian/changelog` is create-only: `package` may create an initial entry when
 it is absent, but never replaces or removes an existing changelog.
 `debian/debcargo.toml`, `debian/patches/`, and all other paths are not
@@ -290,9 +301,12 @@ release that can retain the existing Debian source-package identity. An
 upgrade downloads and verifies the crate, constructs the replacement upstream
 tree in a staging area, preserves `debian/`, applies the existing Debian patch
 series, and runs the same generated-file reconciliation as `package`. It should
-replace the working tree only after those steps succeed. Manual files such as
-changelog entries and patches remain for maintainer review, and patch failures
-must be reported rather than rewritten automatically.
+replace the working tree only after acquisition, verification, unpacking, and
+patch application succeed. Reconciliation may produce a working tree containing
+conflicts for the maintainer to resolve; in that case, the conflicted files and
+updated generator state are retained and the command exits non-zero. Manual files
+such as changelog entries and patches remain for maintainer review, and patch
+failures must be reported rather than rewritten automatically.
 
 The initial implementation operates only on the source-tree contents. It does
 not import upstream history, create commits, switch branches, or otherwise
@@ -358,7 +372,8 @@ already-built binary packages from the workspace and the configured PPAs to
 workspace source trees. Maintainers choose which source packages to download,
 import, package, and build. If a required package is unavailable, `build` should
 surface the missing dependency reported by `sbuild`; `deps` provides detailed
-candidate and source availability.
+candidate and source availability. `build` should refuse to proceed while any
+generator-owned file contains unresolved ubucargo conflict markers.
 
 The invocation should be equivalent to:
 
@@ -486,42 +501,62 @@ Ubucargo should instead:
 4. Reconcile them with the working tree, creating a merged version if applicable.
 5. Apply changes atomically.
 
-For each generated path, reconciliation has three inputs:
+For each generator-owned path, reconciliation has three input values:
 
 - `base`: the old `<file>.debcargo.hint`
 - `old`: the working-tree `<file>`
 - `new`: the newly generated staging file
 
-`ubucargo` ensures that all hint files exist after a package is first downloaded
-or generated, regardless of whether the file is overridden or not. It records
-generator state rather than indicating that the primary file is necessarily
-a manual override. This deviation from `debcargo` behavior is necessary in order
-to reliably distinguish an overridden file from a previously generated one,
-given that overrides are no longer specified in a separate external directory.
+`ubucargo` writes a hint whenever the generator emits a file, regardless of
+whether the primary file is overridden. The hint records generator state rather
+than indicating that the primary file is necessarily a manual override. During
+`download`, the Debian convention that an absent hint means unchanged generated
+content is normalized by creating the missing hint. During normal reconciliation,
+an absent hint represents an absent generated base.
 
-| State | Package behavior |
-| ----- | ---------------- |
-| `old` absent | Write `new` to both `old` and `base` |
-| `old == base` | Replace both with `new` |
-| `old != base`, merging disabled | Preserve `old`; replace `base` with `new` |
-| `old != base`, merging enabled | Three-way merge `base`, `old`, and `new`; replace `base` with `new` |
+Each value consists of the path's presence and, when present, its contents. An
+absent file is distinct from a present empty file, and equality compares both
+presence and contents.
 
-If `base` is absent, it should be treated as though it were an empty file: this
-will result in a merge conflict in case an `old` file existed and differs from `new`.
-This situation should not normally arise because `base` should be initialized
-when the source package is initially downloaded or created.
+| Condition | Package behavior |
+| --------- | ---------------- |
+| `old == base` | The maintainer made no change; take `new` |
+| `new == base` | The generator made no change; keep `old` |
+| `old == new` | Both reached the same value; keep it |
+| Otherwise | Three-way merge `base`, `old`, and `new`; report a conflict if they cannot be reconciled cleanly |
 
-The merged result is written to `<file>` while the pre-merged newly generated
-version is written to `<file>.debcargo.hint`. In case of a conflict, conflict
-markers are included in the merged result and a warning is output. The merge
-should be compatible with the standard `diff3` behavior and must not require Git.
+After reconciliation, the stored generator state becomes `new`: write `new` to
+the hint when it is present, or remove the hint when it is absent. Taking a
+value likewise creates, replaces, or removes the primary file according to that
+value's presence.
+
+When `old` and `new` are both present, content merging should be compatible with
+standard `diff3` behavior. An absent `base` may be supplied to that merge as an
+empty temporary input, but it remains distinct from a present empty file for the
+path-level comparisons above. The merge must not require Git.
+
+If one side deletes a file while the other changes it, ubucargo should create a
+primary file containing `diff3`-style conflict markers. The absent side is an
+empty marker section labeled `maintainer (deleted)` or
+`new generated (deleted)` as applicable; the other sections are labeled
+`maintainer`, `previous generated`, and `new generated`. The hint still records
+the new generator state, so it is written for a generator modification and
+removed for a generator deletion.
+
+Ubucargo should report every conflicted path and exit non-zero. Conflict markers
+persist until the maintainer resolves the primary path to either a marker-free
+file or an absent file. Ubucargo should refuse to reconcile a path that still
+contains conflict markers from a previous run, and `build` should likewise
+refuse to proceed.
 
 Three-way merging is initially built into the process; an option to disable it
 may be added later if a need arises.
 
 Changelog and patches are always manual. Files such as control, rules, tests,
-watch, and copyright may be generated or edited in place. Unknown files must
-never be deleted merely because the generator did not emit them.
+watch, and copyright may be generated or edited in place. Generator-owned files
+may be deleted when the generator stops emitting them according to the rules
+above. Unknown files outside the generator-owned filename spaces must never be
+deleted merely because the generator did not emit them.
 
 ## Archive index and resolver
 
