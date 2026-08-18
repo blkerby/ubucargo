@@ -10,9 +10,10 @@ ubucargo package [PACKAGE] [--check]
 directory is inside one.
 
 `package` reads the effective source and `debian/debcargo.toml`, generates
-ubucargo-owned packaging files in a staging area, and reconciles them with the
-working tree. It is used both to populate packaging after `import` and to refresh
-downloaded or previously generated packaging.
+ubucargo-owned packaging files in a staging area, and materializes them in the
+working tree while preserving inferred maintainer overrides. It is used both to
+populate packaging after `import` and to refresh downloaded or previously
+generated packaging.
 
 Ubucargo materializes the effective patched source before invoking the
 generator. The synthetic debcargo overlay does not contain `debian/patches`, so
@@ -41,11 +42,11 @@ crates.io checksum or origin.
 
 For every emitted `<file>`, ubucargo stores `<file>.debcargo.hint`, even when
 their contents are identical. The hint records the latest generator state and
-is the merge base for future changes.
+provides the comparison value used to detect a maintainer override.
 
 The fixed paths above and the generated feature-package override naming pattern
 are generator-owned filename spaces. A primary file with a companion hint is
-also generator-owned. Existing paths in these spaces are reconciled even when
+also generator-owned. Existing paths in these spaces are considered even when
 the current generator stops emitting them; paths outside these spaces are
 ignored.
 
@@ -56,9 +57,9 @@ absent but never replaces or removes one. `debian/debcargo.toml`,
 The source-package artifact lifecycle remains open; see
 [issue 1](issues.md#1-source-package-artifact-lifecycle).
 
-## Reconciliation
+## Override detection and materialization
 
-For each generator-owned path, reconciliation has three values:
+For each generator-owned path, materialization has three values:
 
 - `base`: the old `<file>.debcargo.hint`
 - `old`: the working-tree `<file>`
@@ -69,42 +70,34 @@ executable bit. An absent file is distinct from a present empty file, and
 equality compares all represented state.
 
 During `download`, Debian's absent-hint convention is normalized by creating
-the missing hint. During normal reconciliation, an absent hint represents an
+the missing hint. During normal materialization, an absent hint represents an
 absent generated base.
 
-| Condition | Behavior |
-| --------- | -------- |
-| `old == base` | The maintainer made no change; take `new` |
-| `new == base` | The generator made no change; keep `old` |
-| `old == new` | Both reached the same value; keep it |
-| Otherwise | Three-way merge; report a conflict if it cannot be reconciled cleanly |
+An override exists exactly when `old != base`; no explicit override list is
+stored in `debcargo.toml`.
 
-After reconciliation, the stored generator state becomes `new`: write the hint
-when `new` is present and remove it when `new` is absent. Taking a value likewise
-creates, replaces, or removes the primary path according to its presence.
-The hint's executable bit records the generated base mode and follows the same
-three-way value rules.
+| Condition | Meaning | Behavior |
+| --------- | ------- | -------- |
+| `old == base` | Unmodified generated file | Replace both primary and hint with `new` |
+| `old != base` | Maintainer override | Preserve `old`; replace the hint with `new` |
 
-When `old` and `new` are present, content merging should be compatible with
-standard `diff3` behavior. An absent `base` may be supplied as an empty temporary
-input for content merging, while remaining distinct from a present empty file
-for path-level comparisons. The merge must not require Git.
+Writing a value creates or replaces the path when present and removes it when
+absent. The same rule therefore handles deletions:
 
-## Conflicts
+- primary absent and hint present is a maintainer deletion;
+- primary present and hint absent is a maintainer file at a currently
+  ungenerated path;
+- if the generator stops emitting an unmodified path, both files are removed;
+- if the generator stops emitting an overridden path, the primary is preserved
+  and the hint is removed.
 
-Conflicted files use `diff3`-style markers labeled `maintainer`,
-`previous generated`, and `new generated`.
+The hint's executable bit records the generated mode and participates in
+equality. Restoring the primary to the hint value removes the override. If the
+hint is absent, removing the primary removes the override.
 
-If one side deletes a file while the other changes it, ubucargo creates a
-primary file whose absent side is an empty marker section labeled
-`maintainer (deleted)` or `new generated (deleted)`. The hint still records the
-new generator state: it is written for a generator modification and removed for
-a generator deletion.
-
-The command reports every conflicted path and exits non-zero. Conflict markers
-persist until the maintainer resolves the primary path to either a marker-free
-file or an absent file. `package` refuses to reconcile a path containing markers
-from a previous run, and `build` likewise refuses to proceed.
+When an overridden path receives changed generator output, `package` preserves
+the primary, reports the generator delta from `base` to `new`, and updates the
+hint. It does not retain historical generator state or perform a merge.
 
 ## Check mode
 
@@ -112,22 +105,23 @@ from a previous run, and `build` likewise refuses to proceed.
 ubucargo package ./rust-serde --check
 ```
 
-`--check` performs generation and reconciliation analysis without writing. It
-reports whether the primary files or hints would change and whether conflicts
-would result.
+`--check` performs generation and materialization analysis without writing. It
+reports whether primary files or hints would change, identifies inferred
+overrides, and shows generator changes for overridden paths.
 
 ## Generation boundary
 
 Generation creates an in-memory set of relative paths, contents, and executable
 bits. Generator code does not choose the workspace location or write directly
-into it. A separate reconciliation step applies accepted changes atomically.
+into it. A separate materialization step applies primary and hint changes
+atomically.
 
 `package` must not require network access. The staged debcargo process uses a
 local crate source and runs with Cargo network access disabled.
 
 When the source contains multiple applicable Cargo packages, selection must be
 explicit. The selection interface remains open; see
-[issue 5](issues.md#5-cargo-workspace-package-selection-has-no-interface).
+[issue 4](issues.md#4-cargo-workspace-package-selection-has-no-interface).
 
 ## Debcargo staging adapter
 
@@ -156,7 +150,7 @@ values fail clearly rather than being silently reinterpreted.
 
 The real `debian/` directory is not copied into the overlay. Existing generated
 files and maintainer overrides must not influence the clean candidate set;
-ubucargo reconciles them afterward. An existing changelog is the only initial
+ubucargo materializes them afterward. An existing changelog is the only initial
 overlay input because debcargo uses it for copyright years. When present,
 ubucargo passes `--changelog-ready`.
 
@@ -184,13 +178,14 @@ packages, and manually overridden generated files.
 
 ## Implementation strategy
 
-1. Validate the source-package identity and unresolved-conflict state.
+1. Validate the source-package identity.
 2. Materialize the effective patched source in a staging directory.
 3. Adapt `debian/debcargo.toml` and prepare the minimal synthetic overlay.
 4. Invoke a supported debcargo version without network access or write-back.
 5. Extract debcargo candidates and replace origin-sensitive candidates using
    acquisition metadata.
 6. Build the complete in-memory generated path set, including executable bits.
-7. Reconcile the union of generated and existing generator-owned paths.
+7. Materialize the union of generated and existing generator-owned paths using
+   inferred override state.
 8. In check mode, report the result and stop.
 9. Otherwise apply all primary and hint changes atomically.

@@ -47,6 +47,6 @@ same current metadata. Archive changes between commands may change that result.
 5. Classify and print all candidates in deterministic order.
 
 The exact division between the custom catalog and APT remains open; see
-[issue 3](issues.md#3-resolver-duplicates-apt-candidate-selection). Workspace
+[issue 2](issues.md#2-resolver-duplicates-apt-candidate-selection). Workspace
 artifact discovery remains open; see
-[issue 7](issues.md#7-workspace-binary-artifact-discovery-is-unspecified).
+[issue 6](issues.md#6-workspace-binary-artifact-discovery-is-unspecified).

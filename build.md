@@ -27,9 +27,6 @@ or build a dependency closure or other workspace source trees. Missing build
 dependencies are reported by `sbuild`; [`deps`](deps.md) provides candidate
 details.
 
-The command refuses to proceed while any generator-owned file contains
-unresolved ubucargo conflict markers.
-
 Creation and storage of the input `.dsc` and resulting artifacts remains open;
 see [issue 1](issues.md#1-source-package-artifact-lifecycle).
 
@@ -133,17 +130,17 @@ modify the cached base tarball.
 
 Ubucargo retrieves and verifies PPA signing keys rather than using
 `trusted=yes`. The fingerprint trust and pinning mechanism remains open; see
-[issue 6](issues.md#6-ppa-key-verification-lacks-a-trust-bootstrap).
+[issue 5](issues.md#5-ppa-key-verification-lacks-a-trust-bootstrap).
 
 `--extra-package` is repeated for applicable workspace binary packages, or may
 name a directory containing them. `sbuild` exposes these through its temporary
 APT archive, so ubucargo does not create another local repository. Artifact
 selection remains open; see
-[issue 7](issues.md#7-workspace-binary-artifact-discovery-is-unspecified).
+[issue 6](issues.md#6-workspace-binary-artifact-discovery-is-unspecified).
 
 ## Implementation strategy
 
-1. Validate the requested source tree and unresolved-conflict state.
+1. Validate the requested source tree and generated packaging state.
 2. Produce or locate the source-package `.dsc`.
 3. Normalize the workspace's base Archive view and generate the deb822 source
    file.

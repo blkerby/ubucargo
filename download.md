@@ -35,7 +35,7 @@ pockets use names such as `ubuntu:noble-updates` and
 `ubuntu:noble-security`.
 
 The definition of on-demand Debian suite metadata remains open; see
-[issue 4](issues.md#4-debian-downloads-are-outside-the-archive-model).
+[issue 3](issues.md#3-debian-downloads-are-outside-the-archive-model).
 
 ## Acquisition
 

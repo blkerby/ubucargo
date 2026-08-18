@@ -16,8 +16,9 @@ Ubucargo differs in three main ways:
   `debcargo-conf` monorepo.
 - Commands operate within a workspace that defines one layered Ubuntu Archive
   view shared by dependency inspection, acquisition, and builds.
-- Generated packaging may be edited in place and later reconciled through
-  three-way merges using stored `.debcargo.hint` generator state.
+- Generated packaging may be edited in place. A corresponding
+  `.debcargo.hint` records current generator output; differing primary and hint
+  values identify a maintainer override without an explicit override list.
 
 Detailed command behavior and implementation strategy live in the
 [command documents](#command-documents). This document defines only shared
@@ -53,8 +54,8 @@ fail clearly.
 
 Generated files and their hints are owned by filename spaces defined by the
 generator. Changelog, patches, configuration, and unknown paths remain
-maintainer-owned. The complete ownership and merge algorithm is specified by
-[`package`](package.md#reconciliation).
+maintainer-owned. The complete ownership and materialization rules are specified
+by [`package`](package.md#override-detection-and-materialization).
 
 ## Workspace model
 
@@ -93,7 +94,7 @@ rust-transition/
 A workspace contains at most one checkout of each source-package identity.
 Ubucargo validates directory names against source-package metadata. Comparing
 two revisions of the same source package requires separate workspaces. The
-layout restriction is tracked as [open issue 8](issues.md#8-strict-directory-layout-conflicts-with-layout-independence).
+layout restriction is tracked as [open issue 7](issues.md#7-strict-directory-layout-conflicts-with-layout-independence).
 
 ## Command documents
 
@@ -102,8 +103,7 @@ layout restriction is tracked as [open issue 8](issues.md#8-strict-directory-lay
 | `ubucargo init` | Create a workspace | [`init.md`](init.md) |
 | `ubucargo download` | Acquire an existing source package | [`download.md`](download.md) |
 | `ubucargo import` | Create a source tree from crates.io | [`import.md`](import.md) |
-| `ubucargo package` | Generate and reconcile packaging | [`package.md`](package.md) |
-| `ubucargo upgrade` | Replace the upstream crate release | [`upgrade.md`](upgrade.md) |
+| `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
 | `ubucargo build` | Build with standard Ubuntu tooling | [`build.md`](build.md) |
 
@@ -120,7 +120,7 @@ Ubuntu has a concrete reason to diverge.
 Ubucargo does not run debcargo in the real source tree. It materializes the
 effective source and an adapted configuration in a staging area, invokes a
 supported debcargo version to generate packaging candidates, and then performs
-its own ownership reconciliation. This preserves ubucargo's in-tree workflow
+its own ownership-aware materialization. This preserves ubucargo's in-tree workflow
 without maintaining a second implementation of Debian Rust package generation.
 
 The initial adapter uses debcargo's local-crate and separate-output support.
@@ -142,8 +142,9 @@ staging adapter.
 Source acquisition is separate from packaging generation:
 
 - `download` retrieves a packaged source from an Archive origin.
-- `import` and `upgrade` retrieve crates through the Cargo registry protocol and
-  verify registry checksums.
+- `import` retrieves crates through the Cargo registry protocol and verifies
+  registry checksums. New upstream releases are packaged through a fresh import
+  rather than an in-place upgrade operation.
 - `package` operates on an existing source tree and must not require network
   access.
 
@@ -154,8 +155,8 @@ with network access disabled.
 
 Generation produces an in-memory set of relative paths, contents, and relevant
 file modes. Generator code does not select workspace locations or write directly
-into source trees. Reconciliation is a separate operation that applies accepted
-changes atomically.
+into source trees. A separate materialization step preserves inferred overrides
+and applies generated state atomically.
 
 Rust-version filtering rejects known incompatibilities but does not prove that
 selected features, dependencies, build scripts, patches, or generated packaging
@@ -187,7 +188,7 @@ availability. Archive-aware commands may use a cached catalog but must refresh
 stale metadata before use. Indexing does not download or unpack source packages.
 
 The exact division of responsibility between the catalog and native APT policy
-is tracked as [open issue 3](issues.md#3-resolver-duplicates-apt-candidate-selection).
+is tracked as [open issue 2](issues.md#2-resolver-duplicates-apt-candidate-selection).
 
 ## Version-control boundary
 
@@ -198,7 +199,7 @@ filesystem:
 
 ```text
 materialized Debian source tree
-  -> package, deps, or upgrade
+  -> package or deps
 
 exportable Debian source tree
   -> standard Debian tools produce a source package

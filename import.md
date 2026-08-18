@@ -27,7 +27,7 @@ an undeclared MSRV remains a warning. The selected release is immediately fixed
 to an exact version.
 
 The precise release-selection algorithm remains open; see
-[issue 9](issues.md#9-msrv-selection-depends-on-moving-external-behavior).
+[issue 8](issues.md#8-msrv-selection-depends-on-moving-external-behavior).
 
 ## Output
 
@@ -45,8 +45,23 @@ The source tree is created under its Debian source-package name, such as
 `rust-serde/`. Existing Debian Rust naming, feature, and versioning conventions
 determine the source and eventual binary package names.
 
-The command refuses to overwrite an existing source-package directory and
-suggests `upgrade` when that source-package identity already exists.
+The command refuses to overwrite an existing source-package directory.
+
+## New upstream releases
+
+Ubucargo has no in-place `upgrade` command. Packaging a new upstream release
+starts from a fresh import, normally in a separate workspace when the previous
+source-package identity is still present:
+
+```console
+ubucargo import serde --version 1.0.220
+ubucargo package rust-serde
+```
+
+The maintainer then copies only the still-relevant state from the previous
+package, such as `debcargo.toml` settings, changelog history, patches, copyright
+corrections, or custom generated-file overrides. Ubucargo does not decide which
+old-version customizations should survive.
 
 The original-tarball and Debian-version lifecycle remains open; see
 [issue 1](issues.md#1-source-package-artifact-lifecycle).
