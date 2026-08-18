@@ -29,7 +29,7 @@ candidate details. Build outputs are written to the explicitly selected output
 directory.
 
 Creation and storage of the input `.dsc` and resulting artifacts remains open;
-see [issue 1](issues.md#1-source-package-artifact-lifecycle).
+see [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
 
 ## Unshare build environment
 

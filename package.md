@@ -54,8 +54,8 @@ ignored.
 absent but never replaces or removes one. `debian/debcargo.toml`,
 `debian/patches/`, and all other paths are maintainer-owned.
 
-The source-package artifact lifecycle remains open; see
-[issue 1](issues.md#1-source-package-artifact-lifecycle).
+The `.dsc`, source `.changes`, and `.buildinfo` production lifecycle remains
+open; see [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
 
 ## Override detection and materialization
 
@@ -171,6 +171,11 @@ discards debcargo's staged source tree and orig tarball. It replaces the
 local-source versions of `cargo-checksum.json`, `watch`, and an initial
 changelog with candidates derived from acquisition metadata.
 
+The canonical orig tarball beside the real source tree is never replaced by
+`package`. Changes to archive-filtering settings such as `excludes` or
+`repack_suffix` require registry-backed orig preparation through `import` or
+`upgrade`, even when reusing the same crate version.
+
 Ubucargo checks the debcargo version before invocation. Compatibility tests
 should run the adapter over representative debcargo-conf packages, including
 libraries, binaries, semver-suffixed crates, patched manifests, feature-heavy
@@ -182,7 +187,8 @@ packages, and manually overridden generated files.
 2. Materialize the effective patched source in a staging directory.
 3. Adapt `debian/debcargo.toml` and prepare the minimal synthetic overlay.
 4. Invoke a supported debcargo version without network access or write-back.
-5. Extract debcargo candidates and replace origin-sensitive candidates using
+5. Discard the local-source orig tarball, extract debcargo candidates, and
+   replace origin-sensitive candidates using
    acquisition metadata.
 6. Build the complete in-memory generated path set, including executable bits.
 7. Materialize the union of generated and existing generator-owned paths using

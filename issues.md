@@ -2,20 +2,19 @@
 
 ## Blocking or high-risk
 
-### 1. Source-package artifact lifecycle
+### 1. Source-package build artifact lifecycle
 
-The [`import`](import.md#output) command produces an upstream tree and
-`debian/debcargo.toml`, while [`build`](build.md#build-contract) assumes that
-standard tools have produced a source package before invoking `sbuild` with a
-`.dsc`.
+[`import`](import.md#output) and [`upgrade`](upgrade.md) produce a packaged
+source tree and orig tarball through debcargo, while [`build`](build.md#build-contract)
+assumes that generic Debian tools have produced a source package before invoking
+`sbuild` with a `.dsc`.
 
 The design still needs to define:
 
-- how the verified crates.io archive becomes and is retained as `.orig.tar.*`;
-- where acquisition metadata such as the registry checksum is persisted;
-- how the initial Debian version and changelog entry are chosen;
 - whether ubucargo invokes `dpkg-source -b` or `dpkg-buildpackage -S`; and
-- where `.dsc`, `.changes`, and `.buildinfo` outputs are stored.
+- where `.dsc`, source `.changes`, and `.buildinfo` outputs are stored;
+- how the initial Debian revision and source changelog entry are finalized; and
+- whether the thin `build` wrapper or a separate source command owns this step.
 
 This source-package artifact is the handoff to local `sbuild`, a local APT
 repository, Launchpad, Debusine, or an Ubuntu upload workflow. Until it is
@@ -88,11 +87,13 @@ corresponding `.debcargo.hint`, including path presence and executable mode.
 generator output. It does not keep historical generator state or perform
 three-way merging.
 
-### New upstream versions use fresh imports
+### Debcargo prepares orig tarballs
 
-There is no in-place `upgrade` command. A new upstream release is imported into
-a fresh source tree, and the maintainer manually copies only the old packaging
-state that remains relevant.
+`import` and `upgrade` use debcargo's registry-backed full packaging path.
+Debcargo and Cargo acquire and verify the exact crate, apply configured repack
+policy, derive the Debian upstream version, and create the correctly named orig
+tarball. Offline `package` refreshes use local-source mode and discard its
+temporary orig tarball.
 
 ### Native APT provides the Archive view
 

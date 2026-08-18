@@ -6,7 +6,8 @@
 ubucargo [--profile PROFILE] import CRATE [--version VERSION] [--directory DIR]
 ```
 
-`import` creates a new source-package tree from a crates.io release.
+`import` creates a new packaged source tree and Debian orig tarball from a
+crates.io release.
 
 ## Version selection
 
@@ -31,15 +32,14 @@ The precise release-selection algorithm remains open; see
 
 ## Output
 
-The command downloads and verifies the crate, unpacks its upstream source, and
-creates a fresh `debian/debcargo.toml`. It leaves generation of the remaining
-packaging to [`ubucargo package`](package.md).
+Ubucargo creates a default `debcargo.toml` in staging and invokes debcargo's
+registry-backed `package` command with the exact selected version. Debcargo and
+Cargo download and verify the crate, derive the Debian source identity and
+upstream version, create or repack the orig tarball, extract the source, and
+generate the initial `debian/` packaging.
 
-The exact crate version, registry checksum, and crates.io origin are retained as
-acquisition metadata for `package`, which uses them to generate
-`cargo-checksum.json`, `watch`, and the initial changelog independently of
-debcargo's local-source mode. The persistent artifact representation remains
-part of the source-package lifecycle issue below.
+Ubucargo copies the staged `debcargo.toml` into the resulting `debian/`
+directory and normalizes generated hints before installation.
 
 The source tree is created at `DIR`, which defaults to a directory named after
 the Debian source package in the current directory. Existing Debian Rust naming,
@@ -50,32 +50,37 @@ The command refuses to overwrite an existing source-package directory.
 
 ## New upstream releases
 
-Ubucargo has no in-place `upgrade` command. Packaging a new upstream release
-starts from a fresh import, normally in a separate directory when the previous
-source tree is still present:
+Existing packages use [`ubucargo upgrade`](upgrade.md), which preserves durable
+Debian state while using the same debcargo orig-tarball path for the new crate
+release.
 
-```console
-ubucargo --profile ~/profiles/noble-rust \
-  import serde --version 1.0.220 --directory ~/src/rust-serde-new
-ubucargo --profile ~/profiles/noble-rust package ~/src/rust-serde-new
+## Orig tarball
+
+The orig tarball is placed beside the source directory using Debian naming:
+
+```text
+~/src/
+  rust-serde/
+  rust-serde_1.0.220.orig.tar.gz
 ```
 
-The maintainer then copies only the still-relevant state from the previous
-package, such as `debcargo.toml` settings, changelog history, patches, copyright
-corrections, or custom generated-file overrides. Ubucargo does not decide which
-old-version customizations should survive.
+When no repack is required, debcargo copies the verified `.crate` archive
+byte-for-byte to the orig filename. Configured exclusions or manifest
+normalization cause a deterministic repack and add the configured suffix, such
+as `+dfsg`, to the Debian upstream version.
 
-The original-tarball and Debian-version lifecycle remains open; see
-[issue 1](issues.md#1-source-package-artifact-lifecycle).
+The remaining `.dsc`, source `.changes`, and `.buildinfo` production lifecycle
+is tracked in [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
 
 ## Implementation strategy
 
 1. Resolve the profile Rust target.
 2. Query crate release metadata and select an exact version.
-3. Download the crate through the Cargo registry protocol and verify its
-   registry checksum.
-4. Retain the exact origin, checksum, and downloaded crate archive.
-5. Safely unpack it into a staging directory.
-6. Determine the Debian source-package identity and create
-   `debian/debcargo.toml`.
-7. Atomically move the staged source tree to the requested destination.
+3. Create and validate the initial staged `debcargo.toml`.
+4. Invoke a supported debcargo version in registry mode with the exact crate
+   version and staged output directory.
+5. Validate the resulting source identity, orig filename, checksum metadata,
+   and generated packaging.
+6. Copy the authoritative in-tree config into the staged `debian/` directory.
+7. Atomically install the source tree and orig tarball without overwriting an
+   existing destination.
