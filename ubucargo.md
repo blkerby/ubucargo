@@ -94,7 +94,7 @@ rust-transition/
 A workspace contains at most one checkout of each source-package identity.
 Ubucargo validates directory names against source-package metadata. Comparing
 two revisions of the same source package requires separate workspaces. The
-layout restriction is tracked as [open issue 7](issues.md#7-strict-directory-layout-conflicts-with-layout-independence).
+layout restriction is tracked as [open issue 6](issues.md#6-strict-directory-layout-conflicts-with-layout-independence).
 
 ## Command documents
 
@@ -163,32 +163,28 @@ selected features, dependencies, build scripts, patches, or generated packaging
 work with the target compiler. A build against the configured Archive toolchain
 is authoritative.
 
-## Archive view and resolver
+## Isolated APT metadata view
 
-The shared Archive catalog supports source selection, dependency inspection,
-workspace Rust-version discovery, and build configuration. It represents the
-configured Ubuntu series, architecture, pockets, components, PPAs, and available
-workspace binary packages.
+The workspace Archive implementation is a metadata-only APT view stored beneath
+the user's cache directory. The workspace configuration supplies sources,
+preferences, keys, architecture, and repository order; native APT remains the
+authority for metadata refresh, package policy, Debian version ordering,
+architecture filtering, `Provides`, and candidate selection.
 
-The catalog needs:
+Ubucargo reads APT's downloaded binary and source indexes to explain every
+relevant candidate, including origin, pocket, component, dependency fields, and
+Cargo identity. It does not maintain an independent Archive resolver or issue
+remote requests for individual dependency queries.
 
-- source and binary versions;
-- origin, pocket, component, and architecture availability;
-- dependency and `Provides` data; and
-- Cargo identity from `X-Cargo-*` fields.
+`download`, `deps`, and Archive-derived Rust-version checks share the cached
+view. `build` constructs the same normalized repository configuration inside
+`sbuild`. Signed Ubuntu Archive and configured PPA metadata remain authoritative
+for current availability.
 
-Candidate selection follows APT policy: priority first, Debian version ordering
-among equal priorities next, and repository order for identical versions.
-`download`, `deps`, and Archive-derived Rust-version checks share this view.
-`build` constructs the same normalized repository configuration and leaves
-build-dependency selection to APT inside `sbuild`.
-
-Signed Ubuntu Archive and configured PPA metadata are authoritative for current
-availability. Archive-aware commands may use a cached catalog but must refresh
-stale metadata before use. Indexing does not download or unpack source packages.
-
-The exact division of responsibility between the catalog and native APT policy
-is tracked as [open issue 2](issues.md#2-resolver-duplicates-apt-candidate-selection).
+The view runs unprivileged, never installs packages, and redirects all APT
+configuration, state, keys, locks, and logs beneath its own directory. Its full
+layout, operation allowlist, caching behavior, and safety contract are specified
+in [`apt-view.md`](apt-view.md).
 
 ## Version-control boundary
 

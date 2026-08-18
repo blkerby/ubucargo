@@ -36,6 +36,12 @@ see [issue 1](issues.md#1-source-package-artifact-lifecycle).
 for the workspace's official Ubuntu Archive base view and passes it to the
 backend's automatic `mmdebstrap` invocation.
 
+The sources, preferences, keys, repository order, and selected workspace
+artifacts derive from the same normalized configuration as the
+[isolated APT metadata view](apt-view.md). The unshare environment has its own
+installed package state, but its available candidate universe must match the
+view used by `deps`.
+
 For a Noble `amd64` workspace using `release`, `updates`, and `security` from
 `main` and `universe`, the source file is equivalent to:
 
@@ -130,13 +136,13 @@ modify the cached base tarball.
 
 Ubucargo retrieves and verifies PPA signing keys rather than using
 `trusted=yes`. The fingerprint trust and pinning mechanism remains open; see
-[issue 5](issues.md#5-ppa-key-verification-lacks-a-trust-bootstrap).
+[issue 4](issues.md#4-ppa-key-verification-lacks-a-trust-bootstrap).
 
 `--extra-package` is repeated for applicable workspace binary packages, or may
 name a directory containing them. `sbuild` exposes these through its temporary
 APT archive, so ubucargo does not create another local repository. Artifact
 selection remains open; see
-[issue 6](issues.md#6-workspace-binary-artifact-discovery-is-unspecified).
+[issue 5](issues.md#5-workspace-binary-artifact-discovery-is-unspecified).
 
 ## Implementation strategy
 

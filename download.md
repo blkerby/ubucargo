@@ -35,7 +35,7 @@ pockets use names such as `ubuntu:noble-updates` and
 `ubuntu:noble-security`.
 
 The definition of on-demand Debian suite metadata remains open; see
-[issue 3](issues.md#3-debian-downloads-are-outside-the-archive-model).
+[issue 2](issues.md#2-debian-downloads-are-outside-the-archive-model).
 
 ## Acquisition
 
@@ -62,8 +62,10 @@ make commits.
 
 ## Implementation strategy
 
-1. Query the shared Archive catalog and candidate resolver.
-2. Apply origin and exact-version constraints.
+1. Ensure the shared [isolated APT metadata view](apt-view.md) is present and
+   sufficiently fresh.
+2. Ask APT to select the source candidate, then apply origin and exact-version
+   constraints.
 3. Download all files named by the selected `.dsc` into a staging directory.
 4. Verify and unpack the source package with standard Debian tools.
 5. Validate the source-package identity and normalize missing hints.

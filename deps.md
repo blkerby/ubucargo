@@ -40,13 +40,15 @@ same current metadata. Archive changes between commands may change that result.
 
 1. Read direct dependency requirements from the same effective source metadata
    used by `package`.
-2. Query the shared Archive catalog for binary packages, `Provides`, Cargo
+2. Ensure the shared [isolated APT metadata view](apt-view.md) is present and
+   sufficiently fresh.
+3. Read its local binary indexes for package versions, `Provides`, Cargo
    identity, architecture, origin, and component data.
-3. Add applicable workspace binary artifacts as candidates.
-4. Ask an isolated APT state for the selected binary candidate.
-5. Classify and print all candidates in deterministic order.
+4. Add applicable workspace binary artifacts through the view's temporary local
+   repository.
+5. Ask APT for the selected candidate.
+6. Classify and print all candidates in deterministic order without further
+   network access.
 
-The exact division between the custom catalog and APT remains open; see
-[issue 2](issues.md#2-resolver-duplicates-apt-candidate-selection). Workspace
-artifact discovery remains open; see
-[issue 6](issues.md#6-workspace-binary-artifact-discovery-is-unspecified).
+Workspace artifact discovery remains open; see
+[issue 5](issues.md#5-workspace-binary-artifact-discovery-is-unspecified).

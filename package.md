@@ -121,7 +121,7 @@ local crate source and runs with Cargo network access disabled.
 
 When the source contains multiple applicable Cargo packages, selection must be
 explicit. The selection interface remains open; see
-[issue 4](issues.md#4-cargo-workspace-package-selection-has-no-interface).
+[issue 3](issues.md#3-cargo-workspace-package-selection-has-no-interface).
 
 ## Debcargo staging adapter
 

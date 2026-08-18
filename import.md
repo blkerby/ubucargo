@@ -27,7 +27,7 @@ an undeclared MSRV remains a warning. The selected release is immediately fixed
 to an exact version.
 
 The precise release-selection algorithm remains open; see
-[issue 8](issues.md#8-msrv-selection-depends-on-moving-external-behavior).
+[issue 7](issues.md#7-msrv-selection-depends-on-moving-external-behavior).
 
 ## Output
 

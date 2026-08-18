@@ -19,48 +19,38 @@ The design still needs to define:
 
 Until then, `import -> package -> build` is not a complete workflow.
 
-### 2. Resolver duplicates APT candidate selection
-
-The [Archive resolver](ubucargo.md#archive-view-and-resolver) uses the same
-normalized repository view as the build, but still promises to reproduce APT's
-candidate-selection policy.
-
-The custom catalog should provide Cargo identity, source availability, and
-explanatory output, while an isolated APT cache remains the authority for the
-selected binary candidate. `deps` should be described as a prediction from its
-current metadata because the Archive can change before a later build.
-
-### 3. Debian downloads are outside the Archive model
+### 2. Debian downloads are outside the Archive model
 
 [`download --from debian:SUITE`](download.md#selection) is supported by the CLI,
-but the Archive index only defines the configured Ubuntu series and PPAs.
+but the workspace APT view only defines the configured Ubuntu series and PPAs.
 
-Either remove Debian origins from the initial CLI or define the on-demand
-Debian mirrors, signing keys, components, cache identity, and selection rules.
+Either remove Debian origins from the initial CLI or define a separate
+on-demand Debian metadata view, including mirrors, signing keys, components,
+cache identity, and selection rules.
 
 ## Important ambiguities
 
-### 4. Cargo workspace package selection has no interface
+### 3. Cargo workspace package selection has no interface
 
 The [`package` generation boundary](package.md#generation-boundary) says package
 selection must be explicit when the source contains multiple applicable Cargo
 packages, but no CLI option or `debcargo.toml` setting identifies the package.
 
-### 5. PPA key verification lacks a trust bootstrap
+### 4. PPA key verification lacks a trust bootstrap
 
 The [`build` design](build.md#invocation) says to retrieve and verify each PPA
 signing fingerprint and key, but does not define where the expected fingerprint
 comes from or whether it is pinned after first use. Retrieving the key and
 expected fingerprint from the same source is not independent verification.
 
-### 6. Workspace binary artifact discovery is unspecified
+### 5. Workspace binary artifact discovery is unspecified
 
 The [`build` design](build.md#invocation) does not define output locations,
 source/version association, architecture filtering, or handling of multiple
 stale `.deb` versions. Passing a directory of packages can expose unintended
 candidates to APT.
 
-### 7. Strict directory layout conflicts with layout independence
+### 6. Strict directory layout conflicts with layout independence
 
 Every checkout must be an immediate child named exactly after its source
 package in the [workspace model](ubucargo.md#workspace-model), while the
@@ -68,7 +58,7 @@ version-control section says commands are independent of repository layout.
 Deriving source-package identity from package metadata would remove this
 contradiction.
 
-### 8. MSRV selection depends on moving external behavior
+### 7. MSRV selection depends on moving external behavior
 
 The [`import` design](import.md#version-selection) specifies the same MSRV policy
 as `cargo add` rather than a stable algorithm. It should directly define
@@ -114,3 +104,12 @@ three-way merging.
 There is no in-place `upgrade` command. A new upstream release is imported into
 a fresh source tree, usually in another workspace, and the maintainer manually
 copies only the old packaging state that remains relevant.
+
+### Native APT provides the Archive view
+
+The workspace configuration is compiled into an isolated, metadata-only APT
+view. Native APT refreshes signed indexes and calculates candidate policy;
+ubucargo reads the local indexes to explain Cargo-specific dependency results.
+The view runs unprivileged, never invokes dpkg, and redirects all configuration,
+state, keys, locks, and logs beneath its cache directory. See
+[`apt-view.md`](apt-view.md).
