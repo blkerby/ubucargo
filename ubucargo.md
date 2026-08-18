@@ -14,8 +14,8 @@ Ubucargo differs in three main ways:
 - Generator configuration is stored in each source package as
   `debian/debcargo.toml`; there is no equivalent of the external
   `debcargo-conf` monorepo.
-- Commands operate within a workspace that defines one layered Ubuntu Archive
-  view shared by dependency inspection, acquisition, and builds.
+- Commands use a packaging profile that defines one layered Ubuntu Archive view
+  shared by dependency inspection, acquisition, and optional local builds.
 - Generated packaging may be edited in place. A corresponding
   `.debcargo.hint` records current generator output; differing primary and hint
   values identify a maintainer override without an explicit override list.
@@ -57,58 +57,65 @@ generator. Changelog, patches, configuration, and unknown paths remain
 maintainer-owned. The complete ownership and materialization rules are specified
 by [`package`](package.md#override-detection-and-materialization).
 
-## Workspace model
+## Packaging profile
 
-Except for `init`, commands run inside a workspace. Ubucargo finds the workspace
-by walking upward to the nearest `ubucargo.toml`.
+`ubucargo.toml` defines a packaging profile rather than a container for source
+checkouts. Commands accept arbitrary source-package paths and select a profile
+with the global `--profile PATH` option. Walking upward to the nearest
+`ubucargo.toml` remains a convenience when the current source tree happens to be
+beneath the profile directory.
 
-The workspace defines one native Archive view:
+The profile defines one native Archive view:
 
 ```toml
 series = "noble"
 architecture = "amd64"
 pockets = ["release", "updates", "security"]
 components = ["main", "universe"]
-ppas = ["ppa:example/rust-staging"]
 rust-version = "1.75" # optional
+
+[[repositories]]
+name = "rust-staging"
+ppa = "ppa:example/rust-staging"
+
+[[repositories]]
+name = "local-staging"
+source = """
+Types: deb deb-src
+URIs: file:///srv/ubuntu-rust-staging
+Suites: noble
+Components: main
+Architectures: amd64
+Signed-By: /srv/ubuntu-rust-staging/archive-keyring.gpg
+"""
 ```
 
 - The initial implementation supports one architecture, used as both Debian
   build and host architecture.
 - The `release` pocket is required; other Ubuntu pockets are overlays.
-- Pocket, component, and PPA ordering is retained. PPA order is significant.
+- Pocket, component, and repository ordering is retained.
 - When `rust-version` is absent, ubucargo derives the target from the
   APT-selected `rustc` package in this view.
 
-Each source package is an immediate child named after its Debian/Ubuntu source
-package:
-
-```text
-rust-transition/
-  ubucargo.toml
-  rust-serde/
-  rust-syn/
-  rust-syn-1/
-```
-
-A workspace contains at most one checkout of each source-package identity.
-Ubucargo validates directory names against source-package metadata. Comparing
-two revisions of the same source package requires separate workspaces. The
-layout restriction is tracked as [open issue 6](issues.md#6-strict-directory-layout-conflicts-with-layout-independence).
+Repository entries are ordinary APT sources. PPA syntax is a convenience for
+expanding Launchpad repository metadata and keys; local, HTTPS-hosted, and
+Debusine experiment repositories use explicit deb822 source definitions.
+Ubucargo consumes these repositories but does not own their build or publication
+infrastructure.
 
 ## Command documents
 
 | Command | Purpose | Detailed specification |
 | ------- | ------- | ---------------------- |
-| `ubucargo init` | Create a workspace | [`init.md`](init.md) |
+| `ubucargo init` | Create a packaging profile | [`init.md`](init.md) |
 | `ubucargo download` | Acquire an existing source package | [`download.md`](download.md) |
 | `ubucargo import` | Create a source tree from crates.io | [`import.md`](import.md) |
 | `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
 | `ubucargo build` | Build with standard Ubuntu tooling | [`build.md`](build.md) |
 
-`PACKAGE` arguments identify source-package directories and may be omitted when
-the current directory is inside one.
+`PACKAGE` arguments identify arbitrary source-package directories and may be
+omitted when the current directory is inside one.
 
 ## Relationship with debcargo
 
@@ -154,7 +161,7 @@ so they cannot be applied twice. Debcargo is invoked against the staged source
 with network access disabled.
 
 Generation produces an in-memory set of relative paths, contents, and relevant
-file modes. Generator code does not select workspace locations or write directly
+file modes. Generator code does not select source-tree locations or write directly
 into source trees. A separate materialization step preserves inferred overrides
 and applies generated state atomically.
 
@@ -165,8 +172,8 @@ is authoritative.
 
 ## Isolated APT metadata view
 
-The workspace Archive implementation is a metadata-only APT view stored beneath
-the user's cache directory. The workspace configuration supplies sources,
+The profile Archive implementation is a metadata-only APT view stored beneath
+the user's cache directory. The profile configuration supplies sources,
 preferences, keys, architecture, and repository order; native APT remains the
 authority for metadata refresh, package policy, Debian version ordering,
 architecture filtering, `Provides`, and candidate selection.
@@ -178,8 +185,8 @@ remote requests for individual dependency queries.
 
 `download`, `deps`, and Archive-derived Rust-version checks share the cached
 view. `build` constructs the same normalized repository configuration inside
-`sbuild`. Signed Ubuntu Archive and configured PPA metadata remain authoritative
-for current availability.
+`sbuild`. Signed metadata from every configured repository is authoritative for
+current availability.
 
 The view runs unprivileged, never installs packages, and redirects all APT
 configuration, state, keys, locks, and logs beneath its own directory. Its full

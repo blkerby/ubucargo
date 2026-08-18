@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```console
-ubucargo package [PACKAGE] [--check]
+ubucargo [--profile PROFILE] package [PACKAGE] [--check]
 ```
 
 `PACKAGE` is a source-package directory and may be omitted when the current
@@ -112,7 +112,7 @@ overrides, and shows generator changes for overridden paths.
 ## Generation boundary
 
 Generation creates an in-memory set of relative paths, contents, and executable
-bits. Generator code does not choose the workspace location or write directly
+bits. Generator code does not choose the source-tree location or write directly
 into it. A separate materialization step applies primary and hint changes
 atomically.
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The workspace Archive implementation is an isolated, metadata-only APT view.
+The packaging profile's Archive implementation is an isolated, metadata-only APT view.
 APT remains the authority for repository metadata, pin priorities, Debian
 version ordering, architecture filtering, `Provides`, and candidate selection.
 Ubucargo interprets APT's local indexes for Cargo-specific dependency reporting
@@ -13,8 +13,8 @@ never installs, upgrades, removes, or configures packages.
 
 ## Cache identity and layout
 
-The view is keyed by a deterministic hash of the normalized workspace APT
-configuration, including series, architecture, pockets, components, PPAs,
+The view is keyed by a deterministic hash of the normalized profile APT
+configuration, including series, architecture, pockets, components, additional repositories,
 signing-key identities, repository order, and preferences.
 
 ```text
@@ -37,7 +37,7 @@ signing-key identities, repository order, and preferences.
       apt/
 ```
 
-Workspaces with identical normalized views may share this cache. The synthetic
+Profiles with identical normalized views may share this cache. The synthetic
 dpkg status file is empty unless the design later requires a modeled installed
 state.
 
@@ -108,9 +108,10 @@ for each downloaded index. Component, pocket, PPA, and origin labels are derived
 from that target and its signed Release metadata rather than guessed from a
 package version.
 
-Workspace `.deb` files must be represented through a temporary local APT
-repository in both this view and the `sbuild` session so candidate selection is
-consistent. The artifact-selection rules remain an open issue.
+Staged packages enter the view only through configured APT repositories. A
+local repository and a PPA are equivalent on the consumption side; ubucargo
+does not scan source trees or directories of `.deb` files for additional
+candidates.
 
 ## Command consumers
 
@@ -118,13 +119,13 @@ consistent. The artifact-selection rules remain an open issue.
   view.
 - [`download`](download.md) uses the view to select and retrieve Ubuntu and PPA
   source packages.
-- [`import`](import.md) uses its selected `rustc` candidate when the workspace
+- [`import`](import.md) uses its selected `rustc` candidate when the profile
   has no explicit Rust target.
-- [`build`](build.md) generates the same sources, preferences, keyrings, and
-  local-package view inside its `sbuild` environment.
+- [`build`](build.md) generates the same sources, preferences, and keyrings
+  inside its `sbuild` environment.
 
 The build environment has its own installed package state, but repository
-selection must derive from the same normalized workspace configuration.
+selection must derive from the same normalized profile configuration.
 
 ## Safety verification
 
@@ -136,4 +137,3 @@ unprivileged user, and assert that:
 - no host configuration fragment or hook is loaded;
 - no dpkg process is executed; and
 - cache cleanup removes only the validated view directory.
-

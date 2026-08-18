@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```console
-ubucargo build [PACKAGE]
+ubucargo [--profile PROFILE] build [PACKAGE] [--output DIR]
 ```
 
 `PACKAGE` may be omitted when the current directory is inside a source package.
@@ -21,11 +21,12 @@ source tree with generated debian/ files
   -> dh-cargo builds and tests the crate
 ```
 
-`build` builds only the requested source package. It exposes already-built
-workspace binary packages and configured PPAs to `sbuild`, but does not discover
-or build a dependency closure or other workspace source trees. Missing build
-dependencies are reported by `sbuild`; [`deps`](deps.md) provides candidate
-details.
+`build` is a local, one-package smoke-test wrapper around `sbuild`. It uses the
+profile's configured repositories but does not discover or build a dependency
+closure, publish artifacts, upload to a PPA, or modify a local repository.
+Missing build dependencies are reported by `sbuild`; [`deps`](deps.md) provides
+candidate details. Build outputs are written to the explicitly selected output
+directory.
 
 Creation and storage of the input `.dsc` and resulting artifacts remains open;
 see [issue 1](issues.md#1-source-package-artifact-lifecycle).
@@ -33,16 +34,16 @@ see [issue 1](issues.md#1-source-package-artifact-lifecycle).
 ## Unshare build environment
 
 `build` uses `sbuild`'s `unshare` backend. Ubucargo generates an APT source file
-for the workspace's official Ubuntu Archive base view and passes it to the
+for the profile's official Ubuntu Archive base view and passes it to the
 backend's automatic `mmdebstrap` invocation.
 
-The sources, preferences, keys, repository order, and selected workspace
-artifacts derive from the same normalized configuration as the
+The sources, preferences, keys, and repository order derive from the same
+normalized configuration as the
 [isolated APT metadata view](apt-view.md). The unshare environment has its own
 installed package state, but its available candidate universe must match the
 view used by `deps`.
 
-For a Noble `amd64` workspace using `release`, `updates`, and `security` from
+For a Noble `amd64` profile using `release`, `updates`, and `security` from
 `main` and `universe`, the source file is equivalent to:
 
 ```text
@@ -68,7 +69,7 @@ Architectures: amd64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 ```
 
-Ubucargo selects the standard Ubuntu Archive URI appropriate for the workspace
+Ubucargo selects the standard Ubuntu Archive URI appropriate for the profile
 architecture. Source stanzas preserve configured pocket and component order.
 The initial implementation uses normal APT priorities and adds no custom
 preferences.
@@ -84,7 +85,7 @@ noble-amd64-8b73cf2407ad
 
 The hash covers the series, architecture, pockets, components, Archive URIs,
 key identity, and other `mmdebstrap` inputs affecting the base root. It excludes
-PPAs and local packages because those are per-build overlays. Workspaces with an
+additional repositories because those are per-build overlays. Profiles with an
 identical base view therefore share an `sbuild` cache entry without allowing
 different views to collide.
 
@@ -124,37 +125,34 @@ sbuild --chroot-mode=unshare \
   --dist=noble \
   --build=amd64 \
   --host=amd64 \
-  --extra-repository='deb PPA_HTTPS_URI noble main' \
-  --extra-repository-key=/tmp/ubucargo-XXXX/ppa-signing-key.gpg \
-  --extra-package=/path/to/workspace-package.deb \
+  --extra-repository='deb STAGING_REPOSITORY noble main' \
+  --extra-repository-key=/tmp/ubucargo-XXXX/repository-key.gpg \
   /path/to/source-package.dsc
 ```
 
-`--extra-repository` and `--extra-repository-key` are repeated for each PPA in
-workspace order. PPAs are added only to the ephemeral build session and do not
-modify the cached base tarball.
+`--extra-repository` and `--extra-repository-key` are repeated for each
+configured additional repository in profile order. They are added only to the
+ephemeral build session and do not modify the cached base tarball. A local
+`file:` repository must be exposed at the same path inside the unshare session
+or served over a reachable URI.
 
-Ubucargo retrieves and verifies PPA signing keys rather than using
-`trusted=yes`. The fingerprint trust and pinning mechanism remains open; see
-[issue 4](issues.md#4-ppa-key-verification-lacks-a-trust-bootstrap).
+Ubucargo verifies repository signing keys rather than using `trusted=yes`. The
+trust and pinning mechanism remains open; see
+[issue 4](issues.md#4-repository-key-verification-lacks-a-trust-bootstrap).
 
-`--extra-package` is repeated for applicable workspace binary packages, or may
-name a directory containing them. `sbuild` exposes these through its temporary
-APT archive, so ubucargo does not create another local repository. Artifact
-selection remains open; see
-[issue 5](issues.md#5-workspace-binary-artifact-discovery-is-unspecified).
+When Dose3 is installed, `build` may configure `sbuild` to use it as the
+build-dependency uninstallability explainer.
 
 ## Implementation strategy
 
 1. Validate the requested source tree and generated packaging state.
 2. Produce or locate the source-package `.dsc`.
-3. Normalize the workspace's base Archive view and generate the deb822 source
+3. Normalize the profile's base Archive view and generate the deb822 source
    file.
 4. Hash the normalized base-root inputs and generate the temporary `sbuild`
    configuration.
-5. Retrieve and validate configured PPA keys and construct ordered repository
+5. Retrieve and validate configured repository keys and construct ordered repository
    arguments.
-6. Select applicable workspace binary packages for the workspace architecture.
-7. Invoke `sbuild` with the unshare cache name and native build/host
+6. Invoke `sbuild` with the unshare cache name and native build/host
    architectures.
-8. Report the build result and artifact locations.
+7. Move or report build results in the requested output directory.
