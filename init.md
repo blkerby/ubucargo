@@ -8,8 +8,7 @@ ubucargo init [DIR] --series SERIES --pockets POCKET,... \
   [--ppa ppa:OWNER/NAME]... [--rust-version VERSION]
 ```
 
-`init` creates a packaging profile. Source-package checkouts do not need to live
-inside the profile directory.
+`init` creates a packaging profile; it does not contain source packages.
 
 ## Configuration
 
@@ -39,17 +38,17 @@ types = ["deb", "deb-src"]
 components = ["main"]
 ```
 
-The initial implementation supports one native architecture. When omitted,
-`--architecture` defaults to `dpkg --print-architecture`, but the resolved value
-is always written to the configuration. `build` uses it as both the Debian build
-and host architecture. `Architecture: all` is not a profile architecture.
+Profiles support one native architecture. If omitted, `--architecture` uses
+`dpkg --print-architecture`; the resolved value is always stored. `build` uses it
+as both the build and host architecture, including for `Architecture: all`
+packages.
 
-The `release` pocket is required because the other Ubuntu pockets are overlays.
-Pocket, component, and repository order are preserved.
+The `release` pocket is required; other Ubuntu pockets are overlays. Pocket,
+component, and repository order are preserved.
 
-Additional repositories are ordered APT sources. `archive` accepts the official
-shorthands `ubuntu:SUITE`, `debian:SUITE`, and `ppa:OWNER/NAME`. Shorthands are
-expanded to deb822 at runtime and may be refined with structured keys:
+Additional repositories are ordered APT sources. `archive` accepts
+`ubuntu:SUITE`, `debian:SUITE`, and `ppa:OWNER/NAME`. Structured keys can refine
+these shorthands before they expand to deb822:
 
 ```toml
 [[repositories]]
@@ -60,13 +59,12 @@ components = ["main", "contrib", "non-free", "non-free-firmware"]
 architectures = ["amd64"]
 ```
 
-`deb` enables binary `Packages` indexes used for candidate selection and builds.
-`deb-src` enables source `Sources` indexes used for source downloads and Dose
-build-dependency analysis. Persistent repositories default to both types;
-transient `download --from` views force `deb-src` only.
+`deb` enables binary indexes for candidate selection and builds. `deb-src`
+enables source downloads and Dose analysis. Persistent repositories default to
+both; temporary `download --from` views use only `deb-src`.
 
 Ubuntu shorthands inherit profile components unless overridden. Debian defaults
-to `main`; PPA repositories use `main`. Component and type order are preserved.
+to `main`; PPAs use `main`. Component and type order are preserved.
 
 A generic local or remote repository uses a deb822 `source` string:
 
@@ -84,10 +82,9 @@ Signed-By: /srv/ubuntu-rust-staging/archive-keyring.gpg
 ```
 
 Explicit sources must provide `Signed-By` as embedded key material or a readable
-local keyring path. Ubuntu and Debian shorthands use their packaged archive
-keyrings; PPA shorthands obtain their key from Launchpad over authenticated
-HTTPS and verify it against Launchpad's advertised fingerprint. Profiles do not
-store a separate fingerprint pin or trust-on-first-use state.
+keyring path. Ubuntu and Debian use packaged keyrings. PPAs retrieve their key
+and fingerprint from Launchpad over authenticated HTTPS and require them to
+match. Profiles do not store a separate fingerprint pin.
 
 An optional Rust compatibility target is stored as:
 
@@ -95,23 +92,12 @@ An optional Rust compatibility target is stored as:
 rust-version = "1.75"
 ```
 
-When omitted, commands that need it derive the effective version from the
-APT-selected `rustc` binary package in the profile view.
+When omitted, commands use the APT-selected `rustc` version from the profile.
 
 ## Behavior
 
 - `DIR` defaults to the current directory.
-- The target directory may be created if it does not exist.
-- `init` must refuse to overwrite an existing `ubucargo.toml`.
-- Invalid series, pocket, component, architecture, repository, repository trust,
-  and Rust-version configuration must fail before writing.
+- The target directory is created when needed.
+- An existing `ubucargo.toml` causes an error.
+- Invalid configuration fails before writing.
 - The completed configuration is written atomically.
-
-## Implementation strategy
-
-1. Parse and validate all command-line values.
-2. Resolve the native architecture if it was omitted.
-3. Normalize ordered lists without reordering them.
-4. Serialize the complete configuration to a temporary file in the target
-   directory.
-5. Atomically rename it to `ubucargo.toml`.

@@ -10,8 +10,7 @@ ubucargo [--profile PROFILE] deps [PACKAGE]
 
 ## Output
 
-The command shows direct Rust library dependencies and every relevant candidate,
-not only the selected one:
+The command shows direct Rust library dependencies and their candidates:
 
 ```text
 DEPENDENCY  REQUIREMENT  STATUS        ORIGIN                    VERSION      LOCATION
@@ -22,41 +21,24 @@ syn         ^2           incompatible  Ubuntu Archive            1.0.109-2    no
 foo         ^3           missing       -                         -            -
 ```
 
-Statuses distinguish:
+Statuses mark selected, usable, incompatible, and missing candidates.
 
-- the selected candidate;
-- other usable candidates;
-- present but incompatible candidates; and
-- missing dependencies.
+Ubuntu Archive locations include pocket and component. PPA locations show the
+PPA, series, and component. Local repositories use their profile name.
 
-Ubuntu Archive locations include pocket and component. PPA locations retain the
-PPA identity, series, and component and are not presented as Ubuntu Archive
-pockets. Local repositories are presented by their configured profile name.
+The selected candidate is what APT would choose during `build` from the same
+metadata. Archive changes may change the result.
 
-The selected candidate predicts what APT will choose during `build` from the
-same current metadata. Archive changes between commands may change that result.
-
-## Implementation strategy
-
-1. Read direct dependency requirements from the same effective source metadata
-   used by `package`.
-2. Ensure the shared [isolated APT metadata view](apt-view.md) is present and
-   sufficiently fresh.
-3. Read its local binary indexes for package versions, `Provides`, Cargo
-   identity, architecture, origin, and component data.
-4. Ask APT for the selected candidate.
-5. Classify and print all candidates in deterministic order without further
-   network access.
+`deps` reads the same patched source metadata as `package` and orders candidates
+deterministically from the local APT indexes.
 
 ## Buildability analysis
 
-Dose3 may be used as an optional repository-level check after `package` has
-generated `debian/control`. `dose-builddebcheck` consumes the same cached binary
-and source indexes and determines whether the complete Build-Depends can be
-satisfied, including alternatives, conflicts, version constraints, virtual
-packages, architecture restrictions, and Multi-Arch relationships.
+Dose3 can check a repository after `package` generates `debian/control`.
+`dose-builddebcheck` uses the cached indexes to test the full Build-Depends,
+including alternatives, conflicts, versions, virtual packages, architecture
+restrictions, and Multi-Arch relationships.
 
-Dose does not select Cargo dependencies, build packages, or publish artifacts.
-APT remains responsible for candidate policy; Dose answers whether a valid
-installation solution exists. The initial implementation may rely on `sbuild`'s
-Dose3 uninstallability explainer rather than invoke Dose directly.
+Dose checks only build-dependency satisfiability. APT selects candidates, and
+other commands handle Cargo selection, building, and publishing. `build` may use
+`sbuild`'s Dose3 uninstallability explainer.

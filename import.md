@@ -11,15 +11,13 @@ crates.io release.
 
 ## Version selection
 
-Without `--version`, ubucargo selects the newest non-yanked stable release
-compatible with the profile Rust version. Release precedence follows the
-`semver` crate's ordering of Cargo versions. A prerelease is considered only
-when an exact version is requested. Build metadata does not affect precedence.
+Without `--version`, ubucargo selects the newest non-yanked stable release that
+supports the profile Rust version. It uses Cargo semver ordering and ignores
+build metadata. Only an exact request may select a prerelease.
 
-A release whose declared `rust_version` is newer than the profile target is
-skipped. A release without `rust_version` is treated as potentially compatible,
-with a warning. If releases have equal precedence, ubucargo reports the ambiguity
-rather than selecting arbitrarily.
+A release that requires a newer Rust version is skipped. A missing
+`rust_version` produces a warning. Releases with equal precedence produce an
+ambiguity error.
 
 ```text
 Workspace rustc: 1.75
@@ -28,34 +26,26 @@ Importing foo 4.1.0
 warning: foo 4.1.0 does not declare rust-version; compatibility is unverified
 ```
 
-When an exact version is requested, a known MSRV incompatibility is an error and
-an undeclared MSRV remains a warning. The selected release is immediately fixed
-to an exact version.
-
+For an exact version, a known MSRV mismatch is an error and an undeclared MSRV is
+a warning. Selection always resolves to an exact version.
 
 ## Output
 
-Ubucargo creates a default `debcargo.toml` in staging and invokes debcargo's
-registry-backed `package` command with the exact selected version. Debcargo and
-Cargo download and verify the crate, derive the Debian source identity and
-upstream version, create or repack the orig tarball, extract the source, and
-generate the initial `debian/` packaging.
+Ubucargo creates a default staged `debcargo.toml` and invokes debcargo's
+registry-backed `package` command with the exact version. Debcargo and Cargo
+verify the crate, derive Debian names and versions, create or repack the orig
+tarball, extract the source, and generate `debian/`.
 
-Ubucargo copies the staged `debcargo.toml` into the resulting `debian/`
-directory and normalizes generated hints before installation.
+Ubucargo then installs `debcargo.toml` and normalizes generated hints.
 
-The source tree is created at `DIR`, which defaults to a directory named after
-the Debian source package in the current directory. Existing Debian Rust naming,
-feature, and versioning conventions determine the source and eventual binary
-package names; the filesystem directory name is not authoritative.
+The source tree is created at `DIR`, which defaults to the Debian source package
+name in the current directory. Debian Rust conventions determine the source and
+binary package names. The destination must not exist.
 
-The command refuses to overwrite an existing source-package directory.
+Before atomically installing the tree and tarball, ubucargo validates their
+identity, names, checksums, root package, and generated packaging.
 
-## New upstream releases
-
-Existing packages use [`ubucargo upgrade`](upgrade.md), which preserves durable
-Debian state while using the same debcargo orig-tarball path for the new crate
-release.
+Use [`ubucargo upgrade`](upgrade.md) for an existing package.
 
 ## Orig tarball
 
@@ -67,23 +57,9 @@ The orig tarball is placed beside the source directory using Debian naming:
   rust-serde_1.0.220.orig.tar.gz
 ```
 
-When no repack is required, debcargo copies the verified `.crate` archive
-byte-for-byte to the orig filename. Configured exclusions or manifest
-normalization cause a deterministic repack and add the configured suffix, such
-as `+dfsg`, to the Debian upstream version.
+Without repacking, debcargo copies the verified `.crate` archive to the orig
+filename unchanged. Exclusions or manifest normalization trigger a deterministic
+repack and add the configured suffix, such as `+dfsg`, to the upstream version.
 
-Persistent `.dsc`, source `.changes`, and `.buildinfo` artifacts are produced by
-standard Debian tooling after import when needed.
-
-## Implementation strategy
-
-1. Resolve the profile Rust target.
-2. Query crate release metadata and select an exact version.
-3. Create and validate the initial staged `debcargo.toml`.
-4. Invoke a supported debcargo version in registry mode with the exact crate
-   version and staged output directory.
-5. Validate the resulting source identity, orig filename, checksum metadata,
-   root Cargo package, and generated packaging.
-6. Copy the authoritative in-tree config into the staged `debian/` directory.
-7. Atomically install the source tree and orig tarball without overwriting an
-   existing destination.
+Standard Debian tools produce persistent `.dsc`, source `.changes`, and
+`.buildinfo` files when needed.
