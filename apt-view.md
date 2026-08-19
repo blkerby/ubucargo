@@ -17,6 +17,34 @@ The view is keyed by a deterministic hash of the normalized profile APT
 configuration, including series, architecture, pockets, components, additional repositories,
 signing-key identities, repository order, and preferences.
 
+Repository entries may use the shorthands `ubuntu:SUITE`, `debian:SUITE`, and
+`ppa:OWNER/NAME` plus optional `types`, `components`, and `architectures` keys.
+They are expanded immediately into the same normalized deb822 representation as
+an explicit `source` entry. Shorthand identity does not affect later APT logic.
+
+Persistent shorthand repositories default to `Types: deb deb-src`. A transient
+source acquisition view uses `Types: deb-src`, preventing a Debian or foreign
+Ubuntu source lookup from adding its binary packages to the profile candidate
+universe.
+
+## Repository trust
+
+Repository trust follows the authority named by the configuration:
+
+- Ubuntu and Debian shorthands use their packaged archive keyrings.
+- PPA shorthands trust Launchpad over authenticated HTTPS. Ubucargo retrieves
+  the PPA signing key and advertised fingerprint from Launchpad, computes the
+  key's fingerprint, and rejects a missing or mismatched value. The comparison
+  checks Launchpad's response for consistency; it is not an independent pin.
+- An explicit deb822 source must provide `Signed-By` as embedded key material or
+  a readable local keyring path. Ubucargo does not discover keys for explicit
+  repositories.
+
+Ubucargo rejects `trusted=yes`, unsigned repositories, and explicit sources
+without a usable `Signed-By`. It does not maintain trust-on-first-use state or a
+separate fingerprint configuration. A PPA key change accepted by Launchpad is
+therefore accepted by ubucargo and produces a different normalized key identity.
+
 ```text
 ~/.cache/ubucargo/apt/<view-hash>/
   apt.conf
@@ -56,9 +84,9 @@ including:
 - logs, locks, and the dpkg status file.
 
 The custom configuration and fragment directories do not inherit files from
-`/etc/apt`. Repository stanzas use specific `Signed-By` keys stored inside the
-view. Ubucargo never reads or writes the host APT or dpkg state and never invokes
-host dpkg through this view.
+`/etc/apt`. Ubucargo copies each resolved trusted key into the view and rewrites
+repository stanzas to use that specific `Signed-By` key. Ubucargo never reads or
+writes the host APT or dpkg state and never invokes host dpkg through this view.
 
 Before running APT, ubucargo may inspect `apt-config dump` and reject resolved
 paths or hooks outside the view directory.
@@ -95,6 +123,10 @@ refreshed, or considered stale.
 
 An offline mode may use existing metadata while warning when it is stale. A
 forced-refresh option bypasses the normal freshness check.
+
+`deb` entries fetch binary `Packages` indexes. `deb-src` entries fetch source
+`Sources` indexes. Repositories that are used only as binary staging archives
+may set `types = ["deb"]` to avoid downloading source indexes.
 
 ## Candidate and record access
 

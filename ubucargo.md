@@ -63,10 +63,11 @@ by [`package`](package.md#override-detection-and-materialization).
 ## Packaging profile
 
 `ubucargo.toml` defines a packaging profile rather than a container for source
-checkouts. Commands accept arbitrary source-package paths and select a profile
-with the global `--profile PATH` option. Walking upward to the nearest
-`ubucargo.toml` remains a convenience when the current source tree happens to be
-beneath the profile directory.
+checkouts. Archive-aware commands accept arbitrary source-package paths and
+select a profile with the global `--profile PATH` option. Walking upward to the
+nearest `ubucargo.toml` remains a convenience when the current source tree
+happens to be beneath the profile directory. Offline `package` generation is
+profile-independent.
 
 The profile defines one native Archive view:
 
@@ -79,7 +80,9 @@ rust-version = "1.75" # optional
 
 [[repositories]]
 name = "rust-staging"
-ppa = "ppa:example/rust-staging"
+archive = "ppa:example/rust-staging"
+types = ["deb", "deb-src"]
+components = ["main"]
 
 [[repositories]]
 name = "local-staging"
@@ -101,10 +104,20 @@ Signed-By: /srv/ubuntu-rust-staging/archive-keyring.gpg
   APT-selected `rustc` package in this view.
 
 Repository entries are ordinary APT sources. PPA syntax is a convenience for
-expanding Launchpad repository metadata and keys; local, HTTPS-hosted, and
-Debusine experiment repositories use explicit deb822 source definitions.
-Ubucargo consumes these repositories but does not own their build or publication
+expanding Launchpad repository metadata and keys. Official archive shorthands
+such as `ubuntu:noble-proposed` and `debian:sid` expand through the same path.
+Structured `types`, `components`, and `architectures` keys override shorthand
+defaults before normalization to deb822. Local, HTTPS-hosted, and Debusine
+experiment repositories may use explicit deb822 source definitions. Ubucargo
+consumes these repositories but does not own their build or publication
 infrastructure.
+
+Ubuntu and Debian shorthands trust their packaged archive keyrings. PPA
+shorthands trust Launchpad over authenticated HTTPS and require the retrieved
+key to match Launchpad's advertised fingerprint. Explicit sources must provide
+`Signed-By` key material or a local keyring path. Ubucargo does not add a
+separate fingerprint pin or trust-on-first-use state; the complete trust and
+materialization contract is defined in [`apt-view.md`](apt-view.md#repository-trust).
 
 ## Command documents
 
@@ -172,10 +185,32 @@ file modes. Generator code does not select source-tree locations or write direct
 into source trees. A separate materialization step preserves inferred overrides
 and applies generated state atomically.
 
+The supported source layout has a root `Cargo.toml` containing `[package]`.
+Nested workspace members may participate in the build but are not independently
+selected or packaged. A virtual workspace root without `[package]` requires
+manual packaging outside ubucargo's initial scope.
+
 Rust-version filtering rejects known incompatibilities but does not prove that
 selected features, dependencies, build scripts, patches, or generated packaging
 work with the target compiler. A build against the configured Archive toolchain
 is authoritative.
+
+## Source-package artifact boundary
+
+`import` and `upgrade` produce a materialized source tree and sibling orig
+tarball. `package` refreshes that tree without replacing the orig. Ubucargo does
+not own persistent `.dsc`, source `.changes`, `.buildinfo`, signing, or upload
+artifacts.
+
+For local builds, `build` passes the source directory to `sbuild`, which prepares
+the temporary source package required for the build. Maintainers who need
+persistent upload artifacts use standard tooling such as:
+
+```console
+dpkg-buildpackage -S --no-sign
+```
+
+or their existing GBP/dgit workflow.
 
 ## Isolated APT metadata view
 

@@ -11,10 +11,15 @@ crates.io release.
 
 ## Version selection
 
-Without `--version`, ubucargo selects the newest non-yanked release compatible
-with the profile Rust version. A release whose declared `rust_version` is
-newer than the profile target is skipped. A release without `rust_version`
-is treated as potentially compatible, with a warning.
+Without `--version`, ubucargo selects the newest non-yanked stable release
+compatible with the profile Rust version. Release precedence follows the
+`semver` crate's ordering of Cargo versions. A prerelease is considered only
+when an exact version is requested. Build metadata does not affect precedence.
+
+A release whose declared `rust_version` is newer than the profile target is
+skipped. A release without `rust_version` is treated as potentially compatible,
+with a warning. If releases have equal precedence, ubucargo reports the ambiguity
+rather than selecting arbitrarily.
 
 ```text
 Workspace rustc: 1.75
@@ -27,8 +32,6 @@ When an exact version is requested, a known MSRV incompatibility is an error and
 an undeclared MSRV remains a warning. The selected release is immediately fixed
 to an exact version.
 
-The precise release-selection algorithm remains open; see
-[issue 5](issues.md#5-msrv-selection-depends-on-moving-external-behavior).
 
 ## Output
 
@@ -69,8 +72,8 @@ byte-for-byte to the orig filename. Configured exclusions or manifest
 normalization cause a deterministic repack and add the configured suffix, such
 as `+dfsg`, to the Debian upstream version.
 
-The remaining `.dsc`, source `.changes`, and `.buildinfo` production lifecycle
-is tracked in [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
+Persistent `.dsc`, source `.changes`, and `.buildinfo` artifacts are produced by
+standard Debian tooling after import when needed.
 
 ## Implementation strategy
 
@@ -80,7 +83,7 @@ is tracked in [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
 4. Invoke a supported debcargo version in registry mode with the exact crate
    version and staged output directory.
 5. Validate the resulting source identity, orig filename, checksum metadata,
-   and generated packaging.
+   root Cargo package, and generated packaging.
 6. Copy the authoritative in-tree config into the staged `debian/` directory.
 7. Atomically install the source tree and orig tarball without overwriting an
    existing destination.

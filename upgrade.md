@@ -16,7 +16,7 @@ no generated-file merge.
 Without `--version`, ubucargo selects the newest non-yanked stable release
 compatible with the profile Rust target and capable of retaining the existing
 Debian source-package identity. An exact requested version uses the same MSRV
-validation as `import`.
+validation and release-selection algorithm as `import`.
 
 If the selected release requires a different source-package identity,
 `upgrade` fails and directs the maintainer to create a new package with
@@ -88,16 +88,16 @@ their normal repository tooling.
 
 ## Implementation strategy
 
-1. Read and validate the existing source identity and `debcargo.toml`.
+1. Read and validate the existing source identity, root Cargo package, and
+   `debcargo.toml`.
 2. Resolve an exact compatible crate release.
 3. Build a synthetic overlay containing durable maintainer-owned packaging but
    no generator-owned primary or hint files.
 4. Invoke a supported debcargo version in registry-backed package mode.
-5. Validate the resulting source identity, orig tarball, applied patches, and
-   generated packaging.
+5. Validate the resulting source identity, root Cargo package, orig tarball,
+   applied patches, and generated packaging.
 6. Copy the authoritative config into the staged `debian/` directory and
    normalize all generated hints.
 7. Report generated-file overrides that were intentionally reset.
 8. Atomically install the completed source tree and orig tarball, or leave them
    at `DIR` for non-destructive review.
-

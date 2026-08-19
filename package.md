@@ -3,7 +3,7 @@
 ## Synopsis
 
 ```console
-ubucargo [--profile PROFILE] package [PACKAGE] [--check]
+ubucargo package [PACKAGE] [--check]
 ```
 
 `PACKAGE` is a source-package directory and may be omitted when the current
@@ -54,8 +54,8 @@ ignored.
 absent but never replaces or removes one. `debian/debcargo.toml`,
 `debian/patches/`, and all other paths are maintainer-owned.
 
-The `.dsc`, source `.changes`, and `.buildinfo` production lifecycle remains
-open; see [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
+Persistent `.dsc`, source `.changes`, and `.buildinfo` artifacts are produced by
+standard Debian tooling outside `package`.
 
 ## Override detection and materialization
 
@@ -119,9 +119,10 @@ atomically.
 `package` must not require network access. The staged debcargo process uses a
 local crate source and runs with Cargo network access disabled.
 
-When the source contains multiple applicable Cargo packages, selection must be
-explicit. The selection interface remains open; see
-[issue 3](issues.md#3-cargo-workspace-package-selection-has-no-interface).
+The root `Cargo.toml` must contain `[package]`; its name and version define the
+primary crate passed to debcargo. Nested workspace members are treated only as
+internal build dependencies. A virtual workspace root without `[package]` is
+unsupported and fails with a manual-packaging diagnostic.
 
 ## Debcargo staging adapter
 
@@ -183,7 +184,7 @@ packages, and manually overridden generated files.
 
 ## Implementation strategy
 
-1. Validate the source-package identity.
+1. Validate the source-package identity and root Cargo package.
 2. Materialize the effective patched source in a staging directory.
 3. Adapt `debian/debcargo.toml` and prepare the minimal synthetic overlay.
 4. Invoke a supported debcargo version without network access or write-back.

@@ -20,8 +20,9 @@ ubucargo download rust-syn
 ```
 
 `--version` requires an exact Debian source version. `--from` restricts the
-candidate set to one configured repository name or explicit Ubuntu, Debian, or
-PPA origin. When both are present, both constraints apply.
+candidate set to one configured repository name or an `ubuntu:SUITE`,
+`debian:SUITE`, or `ppa:OWNER/NAME` shorthand. When both are present, both
+constraints apply.
 
 Before acquisition, the command prints the selected version and origin:
 
@@ -33,8 +34,16 @@ Ubuntu release origins use the series name, such as `ubuntu:noble`; other
 pockets use names such as `ubuntu:noble-updates` and
 `ubuntu:noble-security`.
 
-The definition of on-demand Debian suite metadata remains open; see
-[issue 2](issues.md#2-debian-downloads-are-outside-the-archive-model).
+An archive shorthand is expanded into a transient deb822 entry with
+`Types: deb-src`. Debian defaults to the official Debian archive, `main`, and the
+Debian archive keyring; Ubuntu uses the profile components and architecture; a
+PPA uses the profile series and `main`. The transient entry participates only in
+this source acquisition and cannot add foreign binary candidates to `deps` or
+`build`.
+
+Transient shorthands use the same [repository trust](apt-view.md#repository-trust)
+as persistent entries: packaged archive keyrings for Ubuntu and Debian, and the
+key reported by Launchpad over authenticated HTTPS for a PPA.
 
 ## Acquisition
 

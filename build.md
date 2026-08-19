@@ -15,7 +15,7 @@ Cargo registry or build system:
 
 ```text
 source tree with generated debian/ files
-  -> standard Debian tools produce a source package
+  -> sbuild prepares a temporary source package
   -> sbuild installs Build-Depends
   -> librust-*-dev packages populate /usr/share/cargo/registry
   -> dh-cargo builds and tests the crate
@@ -28,8 +28,10 @@ Missing build dependencies are reported by `sbuild`; [`deps`](deps.md) provides
 candidate details. Build outputs are written to the explicitly selected output
 directory.
 
-Creation and storage of the input `.dsc` and resulting artifacts remains open;
-see [issue 1](issues.md#1-source-package-build-artifact-lifecycle).
+`build` passes the source directory directly to `sbuild`. It does not retain the
+temporary `.dsc` or create source upload artifacts. Maintainers use
+`dpkg-buildpackage -S`, GBP, or other standard tooling when persistent source
+artifacts are required.
 
 ## Unshare build environment
 
@@ -127,7 +129,7 @@ sbuild --chroot-mode=unshare \
   --host=amd64 \
   --extra-repository='deb STAGING_REPOSITORY noble main' \
   --extra-repository-key=/tmp/ubucargo-XXXX/repository-key.gpg \
-  /path/to/source-package.dsc
+  /path/to/source-tree
 ```
 
 `--extra-repository` and `--extra-repository-key` are repeated for each
@@ -136,9 +138,12 @@ ephemeral build session and do not modify the cached base tarball. A local
 `file:` repository must be exposed at the same path inside the unshare session
 or served over a reachable URI.
 
-Ubucargo verifies repository signing keys rather than using `trusted=yes`. The
-trust and pinning mechanism remains open; see
-[issue 4](issues.md#4-repository-key-verification-lacks-a-trust-bootstrap).
+Ubucargo passes the exact trusted key resolved for the profile's APT view rather
+than using `trusted=yes`. Ubuntu and Debian shorthands use packaged archive
+keyrings, PPA shorthands trust the key reported by Launchpad over authenticated
+HTTPS, and explicit repositories use their configured `Signed-By` key. The
+shared trust contract is defined in
+[`apt-view.md`](apt-view.md#repository-trust).
 
 When Dose3 is installed, `build` may configure `sbuild` to use it as the
 build-dependency uninstallability explainer.
@@ -146,13 +151,12 @@ build-dependency uninstallability explainer.
 ## Implementation strategy
 
 1. Validate the requested source tree and generated packaging state.
-2. Produce or locate the source-package `.dsc`.
-3. Normalize the profile's base Archive view and generate the deb822 source
+2. Normalize the profile's base Archive view and generate the deb822 source
    file.
-4. Hash the normalized base-root inputs and generate the temporary `sbuild`
+3. Hash the normalized base-root inputs and generate the temporary `sbuild`
    configuration.
-5. Retrieve and validate configured repository keys and construct ordered repository
-   arguments.
-6. Invoke `sbuild` with the unshare cache name and native build/host
-   architectures.
-7. Move or report build results in the requested output directory.
+4. Resolve the profile's trusted repository keys and construct ordered
+   repository arguments using the same key material as the APT view.
+5. Invoke `sbuild` with the source directory, unshare cache name, and native
+   build/host architectures.
+6. Move or report build results in the requested output directory.
