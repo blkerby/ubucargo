@@ -28,7 +28,7 @@ For an exact version with `--rust-version`, a known MSRV mismatch is an error an
 
 Ubucargo creates a default staged `debcargo.toml` and invokes debcargo's registry-backed `package` command with the exact version. Debcargo and Cargo verify the crate, derive Debian names and versions, create or repack the orig tarball, extract the source, and generate `debian/`.
 
-Ubucargo then installs `debcargo.toml` and normalizes generated hints.
+Ubucargo then installs `debcargo.toml` and matching hints for every generated file.
 
 The source tree is created at `DIR`, which defaults to the Debian source package name in the current directory. Debian Rust conventions determine the source and binary package names. The destination must not exist.
 

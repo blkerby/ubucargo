@@ -4,7 +4,7 @@
 
 Ubucargo adapts Debian's Rust packaging model for Ubuntu. Ubucargo wraps `debcargo`, translating Cargo dependencies in `Cargo.toml` into Debian source package data such as `debian/control`.
 
-Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the source tree in the `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian; this is avoided by treating the source packages themselves as the authoritative place for this configuration. Overrides to generated packaging such as `debian/control` can be overwritten in place by maintainers, while corresponding `.debcargo.hint` files provide a record of the latest generated output.
+Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the source tree in the `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian; this is avoided by treating the source packages themselves as the authoritative place for this configuration. Overrides to generated packaging such as `debian/control` can be overwritten in place by maintainers, while corresponding `.debcargo.hint` files record the latest generated output and prevent later regeneration from silently replacing those edits.
 
 Detailed command behavior lives in the [command documents](#command-documents); this document covers shared concepts and boundaries.
 
@@ -38,7 +38,6 @@ The generator owns defined filename spaces and their hints. The maintainer owns 
 
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
-| `ubucargo download` | Acquire an existing source package | [`download.md`](download.md) |
 | `ubucargo import` | Create a source tree from crates.io | [`import.md`](import.md) |
 | `ubucargo upgrade` | Upgrade source and packaging | [`upgrade.md`](upgrade.md) |
 | `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
@@ -57,13 +56,15 @@ Ubucargo runs a supported debcargo version in a staging area in two modes:
 
 Ubucargo then materializes files according to its ownership rules.
 
-Downloaded packages should contain `debcargo.toml` and any relevant `.debcargo.hint` files. Recovery from debcargo-conf history is a manual migration task.
+Existing source trees may initially lack complete `.debcargo.hint` files. `package` initializes unambiguous baselines and refuses to replace an existing file when its missing baseline makes ownership ambiguous. Recovery of `debcargo.toml` from debcargo-conf history remains a manual migration task.
 
 Representative debcargo-conf packages serve as compatibility fixtures.
 
+If debcargo's existing CLI boundary proves too brittle, the preferred next step is a narrow generator-only debcargo command rather than an independent implementation of its generation behavior.
+
 ## Acquisition and generation boundaries
 
-- `download` retrieves a packaged source from an Archive origin.
+- Existing source packages are acquired with the maintainer's normal tooling, such as `git ubuntu clone`, `apt source`, dgit, or GBP.
 - `import` creates a new package from the registry.
 - `upgrade` creates a new upstream tree and orig tarball while preserving durable Debian state and regenerating generated files from scratch.
 - `package` operates on an existing source tree using local data only.
@@ -90,19 +91,19 @@ or their existing GBP/dgit workflow.
 
 ## Shared APT metadata cache
 
-`deps` constructs temporary Ubuntu Archive and PPA sources from its command-line arguments. `download` similarly constructs one source-only origin. Native APT refreshes and queries their indexes using one shared cache beneath `~/.cache/ubucargo/apt`; there is no persistent Archive configuration or cache per argument combination.
+`deps` constructs temporary Ubuntu Archive and PPA sources from its command-line arguments. Native APT refreshes and queries their indexes using one shared cache beneath `~/.cache/ubucargo/apt`; there is no persistent Archive configuration or cache per argument combination.
 
-`deps` downloads only binary `Packages` indexes. `download` downloads `Sources` indexes only for its requested origin. APT reuses unchanged indexes and applies its normal candidate policy, version ordering, architecture filtering, and `Provides` handling. See [`apt-cache.md`](apt-cache.md).
+`deps` downloads only binary `Packages` indexes. APT reuses unchanged indexes and applies its normal candidate policy, version ordering, architecture filtering, and `Provides` handling. See [`apt-cache.md`](apt-cache.md).
 
 ## Version-control boundary
 
 Ubucargo works with source-package files and leaves version control to the maintainer's tools:
 
 ```text
-materialized Debian source tree
+source tree from Git, APT, dgit, GBP, or another standard tool
   -> package or deps
 
-exportable Debian source tree
+materialized Debian source tree
   -> standard Debian tools produce a source package
   -> sbuild, Launchpad, or another standard build service
 ```

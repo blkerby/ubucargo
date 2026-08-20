@@ -2,9 +2,9 @@
 
 ## Purpose
 
-`deps` and `download` construct temporary APT sources from their command-line arguments. APT refreshes and queries those sources using one shared, user-writable cache. Ubucargo has no persistent Archive configuration and does not create a separate cache for each combination of series and PPAs.
+`deps` constructs temporary APT sources from its command-line arguments. APT refreshes and queries those sources using one shared, user-writable cache. Ubucargo has no persistent Archive configuration and does not create a separate cache for each combination of series and PPAs.
 
-`deps` requests only binary `Packages` indexes. `download` requests only the `Sources` index for its selected origin. Translations, DEP-11 data, icons, command-not-found data, and unrelated architectures are disabled.
+`deps` requests only binary `Packages` indexes. Translations, DEP-11 data, icons, command-not-found data, source indexes, and unrelated architectures are disabled.
 
 ## Layout
 
@@ -23,8 +23,6 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble.
 
-`download --from` creates one source-only entry. `ubuntu:SUITE` and `debian:SUITE` name an exact suite. A PPA uses the series supplied separately by `--series`.
-
 The generated deb822 entries select only their required APT targets:
 
 ```text
@@ -41,8 +39,10 @@ Security pockets use the standard Ubuntu security URI. Ubucargo selects the norm
 
 ## Repository trust
 
-- Ubuntu and Debian sources use their packaged archive keyrings.
+- Ubuntu sources use the packaged Ubuntu Archive keyring.
 - PPA sources trust Launchpad over authenticated HTTPS. Ubucargo retrieves the signing key and advertised fingerprint, requires them to match, and caches the key by fingerprint.
+
+The PPA key and advertised fingerprint come from the same Launchpad authority, so the fingerprint is not treated as an independent pin. Ubucargo maintains no trust-on-first-use database or separate fingerprint configuration.
 
 Every source uses `Signed-By`. Ubucargo does not enable unsigned repositories or `trusted=yes`.
 

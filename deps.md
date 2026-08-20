@@ -31,6 +31,8 @@ APT selects candidates using the temporary sources constructed from the command 
 
 `deps` reads the same patched source metadata as `package` and orders candidates deterministically from the local APT indexes.
 
+Staged dependency packages must be published in a PPA supplied with `--ppa`. `deps` does not scan source trees or artifact directories for candidates; PPA publication and build infrastructure remain outside ubucargo.
+
 ## APT metadata
 
 `deps` uses only binary `Packages` indexes. They contain the package versions and versioned `Provides` needed to match Debian Rust feature packages; Archive `Sources` indexes are not downloaded.

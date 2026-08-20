@@ -3,7 +3,8 @@
 ## Synopsis
 
 ```console
-ubucargo package [PACKAGE] [--check]
+ubucargo package [PACKAGE] [--check] \
+  [--keep PATH]... [--replace PATH]...
 ```
 
 `PACKAGE` may be omitted when the current directory is inside a source package.
@@ -45,14 +46,37 @@ For each generator-owned path, materialization has three values:
 
 Each value includes whether the path exists, its contents, and its executable bit. A missing file differs from an empty file, so deleting a generated file counts as a maintainer change.
 
-`download` creates missing hints from downloaded generated files. Otherwise, a missing hint means the generated base was absent.
-
-An override exists when `old != base`; no override list is stored.
+When `base` is present, an override exists when `old != base`; no override list is stored.
 
 | Condition | Meaning | Behavior |
 | --- | --- | --- |
 | `old == base` | Unmodified generated file | Replace both primary and hint with `new` |
 | `old != base` | Maintainer override | Preserve `old`; replace the hint with `new` |
+
+This byte-for-byte comparison is deliberately conservative. Any content or executable-mode change preserves the primary as an override rather than risking data loss.
+
+## Missing baselines
+
+Existing source trees may not contain a hint for every generated file. `package` initializes only cases that cannot overwrite existing content:
+
+| `old` | `new` | Behavior when `base` is absent |
+| --- | --- | --- |
+| absent | absent | No change |
+| absent | present | Write `new` to both primary and hint |
+| equal to `new` | present | Keep the primary and write the matching hint |
+| different from `new` | present | Stop without writing; require `--keep` or `--replace` |
+| present | absent | Preserve the primary; no generated base exists |
+
+For an ambiguous path, repeat one of these options using a package-relative path:
+
+```console
+ubucargo package --keep debian/control
+ubucargo package --replace debian/control
+```
+
+`--keep` preserves the existing primary and writes `new` as its hint, establishing an override. `--replace` writes `new` to both the primary and hint. The options are accepted only for ambiguous paths, cannot both name the same path, and may be repeated to resolve several paths.
+
+If any ambiguous path lacks a decision, `package` reports every ambiguity and makes no changes. This allows source trees acquired through Git, APT, dgit, GBP, or other tooling to be initialized without trusting their acquisition method or silently replacing local edits.
 
 The same rule handles deletions:
 
@@ -71,7 +95,7 @@ When generator output changes for an overridden path, `package` preserves the pr
 ubucargo package ./rust-serde --check
 ```
 
-`--check` reports which primary files or hints would change, identifies overrides, and shows generator changes without writing.
+`--check` reports which primary files or hints would change, identifies overrides and missing-baseline ambiguities, and shows generator changes without writing. `--keep` and `--replace` may be supplied with `--check` to preview their result.
 
 ## Generation boundary
 
