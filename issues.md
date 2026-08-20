@@ -6,9 +6,9 @@ None are currently open.
 
 ## Resolved directions
 
-### Repository trust follows the configured authority
+### Repository trust follows the requested authority
 
-Ubuntu and Debian shorthands trust their packaged archive keyrings. PPA shorthands trust Launchpad over authenticated HTTPS; ubucargo verifies that the retrieved key matches Launchpad's advertised fingerprint, but does not treat that same-source fingerprint as an independent pin. Explicit repositories must supply `Signed-By` key material or a local keyring path. Ubucargo maintains no trust-on-first-use database or separate fingerprint configuration.
+Ubuntu and Debian origins trust their packaged archive keyrings. PPA arguments trust Launchpad over authenticated HTTPS; ubucargo verifies that the retrieved key matches Launchpad's advertised fingerprint, but does not treat that same-source fingerprint as an independent pin. Ubucargo maintains no trust-on-first-use database or separate fingerprint configuration.
 
 ### Reuse debcargo generation through a staging adapter
 
@@ -38,20 +38,20 @@ A generator-owned primary is an override exactly when it differs from its corres
 
 ### Standard tools own persistent source artifacts
 
-Ubucargo owns the materialized source tree and sibling orig tarball. Local `build` passes the source directory to `sbuild`, which prepares temporary source state for the build. Persistent `.dsc`, source `.changes`, `.buildinfo`, signing, and upload artifacts are produced by `dpkg-buildpackage -S`, GBP/dgit, or other standard Debian workflows.
+Ubucargo owns the materialized source tree and sibling orig tarball. Builds are run directly with `sbuild` or another standard build service. Persistent `.dsc`, source `.changes`, `.buildinfo`, signing, and upload artifacts are produced by `dpkg-buildpackage -S`, GBP/dgit, or other standard Debian workflows.
 
-### Native APT provides the Archive view
+### Native APT provides dependency candidates
 
-The profile configuration is compiled into an isolated, metadata-only APT view. Native APT refreshes signed indexes and calculates candidate policy; ubucargo reads the local indexes to explain Cargo-specific dependency results. The view runs unprivileged, never invokes dpkg, and redirects all configuration, state, keys, locks, and logs beneath its cache directory. See [`apt-view.md`](apt-view.md).
+`deps` constructs temporary Ubuntu Archive and PPA sources from `--series` and `--ppa`. Native APT refreshes their binary indexes in one shared, user-writable list cache and calculates candidate policy; ubucargo reads the indexes to explain Cargo-specific dependency results. There is no persistent Archive configuration or cache per argument combination. See [`apt-cache.md`](apt-cache.md).
 
-### Official archive shorthands normalize to deb822
+### Archive arguments normalize to temporary deb822
 
-`ubuntu:SUITE`, `debian:SUITE`, and `ppa:OWNER/NAME` are convenience inputs that expand immediately into the same normalized repository representation as raw deb822. Structured `types`, `components`, and `architectures` keys refine their defaults. Transient `download --from` expansions are source-only and cannot change the profile's binary candidate universe.
+`deps --series` expands to the standard Ubuntu release, updates, and security binary sources from `main` and `universe`; repeated `--ppa` arguments add binary-only PPA sources for that series. `download --from` expands `ubuntu:SUITE`, `debian:SUITE`, or `ppa:OWNER/NAME` to one source-only entry.
 
-### Profiles do not own source checkouts
+### Rust compatibility targets are explicit
 
-A profile contains Archive, repository, architecture, and Rust packaging configuration. Source trees may live anywhere and are passed to commands by path. Directory names do not define source-package identity.
+`import` and `upgrade` apply MSRV filtering only when `--rust-version` is supplied. Ubucargo does not infer a compiler version from the host or an Archive.
 
-### Staged packages are supplied by APT repositories
+### Staged dependency packages are supplied by PPAs
 
-Ubucargo does not scan source trees or artifact directories for candidate packages. Local repositories, PPAs, and other staging archives are ordinary ordered APT sources. Their publication and build infrastructure remain outside ubucargo.
+`deps` does not scan source trees or artifact directories for candidate packages. Staged packages are supplied through repeated `--ppa` arguments. PPA publication and build infrastructure remain outside ubucargo.

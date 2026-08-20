@@ -3,21 +3,21 @@
 ## Synopsis
 
 ```console
-ubucargo [--profile PROFILE] download SOURCE \
-  [--from ORIGIN] [--version VERSION] [--directory DIR]
+ubucargo download SOURCE --from ORIGIN [--series SERIES] \
+  [--version VERSION] [--directory DIR]
 ```
 
 `download` retrieves a published Debian or Ubuntu source package without regenerating its packaging.
 
 ## Selection
 
-Without constraints, APT selects the source-package candidate from the profile:
+`--from` selects one source origin:
 
 ```console
-ubucargo download rust-syn
+ubucargo download rust-syn --from ubuntu:noble-proposed
 ```
 
-`--version` selects an exact Debian source version. `--from` limits candidates to a configured repository or an `ubuntu:SUITE`, `debian:SUITE`, or `ppa:OWNER/NAME` shorthand. Both options may be combined.
+Origins are `ubuntu:SUITE`, `debian:SUITE`, or `ppa:OWNER/NAME`. A PPA origin also requires `--series`, because a PPA may publish for multiple Ubuntu releases. `--version` selects an exact Debian source version; otherwise APT selects the newest version in the requested origin.
 
 Before acquisition, the command prints the selected version and origin:
 
@@ -27,9 +27,9 @@ Downloading rust-syn 2.0.107-1 from ubuntu:noble-proposed/universe
 
 Ubuntu release origins use names such as `ubuntu:noble`, `ubuntu:noble-updates`, and `ubuntu:noble-security`.
 
-An archive shorthand becomes a temporary deb822 entry with `Types: deb-src`. Debian uses the official archive, `main`, and Debian keyring; Ubuntu uses the profile components and architecture; a PPA uses the profile series and `main`. The entry exists only for this download.
+The origin becomes a temporary deb822 entry with `Types: deb-src`. Debian uses the official archive, `main`, and Debian keyring; Ubuntu uses `main` and `universe`; a PPA uses the requested series and `main`. The entry exists only for this download.
 
-Transient shorthands use the same [repository trust](apt-view.md#repository-trust) as persistent entries.
+Source indexes are stored in the shared [APT metadata cache](apt-cache.md). They are downloaded only by source-acquisition commands, never by `deps`.
 
 ## Acquisition
 

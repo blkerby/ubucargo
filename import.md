@@ -3,25 +3,26 @@
 ## Synopsis
 
 ```console
-ubucargo [--profile PROFILE] import CRATE [--version VERSION] [--directory DIR]
+ubucargo import CRATE [--version VERSION] [--rust-version VERSION] \
+  [--directory DIR]
 ```
 
 `import` creates a new packaged source tree and Debian orig tarball from a crates.io release.
 
 ## Version selection
 
-Without `--version`, ubucargo selects the newest non-yanked stable release that supports the profile Rust version. It uses Cargo semver ordering and ignores build metadata. Only an exact request may select a prerelease.
+Without `--version`, ubucargo selects the newest non-yanked stable release. When `--rust-version` is supplied, releases that require a newer compiler are skipped. Selection uses Cargo semver ordering and ignores build metadata. Only an exact request may select a prerelease.
 
-A release that requires a newer Rust version is skipped. A missing `rust_version` produces a warning. Releases with equal precedence produce an ambiguity error.
+A release with missing `rust_version` produces a compatibility warning when a Rust target was requested. Releases with equal precedence produce an ambiguity error.
 
 ```text
-Workspace rustc: 1.75
+Target rustc: 1.75
 Ignoring foo 4.2.0: requires Rust 1.81
 Importing foo 4.1.0
 warning: foo 4.1.0 does not declare rust-version; compatibility is unverified
 ```
 
-For an exact version, a known MSRV mismatch is an error and an undeclared MSRV is a warning. Selection always resolves to an exact version.
+For an exact version with `--rust-version`, a known MSRV mismatch is an error and an undeclared MSRV is a warning. Without a Rust target, ubucargo performs no MSRV filtering. Selection always resolves to an exact version.
 
 ## Output
 

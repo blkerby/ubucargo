@@ -3,15 +3,15 @@
 ## Synopsis
 
 ```console
-ubucargo [--profile PROFILE] upgrade PACKAGE \
-  [--version VERSION] [--directory DIR] [--force]
+ubucargo upgrade PACKAGE [--version VERSION] [--rust-version VERSION] \
+  [--directory DIR] [--force]
 ```
 
 `upgrade` replaces the upstream crate release, preserves maintainer-owned Debian packaging, and regenerates generator-owned files without merging them.
 
 ## Version selection
 
-Without `--version`, ubucargo selects the newest non-yanked stable release that supports the profile Rust version and keeps the existing Debian source identity. Exact versions use the same MSRV checks as `import`.
+Without `--version`, ubucargo selects the newest non-yanked stable release that keeps the existing Debian source identity. `--rust-version` applies the same MSRV filtering and checks as `import`.
 
 If the source-package identity would change, use `import` to create a new package.
 

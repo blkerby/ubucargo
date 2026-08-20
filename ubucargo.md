@@ -34,57 +34,15 @@ Each source package contains its upstream source, Debian packaging, generator in
 
 The generator owns defined filename spaces and their hints. The maintainer owns the changelog, patches, configuration, and unknown paths. See [`package`](package.md#override-detection-and-materialization) for the full rules.
 
-## Packaging profile
-
-`ubucargo.toml` defines a packaging profile, not a directory for source checkouts. Archive-aware commands accept any source-package path and find a profile through `--profile PATH` or by walking up from the source tree. Offline `package` generation needs no profile.
-
-The profile defines one native Archive view:
-
-```toml
-series = "noble"
-architecture = "amd64"
-pockets = ["release", "updates", "security"]
-components = ["main", "universe"]
-rust-version = "1.75" # optional
-
-[[repositories]]
-name = "rust-staging"
-archive = "ppa:example/rust-staging"
-types = ["deb", "deb-src"]
-components = ["main"]
-
-[[repositories]]
-name = "local-staging"
-source = """
-Types: deb deb-src
-URIs: file:///srv/ubuntu-rust-staging
-Suites: noble
-Components: main
-Architectures: amd64
-Signed-By: /srv/ubuntu-rust-staging/archive-keyring.gpg
-"""
-```
-
-- Profiles support one architecture, used as both the Debian build and host architecture.
-- The `release` pocket is required; other Ubuntu pockets are overlays.
-- Pocket, component, and repository ordering is retained.
-- When `rust-version` is omitted, ubucargo derives the target from the APT-selected `rustc` package in this view.
-
-Repository entries are APT sources. PPA syntax expands Launchpad metadata and keys; shorthands such as `ubuntu:noble-proposed` and `debian:sid` work the same way. Structured `types`, `components`, and `architectures` keys override shorthand defaults before deb822 normalization. Other repositories may use explicit deb822 sources. Ubucargo consumes repositories but does not build or publish them.
-
-Repository trust is defined in [`apt-view.md`](apt-view.md#repository-trust).
-
 ## Command documents
 
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
-| `ubucargo init` | Create a packaging profile | [`init.md`](init.md) |
 | `ubucargo download` | Acquire an existing source package | [`download.md`](download.md) |
 | `ubucargo import` | Create a source tree from crates.io | [`import.md`](import.md) |
 | `ubucargo upgrade` | Upgrade source and packaging | [`upgrade.md`](upgrade.md) |
 | `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
-| `ubucargo build` | Build with standard Ubuntu tooling | [`build.md`](build.md) |
 
 `PACKAGE` arguments identify arbitrary source-package directories and may be omitted when the current directory is inside one.
 
@@ -116,13 +74,13 @@ Generation returns relative paths, contents, and file modes. A separate step pre
 
 The root `Cargo.toml` must contain `[package]`. Nested workspace members may join the build, but ubucargo packages the root crate. Virtual workspaces require manual packaging.
 
-Rust-version filtering rejects known incompatibilities. A build with the configured Archive toolchain is the final compatibility test.
+When a Rust target is supplied, version filtering rejects known incompatibilities. A build with the target Archive toolchain is the final compatibility test.
 
 ## Source-package artifact boundary
 
 `import` and `upgrade` produce a source tree and sibling orig tarball. `package` refreshes the tree without changing the tarball. Standard Debian tools produce `.dsc`, source `.changes`, `.buildinfo`, signing, and upload artifacts.
 
-For local builds, `build` passes the source directory to `sbuild`, which prepares a temporary source package. For persistent artifacts, use standard tooling such as:
+Ubucargo does not wrap builds. Maintainers use `sbuild` directly, adding staging PPAs with `--extra-repository` and `--extra-repository-key` as needed. For persistent source artifacts, use standard tooling such as:
 
 ```console
 dpkg-buildpackage -S --no-sign
@@ -130,13 +88,11 @@ dpkg-buildpackage -S --no-sign
 
 or their existing GBP/dgit workflow.
 
-## Isolated APT metadata view
+## Shared APT metadata cache
 
-The profile uses a metadata-only APT view in the user's cache. The profile supplies sources, preferences, keys, architecture, and repository order. APT handles refreshes, policy, version ordering, architecture filtering, `Provides`, and candidate selection.
+`deps` constructs temporary Ubuntu Archive and PPA sources from its command-line arguments. `download` similarly constructs one source-only origin. Native APT refreshes and queries their indexes using one shared cache beneath `~/.cache/ubucargo/apt`; there is no persistent Archive configuration or cache per argument combination.
 
-`download`, `deps`, and Archive-derived Rust-version checks share the cached view. `build` constructs the same normalized repository configuration inside `sbuild`.
-
-The view runs unprivileged, allows only metadata operations and downloads, and keeps all APT state in its own directory. See [`apt-view.md`](apt-view.md).
+`deps` downloads only binary `Packages` indexes. `download` downloads `Sources` indexes only for its requested origin. APT reuses unchanged indexes and applies its normal candidate policy, version ordering, architecture filtering, and `Provides` handling. See [`apt-cache.md`](apt-cache.md).
 
 ## Version-control boundary
 
@@ -148,7 +104,7 @@ materialized Debian source tree
 
 exportable Debian source tree
   -> standard Debian tools produce a source package
-  -> build
+  -> sbuild, Launchpad, or another standard build service
 ```
 
 Repository-specific workflows must provide a tree that standard Debian tools can export.
