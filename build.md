@@ -20,27 +20,17 @@ source tree with generated debian/ files
   -> dh-cargo builds and tests the crate
 ```
 
-`build` is a local, one-package smoke test around `sbuild`. It uses the profile's
-repositories and writes results to the selected output directory. `sbuild`
-reports missing build dependencies; [`deps`](deps.md) shows candidate details.
-Other tools handle dependency closure, publishing, uploads, and repository
-updates.
+`build` is a local, one-package smoke test around `sbuild`. It uses the profile's repositories and writes results to the selected output directory. `sbuild` reports missing build dependencies; [`deps`](deps.md) shows candidate details. Other tools handle dependency closure, publishing, uploads, and repository updates.
 
-`build` passes the source directory to `sbuild`, which creates a temporary source
-package. Use `dpkg-buildpackage -S`, GBP, or similar tools for persistent source
-artifacts.
+`build` passes the source directory to `sbuild`, which creates a temporary source package. Use `dpkg-buildpackage -S`, GBP, or similar tools for persistent source artifacts.
 
 ## Unshare build environment
 
-`build` uses `sbuild`'s `unshare` backend. Ubucargo passes the profile's Ubuntu
-Archive sources to the backend's automatic `mmdebstrap` invocation.
+`build` uses `sbuild`'s `unshare` backend. Ubucargo passes the profile's Ubuntu Archive sources to the backend's automatic `mmdebstrap` invocation.
 
-Sources, preferences, keys, and order come from the same configuration as the
-[isolated APT view](apt-view.md). The build has separate installed-package state
-but sees the same candidates as `deps`.
+Sources, preferences, keys, and order come from the same configuration as the [isolated APT view](apt-view.md). The build has separate installed-package state but sees the same candidates as `deps`.
 
-For a Noble `amd64` profile using `release`, `updates`, and `security` from
-`main` and `universe`, the source file is equivalent to:
+For a Noble `amd64` profile using `release`, `updates`, and `security` from `main` and `universe`, the source file is equivalent to:
 
 ```text
 Types: deb
@@ -65,22 +55,17 @@ Architectures: amd64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 ```
 
-Ubucargo selects the standard Ubuntu Archive URI for the profile architecture
-and preserves pocket and component order. It uses normal APT priorities.
+Ubucargo selects the standard Ubuntu Archive URI for the profile architecture and preserves pocket and component order. It uses normal APT priorities.
 
 ## Chroot cache identity
 
-The unshare chroot name includes a deterministic hash of the normalized base APT
-view, for example:
+The unshare chroot name includes a deterministic hash of the normalized base APT view, for example:
 
 ```text
 noble-amd64-8b73cf2407ad
 ```
 
-The hash covers inputs that affect the base root, including the series,
-architecture, pockets, components, Archive URIs, and key identity. Additional
-repositories are per-build overlays, so identical base views share an `sbuild`
-cache entry.
+The hash covers inputs that affect the base root, including the series, architecture, pockets, components, Archive URIs, and key identity. Additional repositories are per-build overlays, so identical base views share an `sbuild` cache entry.
 
 Ubucargo generates a temporary additional `sbuild` configuration:
 
@@ -98,16 +83,13 @@ $unshare_mmdebstrap_extra_args = [
 1;
 ```
 
-The generated source file is `mmdebstrap`'s mirror input during base-root
-creation.
+The generated source file is `mmdebstrap`'s mirror input during base-root creation.
 
-The chroot argument is a cache name, not a path. `sbuild` creates and refreshes
-the cached tarball and unpacks a temporary session for each build.
+The chroot argument is a cache name, not a path. `sbuild` creates and refreshes the cached tarball and unpacks a temporary session for each build.
 
 ## Invocation
 
-Ubucargo points `SBUILD_CONFIG` at the generated configuration and invokes
-`sbuild` equivalently to:
+Ubucargo points `SBUILD_CONFIG` at the generated configuration and invokes `sbuild` equivalently to:
 
 ```console
 SBUILD_CONFIG=/tmp/ubucargo-XXXX/sbuild.conf \
@@ -121,13 +103,8 @@ sbuild --chroot-mode=unshare \
   /path/to/source-tree
 ```
 
-Each additional repository adds an `--extra-repository` and
-`--extra-repository-key` in profile order. These affect only the temporary build
-session. A local `file:` repository must exist at the same path inside the
-session or use a reachable URI.
+Each additional repository adds an `--extra-repository` and `--extra-repository-key` in profile order. These affect only the temporary build session. A local `file:` repository must exist at the same path inside the session or use a reachable URI.
 
-Ubucargo uses the trusted key from the profile's
-[APT view](apt-view.md#repository-trust).
+Ubucargo uses the trusted key from the profile's [APT view](apt-view.md#repository-trust).
 
-When Dose3 is installed, `build` may configure `sbuild` to use it as the
-build-dependency uninstallability explainer.
+When Dose3 is installed, `build` may configure `sbuild` to use it as the build-dependency uninstallability explainer.

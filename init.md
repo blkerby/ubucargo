@@ -38,17 +38,11 @@ types = ["deb", "deb-src"]
 components = ["main"]
 ```
 
-Profiles support one native architecture. If omitted, `--architecture` uses
-`dpkg --print-architecture`; the resolved value is always stored. `build` uses it
-as both the build and host architecture, including for `Architecture: all`
-packages.
+Profiles support one native architecture. If omitted, `--architecture` uses `dpkg --print-architecture`; the resolved value is always stored. `build` uses it as both the build and host architecture, including for `Architecture: all` packages.
 
-The `release` pocket is required; other Ubuntu pockets are overlays. Pocket,
-component, and repository order are preserved.
+The `release` pocket is required; other Ubuntu pockets are overlays. Pocket, component, and repository order are preserved.
 
-Additional repositories are ordered APT sources. `archive` accepts
-`ubuntu:SUITE`, `debian:SUITE`, and `ppa:OWNER/NAME`. Structured keys can refine
-these shorthands before they expand to deb822:
+Additional repositories are ordered APT sources. `archive` accepts `ubuntu:SUITE`, `debian:SUITE`, and `ppa:OWNER/NAME`. Structured keys can refine these shorthands before they expand to deb822:
 
 ```toml
 [[repositories]]
@@ -59,12 +53,9 @@ components = ["main", "contrib", "non-free", "non-free-firmware"]
 architectures = ["amd64"]
 ```
 
-`deb` enables binary indexes for candidate selection and builds. `deb-src`
-enables source downloads and Dose analysis. Persistent repositories default to
-both; temporary `download --from` views use only `deb-src`.
+`deb` enables binary indexes for candidate selection and builds. `deb-src` enables source downloads and Dose analysis. Persistent repositories default to both; temporary `download --from` views use only `deb-src`.
 
-Ubuntu shorthands inherit profile components unless overridden. Debian defaults
-to `main`; PPAs use `main`. Component and type order are preserved.
+Ubuntu shorthands inherit profile components unless overridden. Debian defaults to `main`; PPAs use `main`. Component and type order are preserved.
 
 A generic local or remote repository uses a deb822 `source` string:
 
@@ -81,10 +72,7 @@ Signed-By: /srv/ubuntu-rust-staging/archive-keyring.gpg
 """
 ```
 
-Explicit sources must provide `Signed-By` as embedded key material or a readable
-keyring path. Ubuntu and Debian use packaged keyrings. PPAs retrieve their key
-and fingerprint from Launchpad over authenticated HTTPS and require them to
-match. Profiles do not store a separate fingerprint pin.
+Explicit sources must provide `Signed-By` as embedded key material or a readable keyring path. Ubuntu and Debian use packaged keyrings. PPAs retrieve their key and fingerprint from Launchpad over authenticated HTTPS and require them to match. Profiles do not store a separate fingerprint pin.
 
 An optional Rust compatibility target is stored as:
 
