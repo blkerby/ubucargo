@@ -2,13 +2,9 @@
 
 ## Overview
 
-Ubucargo adapts Debian's Rust packaging model for Ubuntu. It provides a workflow for packaging and maintaining Rust source packages while following Debian policy.
+Ubucargo adapts Debian's Rust packaging model for Ubuntu. Ubucargo wraps `debcargo`, translating Cargo dependencies in `Cargo.toml` into Debian source package data such as `debian/control`.
 
-Like `debcargo`, ubucargo consumes `Cargo.toml` and `debcargo.toml` and translates Cargo dependencies and features into Debian source and binary package metadata. Ubucargo differs in three ways:
-
-- Generator configuration is stored in each source package as `debian/debcargo.toml`, replacing debcargo-conf's external monorepo.
-- A packaging profile defines the Archive view shared by dependency inspection, acquisition, and local builds.
-- Generated files may be edited in place. Each `.debcargo.hint` records the latest generator output; a difference marks a maintainer override.
+Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the source tree in the `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian; this is avoided by treating the source packages themselves as the authoritative place for this configuration. Overrides to generated packaging such as `debian/control` can be overwritten in place by maintainers, while corresponding `.debcargo.hint` files provide a record of the latest generated output.
 
 Detailed command behavior lives in the [command documents](#command-documents); this document covers shared concepts and boundaries.
 
