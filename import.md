@@ -51,3 +51,7 @@ The orig tarball is placed beside the source directory using Debian naming:
 Without repacking, debcargo copies the verified `.crate` archive to the orig filename unchanged. Exclusions or manifest normalization trigger a deterministic repack and add the configured suffix, such as `+dfsg`, to the upstream version.
 
 Standard Debian tools produce persistent `.dsc`, source `.changes`, and `.buildinfo` files when needed.
+
+## Version-control boundary
+
+The command changes files only. It does not create commits, branches, tags, or pristine-tar data.

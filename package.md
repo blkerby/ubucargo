@@ -17,6 +17,8 @@ ubucargo package [PACKAGE] [--check] \
 
 Before generation, ubucargo verifies that the complete series is applied. An inconsistent quilt state, a partially applied patch with rejects, or a remaining patch that cannot be applied is an error and leaves the package unchanged. When `.pc` is absent, all patches are considered unapplied.
 
+Ubucargo understands on-disk quilt state but does not inspect Git history or VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
+
 The temporary debcargo overlay omits `debian/patches`, because the staged source already has each patch applied once.
 
 ## Generated paths
@@ -39,8 +41,6 @@ For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint r
 The paths above, generated feature-package override names, and files with hints are generator-owned. Other paths are maintainer-owned. Ownership remains even if the current generator stops emitting a path.
 
 `package` may create `debian/changelog` once, then leaves it to the maintainer. `debian/debcargo.toml` and `debian/patches/` are also maintainer-owned.
-
-Standard Debian tools produce `.dsc`, source `.changes`, and `.buildinfo` files.
 
 ## Override detection and materialization
 
@@ -107,9 +107,9 @@ ubucargo package ./rust-serde --check
 
 ## Generation boundary
 
-Generation returns relative paths, contents, and executable bits. A separate step applies primary and hint changes atomically.
+Debcargo writes candidate Debian files to a staging directory. Ubucargo then compares them with the working tree and its hints and applies the resulting changes atomically.
 
-`package` uses only local source and runs debcargo with Cargo network access disabled.
+`package` uses only local source and runs debcargo with Cargo offline mode enabled.
 
 The root `Cargo.toml` must contain `[package]`; its name and version select the crate passed to debcargo. Nested workspace members are internal dependencies. Virtual workspaces require manual packaging.
 
@@ -156,3 +156,15 @@ Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source 
 Ubucargo checks the debcargo version before running it. Representative debcargo-conf packages serve as compatibility fixtures for libraries, binaries, semver-suffixed crates, patched manifests, feature-heavy packages, and overridden generated files.
 
 If debcargo's current CLI boundary proves too brittle, the preferred next step is a narrow generator-only debcargo command rather than an independent implementation of its generation behavior.
+
+## Build and version-control boundary
+
+`package` changes source-package files only. It does not build, sign, or upload the package, or create commits, branches, tags, or pristine-tar data.
+
+Maintainers use `sbuild`, Launchpad, or another build service and standard source-package tools directly. For example, persistent `.dsc`, source `.changes`, and `.buildinfo` files can be produced with:
+
+```console
+dpkg-buildpackage -S --no-sign
+```
+
+Repository-specific Git, GBP, or dgit workflows must provide a tree that standard Debian tools can export.

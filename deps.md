@@ -29,6 +29,8 @@ Ubuntu Archive locations include pocket and component. PPA locations show the PP
 
 APT selects candidates using the temporary sources constructed from the command arguments. The result predicts a build configured with the same series and PPAs; `sbuild` remains authoritative, and Archive changes may change the result.
 
+To build against the same staging repositories, pass them to `sbuild` with `--extra-repository` and `--extra-repository-key` as appropriate.
+
 `deps` uses the same staged source and [patch-state handling](package.md#patch-state) as `package`, then orders candidates deterministically from the local APT indexes.
 
 Staged dependency packages must be published in a PPA supplied with `--ppa`. `deps` does not scan source trees or artifact directories for candidates; PPA publication and build infrastructure remain outside ubucargo.

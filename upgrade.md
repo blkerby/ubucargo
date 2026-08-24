@@ -64,6 +64,8 @@ ubucargo upgrade ~/src/rust-serde \
 
 If the target orig file exists, ubucargo reuses it only when its contents match. Before atomically installing the source tree and tarball, ubucargo validates the source identity, root package, orig tarball, patches, and generated packaging.
 
+Standard Debian tools produce persistent `.dsc`, source `.changes`, and `.buildinfo` files when needed.
+
 ## Version-control boundary
 
 The command changes files only. Commits, branches, tags, and pristine-tar data remain with the maintainer's tools.
