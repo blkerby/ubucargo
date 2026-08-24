@@ -6,7 +6,7 @@ Ubucargo adapts Debian's Rust packaging model for Ubuntu. Ubucargo wraps `debcar
 
 Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the source tree in the `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian; this is avoided by treating the source packages themselves as the authoritative place for this configuration. Overrides to generated packaging such as `debian/control` can be overwritten in place by maintainers, while corresponding `.debcargo.hint` files record the latest generated output and prevent later regeneration from silently replacing those edits.
 
-Detailed command behavior lives in the [command documents](#command-documents); this document covers shared concepts and boundaries.
+Detailed command behavior lives in the [command documents](#commands); this document covers shared concepts and boundaries.
 
 ## Source-package state
 
@@ -30,11 +30,9 @@ Each source package contains its upstream source, Debian packaging, generator in
       copyright.debcargo.hint     # latest generated state
 ```
 
-`debian/debcargo.toml` is the generator configuration. Ubuntu-only settings use a validated `[ubucargo]` namespace; existing debcargo keys keep their standard meaning. Unknown generation settings cause an error.
+`debian/debcargo.toml` is the generator configuration. Ubuntu-only settings use a `[ubucargo]` namespace; existing debcargo keys keep their standard meaning.
 
-The generator owns defined filename spaces and their hints. The maintainer owns the changelog, patches, configuration, and unknown paths. See [`package`](package.md#override-detection-and-materialization) for the full rules.
-
-## Command documents
+## Commands
 
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
@@ -43,39 +41,19 @@ The generator owns defined filename spaces and their hints. The maintainer owns 
 | `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
 
-`PACKAGE` arguments identify arbitrary source-package directories and may be omitted when the current directory is inside one.
+- To create a new source package based on an upstream crate from crates.io, run `ubucargo import`. It creates the source tree, orig tarball, initial packaging, configuration, and hints.
+- For an existing source package, use `ubucargo package` to refresh generated files and hints without changing the upstream source or orig tarball.
+- To adopt a new upstream crate release, run `ubucargo upgrade`. It creates the new source tree and orig tarball while preserving existing Debian packaging and generated-file overrides.
+- After changing debcargo.toml or other inputs to packaging generation, run ubucargo package again. It may also be run with `--check` to inspect generated changes without writing.
+- Run `ubucargo deps` whenever dependency candidates need inspection. It does not modify the source package.
 
-## Relationship with debcargo
+## Generation boundaries
 
-Debcargo is the reference implementation and initial generator. Ubucargo keeps its package names, feature layout, dependency translation, registry conventions, and configuration behavior unless Ubuntu needs a change.
+`package` applies Debian patches to staged source before generation, so each patch is applied once. It then runs debcargo against that source with Cargo offline mode enabled.
 
-Ubucargo runs a supported debcargo version in a staging area in two modes:
-
-- `import` and `upgrade` use debcargo's registry-backed full packaging path for exact crate acquisition, checksum verification, Debian version conversion, optional repacking, orig-tarball creation, source extraction, and initial packaging generation.
-- `package` uses debcargo's local-crate and separate-output support to refresh generated candidates from local sources. The temporary orig tarball from local-source mode is discarded.
-
-Ubucargo then materializes files according to its ownership rules.
-
-Existing source trees may initially lack complete `.debcargo.hint` files. `package` initializes unambiguous baselines and refuses to replace an existing file when its missing baseline makes ownership ambiguous. Recovery of `debcargo.toml` from debcargo-conf history remains a manual migration task.
-
-Representative debcargo-conf packages serve as compatibility fixtures.
-
-If debcargo's existing CLI boundary proves too brittle, the preferred next step is a narrow generator-only debcargo command rather than an independent implementation of its generation behavior.
-
-## Acquisition and generation boundaries
-
-- Existing source packages are acquired with the maintainer's normal tooling, such as `git ubuntu clone`, `apt source`, dgit, or GBP.
-- `import` creates a new package from the registry.
-- `upgrade` creates a new upstream tree and orig tarball while preserving durable Debian state and regenerating generated files from scratch.
-- `package` operates on an existing source tree using local data only.
-
-Ubucargo applies Debian patches to staged source before generation, so each patch is applied once. Debcargo then runs against that source with network access disabled.
-
-Generation returns relative paths, contents, and file modes. A separate step preserves overrides and applies the result atomically.
+Generation writes candidate Debian files to a staging directory. Ubucargo then compares them with the working tree and its hints and applies the resulting changes atomically.
 
 The root `Cargo.toml` must contain `[package]`. Nested workspace members may join the build, but ubucargo packages the root crate. Virtual workspaces require manual packaging.
-
-When a Rust target is supplied, version filtering rejects known incompatibilities. A build with the target Archive toolchain is the final compatibility test.
 
 ## Source-package artifact boundary
 
@@ -109,3 +87,5 @@ materialized Debian source tree
 ```
 
 Repository-specific workflows must provide a tree that standard Debian tools can export.
+
+Ubucargo understands on-disk quilt state but does not inspect VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` before running `package` or `deps`.

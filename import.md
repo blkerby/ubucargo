@@ -34,6 +34,8 @@ The source tree is created at `DIR`, which defaults to the Debian source package
 
 Before atomically installing the tree and tarball, ubucargo validates their identity, names, checksums, root package, and generated packaging.
 
+Ubucargo checks the debcargo version before running it.
+
 Use [`ubucargo upgrade`](upgrade.md) for an existing package.
 
 ## Orig tarball

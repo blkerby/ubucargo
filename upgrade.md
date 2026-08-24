@@ -4,10 +4,11 @@
 
 ```console
 ubucargo upgrade PACKAGE [--version VERSION] [--rust-version VERSION] \
-  [--directory DIR] [--force]
+  [--directory DIR] [--force] \
+  [--keep PATH]... [--replace PATH]...
 ```
 
-`upgrade` replaces the upstream crate release, preserves maintainer-owned Debian packaging, and regenerates generator-owned files without merging them.
+`upgrade` replaces the upstream crate release, preserves maintainer-owned Debian packaging and generated-file overrides, and refreshes generator-owned files without merging them.
 
 ## Version selection
 
@@ -15,7 +16,7 @@ Without `--version`, ubucargo selects the newest non-yanked stable release that 
 
 If the source-package identity would change, use `import` to create a new package.
 
-## Durable and regenerated state
+## Preserved and regenerated state
 
 The staged debcargo overlay contains only durable maintainer-owned packaging:
 
@@ -26,11 +27,15 @@ The staged debcargo overlay contains only durable maintainer-owned packaging:
 
 `debian/debcargo.toml` remains the generator configuration.
 
-The overlay omits generated files and hints. Ubucargo lists existing overrides, then replaces them with fresh generated files and matching hints.
+The overlay omits generated files and hints so that existing packaging does not affect generation. After debcargo finishes, ubucargo applies the fresh generated files using the same `base`, `old`, and `new` materialization rules as [`package`](package.md#override-detection-and-materialization). Unmodified generated files are replaced, maintainer overrides are preserved, and hints are updated to the fresh generator output.
+
+Missing baselines use the same rules as `package`. Ambiguous paths require `--keep` or `--replace`; unresolved ambiguities leave the existing tree and orig tarball unchanged.
 
 ## Debcargo registry workflow
 
 Ubucargo runs debcargo's registry-backed packaging path with the exact version, a temporary overlay, `--changelog-ready`, and `--no-overlay-write-back`.
+
+Ubucargo checks the debcargo version before running it.
 
 Debcargo and Cargo:
 
@@ -45,7 +50,7 @@ Patch failures leave the existing tree intact. The orig tarball contains only pr
 
 ## Output and safety
 
-Without `--directory`, the staged tree replaces `PACKAGE` only after every step succeeds. The new orig tarball is installed beside it.
+Without `--directory`, the staged tree replaces `PACKAGE` only after every step, including generated-file materialization, succeeds. The new orig tarball is installed beside it.
 
 In-place replacement requires recoverable non-`debian/` changes or `--force`. For a separate review tree, use:
 

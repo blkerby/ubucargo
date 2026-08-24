@@ -11,7 +11,13 @@ ubucargo package [PACKAGE] [--check] \
 
 `package` reads the patched source and `debian/debcargo.toml`, generates files in a staging area, and applies them while preserving maintainer overrides. It can populate or refresh packaging.
 
-Ubucargo applies patches before invoking the generator, so the temporary debcargo overlay omits `debian/patches`.
+## Patch state
+
+`package` prepares the effective source in staging without modifying the working tree. It preserves quilt's `.pc` state and any unrefreshed edits to the current patch, then applies only the remaining patches listed in `debian/patches/series`.
+
+Before generation, ubucargo verifies that the complete series is applied. An inconsistent quilt state, a partially applied patch with rejects, or a remaining patch that cannot be applied is an error and leaves the package unchanged. When `.pc` is absent, all patches are considered unapplied.
+
+The temporary debcargo overlay omits `debian/patches`, because the staged source already has each patch applied once.
 
 ## Generated paths
 
@@ -46,7 +52,7 @@ For each generator-owned path, materialization has three values:
 
 Each value includes whether the path exists, its contents, and its executable bit. A missing file differs from an empty file, so deleting a generated file counts as a maintainer change.
 
-When `base` is present, an override exists when `old != base`; no override list is stored.
+When `base` is present, an override exists when `old != base`.
 
 | Condition | Meaning | Behavior |
 | --- | --- | --- |
@@ -88,6 +94,8 @@ The same rule handles deletions:
 The hint also records the executable bit. Restoring the primary to the hint value removes the override; if no hint exists, removing the primary does the same.
 
 When generator output changes for an overridden path, `package` preserves the primary, reports the `base`-to-`new` change, and updates the hint. It keeps no older history and does not merge.
+
+`upgrade` uses these same materialization rules against the newly acquired upstream source.
 
 ## Check mode
 
@@ -145,4 +153,6 @@ Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source 
 
 `package` leaves the real orig tarball unchanged. Changes to `excludes`, `repack_suffix`, or similar archive settings require `import` or `upgrade`, even for the same crate version.
 
-Ubucargo checks the debcargo version before running it. Compatibility tests should cover representative libraries, binaries, semver-suffixed crates, patched manifests, feature-heavy packages, and overridden generated files.
+Ubucargo checks the debcargo version before running it. Representative debcargo-conf packages serve as compatibility fixtures for libraries, binaries, semver-suffixed crates, patched manifests, feature-heavy packages, and overridden generated files.
+
+If debcargo's current CLI boundary proves too brittle, the preferred next step is a narrow generator-only debcargo command rather than an independent implementation of its generation behavior.
