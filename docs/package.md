@@ -38,7 +38,9 @@ Debcargo generates package names, feature layout, dependencies, control, copyrig
 
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output used to detect maintainer overrides.
 
-The paths above, generated feature-package override names, and files with hints are generator-owned. Other paths are maintainer-owned. Ownership remains even if the current generator stops emitting a path.
+The fixed paths above and generated feature-package override names are generator-owned. Other paths are maintainer-owned; a `.debcargo.hint` suffix does not by itself make an arbitrary path generator-owned. Ownership remains even if the current generator stops emitting a known path.
+
+If debcargo emits an unrecognized path, `package` warns and ignores it. Known local-source placeholders such as `cargo-checksum.json` and `watch`, and the existing changelog copied through the staging overlay, are ignored without warnings.
 
 `package` may create `debian/changelog` once, then leaves it to the maintainer. `debian/debcargo.toml` and `debian/patches/` are also maintainer-owned.
 
@@ -107,11 +109,11 @@ ubucargo package ./rust-serde --check
 
 ## Generation boundary
 
-Debcargo writes candidate Debian files to a staging directory. Ubucargo then compares them with the working tree and its hints and applies the resulting changes atomically.
+Debcargo writes candidate Debian files to a staging directory. Ubucargo then compares them with the working tree and its hints and validates the complete change set before writing. Each replacement is written to a temporary file beside its destination and renamed into place; deletions are likewise individual operations. Primary files are changed before their hints, so an interrupted run is interpreted conservatively as an override or deletion. An interrupted run may therefore leave some planned paths updated, but each path remains complete and rerunning `package` safely converges on the intended state.
 
 `package` uses only local source and runs debcargo with Cargo offline mode enabled.
 
-The root `Cargo.toml` must contain `[package]`; its name and version select the crate passed to debcargo. Nested workspace members are internal dependencies. Virtual workspaces require manual packaging.
+The staged root `Cargo.toml` must contain `[package]`; Cargo metadata supplies its name to debcargo, while debcargo reads the local package version itself. Nested workspace members are internal dependencies. Virtual workspaces require manual packaging.
 
 ## Debcargo staging adapter
 
@@ -146,10 +148,10 @@ debcargo package \
   --directory /absolute/stage/output \
   --no-overlay-write-back \
   [--changelog-ready] \
-  CRATE VERSION
+  CRATE
 ```
 
-Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source tree and orig tarball. Acquisition metadata supplies `cargo-checksum.json`, `watch`, and the initial changelog.
+Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source tree and orig tarball. Registry-backed `import` and `upgrade` supply `cargo-checksum.json`, `watch`, and the initial changelog from verified acquisition metadata. Offline `package` preserves those existing files and their hints rather than replacing them with local-source placeholders.
 
 `package` leaves the real orig tarball unchanged. Changes to `excludes`, `repack_suffix`, or similar archive settings require `import` or `upgrade`, even for the same crate version.
 
