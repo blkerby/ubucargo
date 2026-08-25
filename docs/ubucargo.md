@@ -24,7 +24,7 @@ Each source package contains its upstream source, Debian packaging, generator in
       control.debcargo.hint       # latest generated state
       rules                       # generated or overridden
       rules.debcargo.hint         # latest generated state
-      patches/                    # maintainer-owned
+      patches/                    # maintainer-owned except generated auto/
       changelog                   # maintainer-owned
       copyright                   # generated or overridden
       copyright.debcargo.hint     # latest generated state

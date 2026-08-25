@@ -21,13 +21,15 @@ If the source-package identity would change, use `import` to create a new packag
 The staged debcargo overlay contains only durable maintainer-owned packaging:
 
 - `debian/changelog`;
-- `debian/patches/`;
+- maintainer patches and non-automatic entries in `debian/patches/series`;
 - maintainer scripts, install files, service units, and other unknown paths; and
 - files outside generator-owned filename spaces.
 
 `debian/debcargo.toml` remains the generator configuration.
 
 The overlay omits generated files and hints so that existing packaging does not affect generation. After debcargo finishes, ubucargo applies the fresh generated files using the same `base`, `old`, and `new` materialization rules as [`package`](package.md#override-detection-and-materialization). Unmodified generated files are replaced, maintainer overrides are preserved, and hints are updated to the fresh generator output.
+
+Debcargo-generated files below `debian/patches/auto/` and generated `auto/` entries in `debian/patches/series` follow the generated-patch rules from `package`; maintainer patch files and series entries are preserved.
 
 Missing baselines use the same rules as `package`. Ambiguous paths require `--keep` or `--replace`; unresolved ambiguities leave the existing tree and orig tarball unchanged.
 

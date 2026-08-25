@@ -4,19 +4,19 @@ use std::{
     fs,
     io::Write,
     os::unix::fs::PermissionsExt,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use tempfile::NamedTempFile;
 
-/// File content and the mode bit relevant to generated packaging.
+/// File content and Unix permission mode relevant to generated packaging.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileState {
     /// Complete file contents.
     pub contents: Vec<u8>,
-    /// Whether any executable bit is set.
-    pub executable: bool,
+    /// Permission and special bits, excluding the file-type bits.
+    pub mode: u32,
 }
 
 /// Planned reconciliation result for one managed primary file and its hint.
@@ -32,6 +32,8 @@ pub struct PathPlan {
     pub primary_after: Option<FileState>,
     /// Hint state to leave after applying the plan.
     pub hint_after: Option<FileState>,
+    /// Whether this path uses a companion hint for reconciliation.
+    pub tracks_hint: bool,
     /// Whether the working primary differs from its previous generated state.
     pub overridden: bool,
     /// Whether a missing hint requires an explicit keep-or-replace decision.
@@ -46,7 +48,7 @@ impl PathPlan {
 
     /// Reports whether applying this path changes its generated baseline.
     fn has_hint_changed(&self) -> bool {
-        self.base != self.hint_after
+        self.tracks_hint && self.base != self.hint_after
     }
 }
 
@@ -110,17 +112,31 @@ impl Plan {
 
     /// Applies primary changes first and hint changes second using atomic file replacement.
     pub fn apply(&self) -> Result<()> {
+        // Write generated files before mixed-ownership files such as the patch
+        // series, then remove obsolete files. This keeps every referenced auto
+        // patch available if an interrupted run is resumed.
         for path in &self.paths {
-            ensure_state(&self.debian, &path.path, &path.old)?;
-            ensure_state(&self.debian, &make_hint_path(&path.path), &path.base)?;
+            if path.tracks_hint && path.has_primary_changed() && path.primary_after.is_some() {
+                install_state(
+                    &resolve_managed_path(&self.debian, &path.path)?,
+                    path.primary_after.as_ref(),
+                )
+                .context("package may be partially updated; rerun `ubucargo package`")?;
+            }
         }
 
-        // Primaries go first: after interruption, an old hint makes the new
-        // primary look like an override, which is conservative.
         for path in &self.paths {
-            if path.has_primary_changed() {
-                ensure_state(&self.debian, &path.path, &path.old)
-                    .context("package may be partially updated; rerun `ubucargo package`")?;
+            if !path.tracks_hint && path.has_primary_changed() {
+                install_state(
+                    &resolve_managed_path(&self.debian, &path.path)?,
+                    path.primary_after.as_ref(),
+                )
+                .context("package may be partially updated; rerun `ubucargo package`")?;
+            }
+        }
+
+        for path in &self.paths {
+            if path.tracks_hint && path.has_primary_changed() && path.primary_after.is_none() {
                 install_state(
                     &resolve_managed_path(&self.debian, &path.path)?,
                     path.primary_after.as_ref(),
@@ -131,10 +147,6 @@ impl Plan {
 
         for path in &self.paths {
             if path.has_hint_changed() {
-                ensure_state(&self.debian, &make_hint_path(&path.path), &path.base)
-                    .context("package may be partially updated; rerun `ubucargo package`")?;
-                ensure_state(&self.debian, &path.path, &path.primary_after)
-                    .context("package may be partially updated; rerun `ubucargo package`")?;
                 install_state(
                     &resolve_managed_path(&self.debian, &make_hint_path(&path.path))?,
                     path.hint_after.as_ref(),
@@ -210,6 +222,7 @@ pub fn build_plan(
             base,
             primary_after,
             hint_after,
+            tracks_hint: true,
             overridden,
             ambiguous: unresolved,
         });
@@ -238,40 +251,7 @@ pub fn build_plan(
     })
 }
 
-/// Normalizes and validates a package-relative primary-file path.
-pub fn normalize_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        bail!("path must be package-relative: {}", path.display());
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(component) => normalized.push(component),
-            Component::CurDir => {}
-            _ => bail!("path must not escape the package: {}", path.display()),
-        }
-    }
-
-    let starts_with_debian = matches!(
-        normalized.components().next(),
-        Some(Component::Normal(part)) if part == "debian"
-    );
-    if !starts_with_debian || normalized.as_os_str() == "debian" {
-        bail!("path must name a file below debian/: {}", path.display());
-    }
-
-    if normalized
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().ends_with(".debcargo.hint"))
-    {
-        bail!("name the primary file, not its hint: {}", path.display());
-    }
-
-    Ok(normalized)
-}
-
-/// Reads a regular file's contents and executable state, preserving absence distinctly.
+/// Reads a regular file's contents and permission mode, preserving absence distinctly.
 pub fn read_state(path: &Path) -> Result<Option<FileState>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -285,16 +265,8 @@ pub fn read_state(path: &Path) -> Result<Option<FileState>> {
 
     Ok(Some(FileState {
         contents: fs::read(path).with_context(|| format!("read {}", path.display()))?,
-        executable: metadata.permissions().mode() & 0o111 != 0,
+        mode: metadata.permissions().mode() & 0o7777,
     }))
-}
-
-/// Fails if a managed path changed after the plan was constructed.
-fn ensure_state(debian: &Path, path: &Path, expected: &Option<FileState>) -> Result<()> {
-    if &read_state(&resolve_managed_path(debian, path)?)? != expected {
-        bail!("{} changed while ubucargo was running", path.display());
-    }
-    Ok(())
 }
 
 /// Resolves a package-relative managed path beneath the selected Debian directory.
@@ -321,11 +293,7 @@ fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
                 .with_context(|| format!("write temporary file for {}", path.display()))?;
             temporary
                 .as_file()
-                .set_permissions(fs::Permissions::from_mode(if state.executable {
-                    0o755
-                } else {
-                    0o644
-                }))
+                .set_permissions(fs::Permissions::from_mode(state.mode))
                 .with_context(|| format!("set mode for {}", path.display()))?;
             temporary
                 .persist(path)
@@ -366,7 +334,7 @@ mod tests {
     fn make_state(value: &str) -> FileState {
         FileState {
             contents: value.as_bytes().to_vec(),
-            executable: false,
+            mode: 0o644,
         }
     }
 
@@ -380,8 +348,8 @@ mod tests {
         let path = PathBuf::from("debian/control");
         let managed = BTreeSet::from([path.clone()]);
 
-        fs::write(root.join(&path), b"maintainer").unwrap();
-        fs::write(root.join(make_hint_path(&path)), b"base").unwrap();
+        install_state(&root.join(&path), Some(&make_state("maintainer"))).unwrap();
+        install_state(&root.join(make_hint_path(&path)), Some(&make_state("base"))).unwrap();
         let generated = BTreeMap::from([(path.clone(), make_state("new"))]);
         let plan = build_plan(
             &debian,
@@ -451,8 +419,8 @@ mod tests {
         assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
         assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
 
-        fs::write(root.join(&path), b"base").unwrap();
-        fs::write(root.join(make_hint_path(&path)), b"base").unwrap();
+        install_state(&root.join(&path), Some(&make_state("base"))).unwrap();
+        install_state(&root.join(make_hint_path(&path)), Some(&make_state("base"))).unwrap();
         let plan = build_plan(
             &debian,
             &managed,
@@ -488,7 +456,7 @@ mod tests {
         let path = PathBuf::from("debian/rules");
         let generated = FileState {
             contents: b"#!/usr/bin/make -f\n".to_vec(),
-            executable: true,
+            mode: 0o750,
         };
         let plan = build_plan(
             &debian,
@@ -509,5 +477,23 @@ mod tests {
             read_state(&root.join(make_hint_path(&path))).unwrap(),
             Some(generated)
         );
+
+        fs::set_permissions(root.join(&path), fs::Permissions::from_mode(0o700)).unwrap();
+        let plan = build_plan(
+            &debian,
+            &BTreeSet::from([path.clone()]),
+            &BTreeMap::from([(
+                path,
+                FileState {
+                    contents: b"#!/usr/bin/make -f\n".to_vec(),
+                    mode: 0o750,
+                },
+            )]),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert!(plan.paths[0].overridden);
+        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o700);
     }
 }

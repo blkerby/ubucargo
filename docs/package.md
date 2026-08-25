@@ -7,19 +7,23 @@ ubucargo package [PACKAGE] [--check] \
   [--keep PATH]... [--replace PATH]...
 ```
 
-`PACKAGE` may be omitted when the current directory is inside a source package.
+When supplied, `PACKAGE` must be the source-package root. When omitted, ubucargo searches upward from the current directory for the nearest `debian/debcargo.toml`. The staged Cargo metadata step later validates the root `Cargo.toml`.
 
 `package` reads the patched source and `debian/debcargo.toml`, generates files in a staging area, and applies them while preserving maintainer overrides. It can populate or refresh packaging.
 
 ## Patch state
 
-`package` prepares the effective source in staging without modifying the working tree. It preserves quilt's `.pc` state and any unrefreshed edits to the current patch, then applies only the remaining patches listed in `debian/patches/series`.
+`package` copies the source tree and its quilt state into staging without modifying the working tree. If patches are applied, it refreshes the current patch in the staged copy to capture unrefreshed edits, then pops the complete applied stack. The resulting staged source is pristine, while the staged patch files represent the current working state.
 
-Before generation, ubucargo verifies that the complete series is applied. An inconsistent quilt state, a partially applied patch with rejects, or a remaining patch that cannot be applied is an error and leaves the package unchanged. When `.pc` is absent, all patches are considered unapplied.
+Symlinks are recreated inside staging when their resolved targets remain within the source tree. Dangling symlinks and links that resolve outside the source tree or into excluded VCS or build directories are errors.
 
 Ubucargo understands on-disk quilt state but does not inspect Git history or VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
 
-The temporary debcargo overlay omits `debian/patches`, because the staged source already has each patch applied once.
+Ubucargo copies the complete staged `debian/patches/` directory into the temporary debcargo overlay. Debcargo regenerates its automatic patches, prepends them to the series, applies the complete patch stack to its extracted crate, and reads the resulting manifest. A quilt refresh, pop, or debcargo patch failure leaves the real package unchanged. When `.pc` is absent, the staged source is assumed to have no patches applied.
+
+If generation would change an automatic patch or the generated `auto/` portion of `debian/patches/series` while the real quilt stack is applied, `package` refuses to write. The maintainer must pop the real stack first; `--check` may still be used to preview the generated changes.
+
+This arrangement prevents existing automatic patches from hiding configuration changes such as a changed `remove_features` value: debcargo always sees pristine staged source and regenerates those patches itself.
 
 ## Generated paths
 
@@ -33,16 +37,23 @@ Generated files may include:
 - `debian/watch`
 - `debian/tests/control`, for library packages
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
+- `debian/patches/auto/<patch>`, for debcargo-generated source transformations
 
 Debcargo generates package names, feature layout, dependencies, control, copyright, rules, tests, source format, and feature overrides. Ubucargo generates origin-dependent files such as `cargo-checksum.json`, `watch`, and the initial changelog from verified acquisition metadata.
 
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output used to detect maintainer overrides.
 
-The fixed paths above and generated feature-package override names are generator-owned. Other paths are maintainer-owned; a `.debcargo.hint` suffix does not by itself make an arbitrary path generator-owned. Ownership remains even if the current generator stops emitting a known path.
+The fixed paths above, generated feature-package override names, and files below `debian/patches/auto/` are generator-owned. Other paths are maintainer-owned; a `.debcargo.hint` suffix does not by itself make an arbitrary path generator-owned. Ownership remains even if the current generator stops emitting a known path.
 
 If debcargo emits an unrecognized path, `package` warns and ignores it. Known local-source placeholders such as `cargo-checksum.json` and `watch`, and the existing changelog copied through the staging overlay, are ignored without warnings.
 
-`package` may create `debian/changelog` once, then leaves it to the maintainer. `debian/debcargo.toml` and `debian/patches/` are also maintainer-owned.
+`package` may create `debian/changelog` once, then leaves it to the maintainer. `debian/debcargo.toml` and non-automatic files below `debian/patches/` are also maintainer-owned.
+
+### Generated patches
+
+Debcargo may generate patches for configuration-driven source transformations such as `remove_features`. Ubucargo materializes files below `debian/patches/auto/` using the ordinary hint rules.
+
+`debian/patches/series` has mixed ownership and does not use a whole-file hint. Ubucargo replaces entries whose patch names begin with `auto/` using debcargo's generated series, while preserving all other lines, options, comments, and the existing file mode. Generated auto-patch files are written before the series is updated; obsolete auto-patch files are removed afterward.
 
 ## Override detection and materialization
 
@@ -52,7 +63,7 @@ For each generator-owned path, materialization has three values:
 - `old`: the working-tree `<file>`
 - `new`: the generated staging file
 
-Each value includes whether the path exists, its contents, and its executable bit. A missing file differs from an empty file, so deleting a generated file counts as a maintainer change.
+Each value includes whether the path exists, its contents, and its Unix permission mode. A missing file differs from an empty file, so deleting a generated file counts as a maintainer change.
 
 When `base` is present, an override exists when `old != base`.
 
@@ -61,7 +72,7 @@ When `base` is present, an override exists when `old != base`.
 | `old == base` | Unmodified generated file | Replace both primary and hint with `new` |
 | `old != base` | Maintainer override | Preserve `old`; replace the hint with `new` |
 
-This byte-for-byte comparison is deliberately conservative. Any content or executable-mode change preserves the primary as an override rather than risking data loss.
+This comparison is deliberately conservative. Any content or permission-mode change preserves the primary as an override rather than risking data loss.
 
 ## Missing baselines
 
@@ -93,7 +104,7 @@ The same rule handles deletions:
 - if the generator stops emitting an unmodified path, both files are removed;
 - if the generator stops emitting an overridden path, the primary is preserved and the hint is removed.
 
-The hint also records the executable bit. Restoring the primary to the hint value removes the override; if no hint exists, removing the primary does the same.
+The hint also records the permission mode. Restoring the primary to the hint value removes the override; if no hint exists, removing the primary does the same.
 
 When generator output changes for an overridden path, `package` preserves the primary, reports the `base`-to-`new` change, and updates the hint. It keeps no older history and does not merge.
 
@@ -121,9 +132,10 @@ Ubucargo creates a temporary layout:
 
 ```text
 stage/
-  source/            # effective patched crate source
+  source/            # pristine crate source after staged quilt patches are popped
   overlay/
     changelog        # present only when the package already has one
+    patches/         # complete staged patch set; debcargo refreshes auto/
   debcargo.toml      # adapted temporary configuration
   output/
 ```
@@ -137,7 +149,7 @@ crate_src_path = "/absolute/stage/source"
 
 `overlay` must be omitted or `"."`. `crate_src_path` must be omitted or point to the current source package. Other values cause an error.
 
-The overlay contains only an existing changelog, used for copyright years. When present, ubucargo passes `--changelog-ready`. Existing generated files and overrides do not affect generation.
+The overlay contains the existing changelog, used for copyright years, and the complete staged patch set. When the changelog is present, ubucargo passes `--changelog-ready`. Existing generated packaging overrides such as `control` and `rules` do not affect generation.
 
 The initial invocation is equivalent to:
 
