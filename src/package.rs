@@ -17,17 +17,16 @@ use crate::materialize::{FileState, PathPlan, build_plan, read_state};
 
 const DEBCARGO_VERSION: &str = "debcargo 2.8.4";
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
+    "debian/cargo-checksum.json",
     "debian/control",
     "debian/copyright",
     "debian/rules",
     "debian/source/format",
     "debian/tests/control",
-];
-const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &[
-    "debian/cargo-checksum.json",
+    "debian/upstream/metadata",
     "debian/watch",
-    "debian/changelog",
 ];
+const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &["debian/changelog"];
 
 /// Relevant package records returned by `cargo metadata`.
 #[derive(Deserialize)]
@@ -41,6 +40,8 @@ struct Metadata {
 struct MetadataPackage {
     /// Cargo package name passed to debcargo.
     name: String,
+    /// Exact Cargo package version passed to debcargo.
+    version: String,
     /// Manifest used to distinguish the root package from workspace members.
     manifest_path: PathBuf,
 }
@@ -78,10 +79,10 @@ pub fn run(
     }
 
     check_debcargo_version()?;
-    let patches_applied = has_applied_patches(&root)?;
+    let patches_applied = check_patch_state(&root)?;
+    let package = read_root_package(&root)?;
     let stage = stage_package(&root, &debian)?;
-    let crate_name = read_root_package(&stage.path().join("source"))?.name;
-    run_debcargo(&stage, &crate_name)?;
+    run_debcargo(&stage, &package)?;
     let generated = read_generated_candidates(stage.path())?;
     // "Managed" means the path participates in hint reconciliation. Its current
     // primary file may still be a maintainer override.
@@ -167,7 +168,7 @@ fn has_debcargo_config(path: &Path) -> bool {
     path.join("debian/debcargo.toml").is_file()
 }
 
-/// Uses Cargo to identify the package defined by the staged root manifest.
+/// Uses Cargo to identify the package defined by the root manifest.
 fn read_root_package(root: &Path) -> Result<MetadataPackage> {
     let manifest = root.join("Cargo.toml").canonicalize()?;
     let output = Command::new("cargo")
@@ -219,7 +220,7 @@ fn check_debcargo_version() -> Result<()> {
     Ok(())
 }
 
-/// Copies the source, restores it to pristine state, and prepares the debcargo overlay.
+/// Prepares the debcargo overlay and adapted registry-backed configuration.
 fn stage_package(root: &Path, debian: &Path) -> Result<TempDir> {
     let changelog = debian.join("changelog");
     if !changelog.is_file() {
@@ -230,14 +231,11 @@ fn stage_package(root: &Path, debian: &Path) -> Result<TempDir> {
     }
 
     let stage = tempfile::tempdir().context("create staging directory")?;
-    let source = stage.path().join("source");
-    copy_tree(root, &source, root, &source)?;
-
     let overlay = stage.path().join("overlay");
     fs::create_dir(&overlay)?;
     fs::copy(changelog, overlay.join("changelog"))?;
-    prepare_patch_overlay(&source, &overlay)?;
-    adapt_config(root, debian, stage.path())?;
+    prepare_patch_overlay(debian, &overlay)?;
+    adapt_config(debian, stage.path())?;
     Ok(stage)
 }
 
@@ -340,22 +338,11 @@ fn make_relative_link_target(link: &Path, target: &Path, root: &Path) -> Result<
     Ok(relative)
 }
 
-/// Restores pristine staged source and copies the complete patch set into the overlay.
-fn prepare_patch_overlay(source: &Path, overlay: &Path) -> Result<()> {
-    let patches = source.join("debian/patches");
+/// Copies the complete patch set into the registry-backed debcargo overlay.
+fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
+    let patches = debian.join("patches");
     if !patches.is_dir() {
         return Ok(());
-    }
-
-    if has_applied_patches(source)? {
-        run_quilt(source, &["refresh"])?;
-        run_quilt(source, &["pop", "-a"])?;
-        let pc = source.join(".pc");
-        if fs::symlink_metadata(&pc)?.file_type().is_symlink() {
-            fs::remove_file(pc)?;
-        } else {
-            fs::remove_dir_all(pc)?;
-        }
     }
 
     let overlay_patches = overlay.join("patches");
@@ -378,8 +365,8 @@ fn prepare_patch_overlay(source: &Path, overlay: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reports whether Quilt records any applied patches in a source tree.
-fn has_applied_patches(source: &Path) -> Result<bool> {
+/// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
+fn check_patch_state(source: &Path) -> Result<bool> {
     let path = source.join(".pc/applied-patches");
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -388,36 +375,31 @@ fn has_applied_patches(source: &Path) -> Result<bool> {
     };
     for line in contents.lines() {
         if !line.trim().is_empty() {
+            let output = Command::new("quilt")
+                .args(["diff", "--quiltrc=-", "-z", "--no-timestamps", "--no-index"])
+                .env("QUILT_PATCHES", "debian/patches")
+                .current_dir(source)
+                .output()
+                .context("run quilt diff -z")?;
+            if !output.status.success() {
+                bail!(
+                    "could not inspect the current quilt patch:\n{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if !output.stdout.is_empty() {
+                bail!("the current quilt patch has unrefreshed changes; run `quilt refresh`");
+            }
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Runs one Quilt operation against the staged source tree.
-fn run_quilt(source: &Path, arguments: &[&str]) -> Result<()> {
-    let output = Command::new("quilt")
-        .args(arguments)
-        .arg("--quiltrc=-")
-        .env("QUILT_PATCHES", "debian/patches")
-        .current_dir(source)
-        .output()
-        .with_context(|| format!("run quilt {}", arguments.join(" ")))?;
-    if !output.status.success() {
-        bail!(
-            "quilt {} failed:\n{}{}",
-            arguments.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(())
-}
-
-/// Validates the in-tree config and rewrites its paths for staged generation.
-fn adapt_config(root: &Path, debian: &Path, stage: &Path) -> Result<()> {
+/// Validates the in-tree config and rewrites its overlay for registry-backed generation.
+fn adapt_config(debian: &Path, stage: &Path) -> Result<()> {
     let config_path = debian.join("debcargo.toml");
-    let config_directory = root.join("debian");
     let mut config: DocumentMut = fs::read_to_string(&config_path)
         .with_context(|| format!("read {}", config_path.display()))?
         .parse()
@@ -428,19 +410,8 @@ fn adapt_config(root: &Path, debian: &Path, stage: &Path) -> Result<()> {
     {
         bail!("overlay must be omitted or \".\"");
     }
-    if let Some(crate_src_path) = config.get("crate_src_path") {
-        let Some(crate_src_path) = crate_src_path.as_str() else {
-            bail!("crate_src_path must be a path string");
-        };
-        let crate_src_path = Path::new(crate_src_path);
-        let crate_src_path = if crate_src_path.is_absolute() {
-            crate_src_path.to_path_buf()
-        } else {
-            config_directory.join(crate_src_path)
-        };
-        if crate_src_path.canonicalize().ok().as_deref() != Some(root) {
-            bail!("crate_src_path must be omitted or point to the source package");
-        }
+    if config.get("crate_src_path").is_some() {
+        bail!("crate_src_path is not supported by ubucargo package");
     }
     if let Some(item) = config.get("ubucargo") {
         let Some(table) = item.as_table() else {
@@ -453,7 +424,6 @@ fn adapt_config(root: &Path, debian: &Path, stage: &Path) -> Result<()> {
     config.remove("ubucargo");
 
     config["overlay"] = value(require_utf8_path(&stage.join("overlay"))?);
-    config["crate_src_path"] = value(require_utf8_path(&stage.join("source"))?);
     fs::write(stage.join("debcargo.toml"), config.to_string())?;
     Ok(())
 }
@@ -465,7 +435,7 @@ fn require_utf8_path(path: &Path) -> Result<&str> {
 }
 
 /// Runs debcargo against the staged local crate with network access disabled.
-fn run_debcargo(stage: &TempDir, crate_name: &str) -> Result<()> {
+fn run_debcargo(stage: &TempDir, package: &MetadataPackage) -> Result<()> {
     let output = Command::new("debcargo")
         .arg("package")
         .arg("--config")
@@ -474,8 +444,8 @@ fn run_debcargo(stage: &TempDir, crate_name: &str) -> Result<()> {
         .arg(stage.path().join("output"))
         .arg("--no-overlay-write-back")
         .arg("--changelog-ready")
-        .arg(crate_name)
-        .env("CARGO_NET_OFFLINE", "true")
+        .arg(&package.name)
+        .arg(&package.version)
         .current_dir(stage.path())
         .output()
         .context("run debcargo package")?;
@@ -769,17 +739,15 @@ mod tests {
 
         assert!(!managed.contains(Path::new("debian/custom")));
         assert!(managed.contains(Path::new("debian/librust-example-dev.lintian-overrides")));
-        assert!(is_expected_unmanaged_output(Path::new(
-            "debian/cargo-checksum.json"
-        )));
+        assert!(is_package_managed(Path::new("debian/cargo-checksum.json")));
         assert!(!is_expected_unmanaged_output(Path::new(
             "debian/upstream/metadata"
         )));
     }
 
     #[test]
-    /// Verifies that in-tree relative paths are interpreted from `debian/`.
-    fn validates_config_paths_relative_to_debian() {
+    /// Verifies that registry-backed staging rewrites only the overlay path.
+    fn adapts_config_for_registry_generation() {
         let root = tempfile::tempdir().unwrap();
         let stage = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("debian")).unwrap();
@@ -787,11 +755,11 @@ mod tests {
         fs::create_dir(stage.path().join("overlay")).unwrap();
         fs::write(
             root.path().join("debian/debcargo.toml"),
-            "overlay = \".\"\ncrate_src_path = \"..\"\n\n[ubucargo]\n",
+            "overlay = \".\"\n\n[ubucargo]\n",
         )
         .unwrap();
 
-        adapt_config(root.path(), &root.path().join("debian"), stage.path()).unwrap();
+        adapt_config(&root.path().join("debian"), stage.path()).unwrap();
 
         let config: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
             .unwrap()
@@ -802,9 +770,6 @@ mod tests {
             config["overlay"].as_str(),
             stage.path().join("overlay").to_str()
         );
-        assert_eq!(
-            config["crate_src_path"].as_str(),
-            stage.path().join("source").to_str()
-        );
+        assert!(config.get("crate_src_path").is_none());
     }
 }

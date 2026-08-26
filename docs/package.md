@@ -9,21 +9,21 @@ ubucargo package [PACKAGE] [--check] \
 
 When supplied, `PACKAGE` must be the source-package root. When omitted, ubucargo searches upward from the current directory for the nearest `debian/debcargo.toml`. The staged Cargo metadata step later validates the root `Cargo.toml`.
 
-`package` reads the patched source and `debian/debcargo.toml`, generates files in a staging area, and applies them while preserving maintainer overrides. It can populate or refresh packaging.
+`package` reads the root crate identity and `debian/debcargo.toml`, generates files in a staging area from the exact crates.io release, and applies them while preserving maintainer overrides. It can populate or refresh packaging.
 
 ## Patch state
 
-`package` copies the source tree and its quilt state into staging without modifying the working tree. If patches are applied, it refreshes the current patch in the staged copy to capture unrefreshed edits, then pops the complete applied stack. The resulting staged source is pristine, while the staged patch files represent the current working state.
+`package` uses debcargo's registry-backed source acquisition, then applies the package's complete quilt series through a temporary overlay. The exact crate name and version come from the root `Cargo.toml`.
 
-Symlinks are recreated inside staging when their resolved targets remain within the source tree. Dangling symlinks and links that resolve outside the source tree or into excluded VCS or build directories are errors.
+When a quilt patch is applied in the working tree, ubucargo runs `quilt diff -z` without modifying the tree. Unrefreshed changes are an error because they are not present in the patch files supplied to registry-backed generation.
 
-Ubucargo understands on-disk quilt state but does not inspect Git history or VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
+Ubucargo understands on-disk quilt state but does not inspect Git history or VCS-specific patch queues. For example, if a GBP patch queue is used, it must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
 
-Ubucargo copies the complete staged `debian/patches/` directory into the temporary debcargo overlay. Debcargo regenerates its automatic patches, prepends them to the series, applies the complete patch stack to its extracted crate, and reads the resulting manifest. A quilt refresh, pop, or debcargo patch failure leaves the real package unchanged. When `.pc` is absent, the staged source is assumed to have no patches applied.
+Ubucargo copies the complete `debian/patches/` directory into the temporary debcargo overlay. Debcargo regenerates its automatic patches, prepends them to the series, applies the complete patch stack to its extracted crate, and reads the resulting manifest. Patch failures leave the real package unchanged.
 
 If generation would change an automatic patch or the generated `auto/` portion of `debian/patches/series` while the real quilt stack is applied, `package` refuses to write. The maintainer must pop the real stack first; `--check` may still be used to preview the generated changes.
 
-This arrangement prevents existing automatic patches from hiding configuration changes such as a changed `remove_features` value: debcargo always sees pristine staged source and regenerates those patches itself.
+This arrangement prevents existing automatic patches from hiding configuration changes such as a changed `remove_features` value: debcargo always starts from the exact registry release and regenerates those patches itself.
 
 ## Generated paths
 
@@ -39,13 +39,13 @@ Generated files may include:
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
 - `debian/patches/auto/<patch>`, for debcargo-generated source transformations
 
-Debcargo generates package names, feature layout, dependencies, control, copyright, rules, tests, source format, and feature overrides. Ubucargo generates origin-dependent files such as `cargo-checksum.json`, `watch`, and the initial changelog from verified acquisition metadata.
+Debcargo generates package names, feature layout, dependencies, control, copyright, rules, tests, source format, feature overrides, `cargo-checksum.json`, and `watch` from the registry source. Ubucargo leaves the existing changelog to the maintainer.
 
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output used to detect maintainer overrides.
 
 The fixed paths above, generated feature-package override names, and files below `debian/patches/auto/` are generator-owned. Other paths are maintainer-owned; a `.debcargo.hint` suffix does not by itself make an arbitrary path generator-owned. Ownership remains even if the current generator stops emitting a known path.
 
-If debcargo emits an unrecognized path, `package` warns and ignores it. Known local-source placeholders such as `cargo-checksum.json` and `watch`, and the existing changelog copied through the staging overlay, are ignored without warnings.
+If debcargo emits an unrecognized path, `package` warns and ignores it. The existing changelog copied through the staging overlay is ignored without warnings.
 
 `package` may create `debian/changelog` once, then leaves it to the maintainer. `debian/debcargo.toml` and non-automatic files below `debian/patches/` are also maintainer-owned.
 
@@ -122,9 +122,9 @@ ubucargo package ./rust-serde --check
 
 Debcargo writes candidate Debian files to a staging directory. Ubucargo then compares them with the working tree and its hints and validates the complete change set before writing. Each replacement is written to a temporary file beside its destination and renamed into place; deletions are likewise individual operations. Primary files are changed before their hints, so an interrupted run is interpreted conservatively as an override or deletion. An interrupted run may therefore leave some planned paths updated, but each path remains complete and rerunning `package` safely converges on the intended state.
 
-`package` uses only local source and runs debcargo with Cargo offline mode enabled.
+`package` uses debcargo's registry-backed mode and may update the Cargo registry index or download the exact crate release.
 
-The staged root `Cargo.toml` must contain `[package]`; Cargo metadata supplies its name to debcargo, while debcargo reads the local package version itself. Nested workspace members are internal dependencies. Virtual workspaces require manual packaging.
+The root `Cargo.toml` must contain `[package]`; Cargo metadata supplies its exact name and version to debcargo. Nested workspace members are internal dependencies. Virtual workspaces require manual packaging.
 
 ## Debcargo staging adapter
 
@@ -132,7 +132,6 @@ Ubucargo creates a temporary layout:
 
 ```text
 stage/
-  source/            # pristine crate source after staged quilt patches are popped
   overlay/
     changelog        # present only when the package already has one
     patches/         # complete staged patch set; debcargo refreshes auto/
@@ -144,26 +143,24 @@ The temporary TOML keeps debcargo settings, removes `[ubucargo]`, and points pat
 
 ```toml
 overlay = "/absolute/stage/overlay"
-crate_src_path = "/absolute/stage/source"
 ```
 
-`overlay` must be omitted or `"."`. `crate_src_path` must be omitted or point to the current source package. Other values cause an error.
+`overlay` must be omitted or `"."`. `crate_src_path` is rejected because `package` uses registry-backed generation.
 
 The overlay contains the existing changelog, used for copyright years, and the complete staged patch set. When the changelog is present, ubucargo passes `--changelog-ready`. Existing generated packaging overrides such as `control` and `rules` do not affect generation.
 
 The initial invocation is equivalent to:
 
 ```console
-CARGO_NET_OFFLINE=true \
 debcargo package \
   --config /absolute/stage/debcargo.toml \
   --directory /absolute/stage/output \
   --no-overlay-write-back \
   [--changelog-ready] \
-  CRATE
+  CRATE VERSION
 ```
 
-Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source tree and orig tarball. Registry-backed `import` and `upgrade` supply `cargo-checksum.json`, `watch`, and the initial changelog from verified acquisition metadata. Offline `package` preserves those existing files and their hints rather than replacing them with local-source placeholders.
+Ubucargo uses only `stage/output/debian/` and discards debcargo's staged source tree and orig tarball. Registry metadata supplies `cargo-checksum.json` and `watch`; the existing changelog remains maintainer-owned.
 
 `package` leaves the real orig tarball unchanged. Changes to `excludes`, `repack_suffix`, or similar archive settings require `import` or `upgrade`, even for the same crate version.
 

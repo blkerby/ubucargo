@@ -32,7 +32,7 @@ pub struct PathPlan {
     pub primary_after: Option<FileState>,
     /// Hint state to leave after applying the plan.
     pub hint_after: Option<FileState>,
-    /// Whether this path uses a companion hint for reconciliation.
+    /// Whether this path uses a companion hint for reconciliation ('false' only for 'series').
     pub tracks_hint: bool,
     /// Whether the working primary differs from its previous generated state.
     pub overridden: bool,
@@ -176,7 +176,7 @@ pub fn build_plan(
         let new = generated.get(path).cloned();
         let ambiguous =
             base.is_none() && matches!((&old, &new), (Some(old), Some(new)) if old != new);
-        let decision = if ambiguous {
+        let decision_replace = if ambiguous {
             match (keep.contains(path), replace.contains(path)) {
                 (true, false) => {
                     used_decisions.insert(path.clone());
@@ -199,19 +199,34 @@ pub fn build_plan(
         // A managed path is not necessarily generator-controlled: when the
         // primary differs from its hint, the primary is a maintainer override.
         let (primary_after, hint_after, overridden, unresolved) = match &base {
+            // The primary still matches the last generated state, so accept the
+            // new generated state as both the primary and the hint.
             Some(base) if old.as_ref() == Some(base) => (new.clone(), new.clone(), false, false),
+            // The primary no longer matches the last generated state, so it is
+            // a maintainer override: preserve it while tracking the new state.
             Some(_) => (old.clone(), new.clone(), true, false),
             None => match (&old, &new) {
+                // Neither the working tree nor the generator owns this path.
                 (None, None) => (None, None, false, false),
+                // The generator introduced this path, so install it with a hint.
                 (None, Some(_)) => (new.clone(), new.clone(), false, false),
+                // Without a hint, an unchanged primary is already correct.
                 (Some(old), Some(new)) if old == new => {
                     (old.clone().into(), new.clone().into(), false, false)
                 }
-                (Some(_), Some(_)) => match decision {
+                // Without a hint, a differing primary could be either an
+                // override or stale generated output; ask the maintainer.
+                (Some(_), Some(_)) => match decision_replace {
+                    // Keep the current primary as an override while recording
+                    // the new generated state in its hint.
                     Some(false) => (old.clone(), new.clone(), true, false),
+                    // Replace the primary with the new generated state.
                     Some(true) => (new.clone(), new.clone(), false, false),
+                    // Leave the ambiguity unresolved for the caller to report.
                     None => (old.clone(), None, false, true),
                 },
+                // The primary has no hint, so it predates hint tracking;
+                // retain it because there is no generated replacement.
                 (Some(_), None) => (old.clone(), None, false, false),
             },
         };
