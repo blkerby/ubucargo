@@ -53,7 +53,7 @@ If debcargo emits an unrecognized path, `package` warns and ignores it. The exis
 
 Debcargo may generate patches for configuration-driven source transformations such as `remove_features`. Ubucargo materializes files below `debian/patches/auto/` using the ordinary hint rules.
 
-`debian/patches/series` has mixed ownership and does not use a whole-file hint. Ubucargo replaces entries whose patch names begin with `auto/` using debcargo's generated series, while preserving all other lines, options, comments, and the existing file mode. Generated auto-patch files are written before the series is updated; obsolete auto-patch files are removed afterward.
+`debian/patches/series` has mixed ownership and does not use a hint. Debcargo receives the complete existing series as overlay input, regenerates the `auto/` entries, and preserves all other lines; ubucargo writes that merged output directly. Generated auto-patch files are written before the series is updated; obsolete auto-patch files are removed afterward.
 
 ## Override detection and materialization
 

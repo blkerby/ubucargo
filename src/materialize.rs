@@ -32,7 +32,7 @@ pub struct PathPlan {
     pub primary_after: Option<FileState>,
     /// Hint state to leave after applying the plan.
     pub hint_after: Option<FileState>,
-    /// Whether this path uses a companion hint for reconciliation ('false' only for 'series').
+    /// Whether this path uses a companion hint; false only for the patch series.
     pub tracks_hint: bool,
     /// Whether the working primary differs from its previous generated state.
     pub overridden: bool,
@@ -110,42 +110,15 @@ impl Plan {
         }
     }
 
-    /// Applies primary changes first and hint changes second using atomic file replacement.
     pub fn apply(&self) -> Result<()> {
-        // Write generated files before mixed-ownership files such as the patch
-        // series, then remove obsolete files. This keeps every referenced auto
-        // patch available if an interrupted run is resumed.
         for path in &self.paths {
-            if path.tracks_hint && path.has_primary_changed() && path.primary_after.is_some() {
+            if path.has_primary_changed() {
                 install_state(
                     &resolve_managed_path(&self.debian, &path.path)?,
                     path.primary_after.as_ref(),
                 )
                 .context("package may be partially updated; rerun `ubucargo package`")?;
             }
-        }
-
-        for path in &self.paths {
-            if !path.tracks_hint && path.has_primary_changed() {
-                install_state(
-                    &resolve_managed_path(&self.debian, &path.path)?,
-                    path.primary_after.as_ref(),
-                )
-                .context("package may be partially updated; rerun `ubucargo package`")?;
-            }
-        }
-
-        for path in &self.paths {
-            if path.tracks_hint && path.has_primary_changed() && path.primary_after.is_none() {
-                install_state(
-                    &resolve_managed_path(&self.debian, &path.path)?,
-                    path.primary_after.as_ref(),
-                )
-                .context("package may be partially updated; rerun `ubucargo package`")?;
-            }
-        }
-
-        for path in &self.paths {
             if path.has_hint_changed() {
                 install_state(
                     &resolve_managed_path(&self.debian, &make_hint_path(&path.path))?,
@@ -154,7 +127,6 @@ impl Plan {
                 .context("package may be partially updated; rerun `ubucargo package`")?;
             }
         }
-
         Ok(())
     }
 }

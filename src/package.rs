@@ -1,9 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
     fs::{self, File},
-    os::unix::fs as unix_fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Command,
 };
 
@@ -86,6 +84,8 @@ pub fn run(
     let generated = read_generated_candidates(stage.path())?;
     // "Managed" means the path participates in hint reconciliation. Its current
     // primary file may still be a maintainer override.
+    // The patch series is reconciled separately because debcargo preserves its
+    // maintainer-owned lines while regenerating only the auto/ entries.
     let managed = collect_managed_paths(&debian, &generated)?;
     let mut plan = build_plan(&debian, &managed, &generated, &keep_paths, &replace_paths)?;
     plan.paths
@@ -239,106 +239,7 @@ fn stage_package(root: &Path, debian: &Path) -> Result<TempDir> {
     Ok(stage)
 }
 
-/// Recursively copies a source tree while keeping symlink targets inside staging.
-fn copy_tree(
-    source: &Path,
-    destination: &Path,
-    source_root: &Path,
-    destination_root: &Path,
-) -> Result<()> {
-    fs::create_dir(destination).with_context(|| format!("create {}", destination.display()))?;
-    fs::set_permissions(destination, fs::symlink_metadata(source)?.permissions())?;
-
-    for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == OsStr::new(".git") || name == OsStr::new("target") {
-            continue;
-        }
-        let from = entry.path();
-        let to = destination.join(&name);
-        let metadata = fs::symlink_metadata(&from)?;
-        if metadata.file_type().is_dir() {
-            copy_tree(&from, &to, source_root, destination_root)?;
-        } else if metadata.file_type().is_file() {
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
-            fs::set_permissions(&to, metadata.permissions())?;
-        } else if metadata.file_type().is_symlink() {
-            let link_target = fs::read_link(&from)?;
-            let source_target = if link_target.is_absolute() {
-                link_target
-            } else {
-                from.parent().unwrap().join(link_target)
-            };
-            let source_target = source_target
-                .canonicalize()
-                .with_context(|| format!("resolve symlink {}", from.display()))?;
-            let relative_target = source_target.strip_prefix(source_root).with_context(|| {
-                format!("symlink {} points outside the source tree", from.display())
-            })?;
-            if relative_target.components().any(|component| {
-                matches!(component, Component::Normal(name) if name == ".git" || name == "target")
-            }) {
-                bail!("symlink {} points to excluded source content", from.display());
-            }
-            let staged_target = destination_root.join(relative_target);
-            let staged_link_target =
-                make_relative_link_target(&to, &staged_target, destination_root)?;
-            unix_fs::symlink(staged_link_target, &to)?;
-        } else {
-            bail!(
-                "unsupported special file in source tree: {}",
-                from.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Calculates a relative symlink target between two paths inside the staging root.
-fn make_relative_link_target(link: &Path, target: &Path, root: &Path) -> Result<PathBuf> {
-    let link_parent = link
-        .parent()
-        .with_context(|| format!("{} has no parent directory", link.display()))?;
-    let from = link_parent.strip_prefix(root)?;
-    let to = target.strip_prefix(root)?;
-    let mut from_parts = Vec::new();
-    let mut to_parts = Vec::new();
-
-    for component in from.components() {
-        if let Component::Normal(part) = component {
-            from_parts.push(part);
-        }
-    }
-    for component in to.components() {
-        if let Component::Normal(part) = component {
-            to_parts.push(part);
-        }
-    }
-
-    let mut common = 0;
-    while common < from_parts.len()
-        && common < to_parts.len()
-        && from_parts[common] == to_parts[common]
-    {
-        common += 1;
-    }
-
-    let mut relative = PathBuf::new();
-    for _ in common..from_parts.len() {
-        relative.push("..");
-    }
-    for part in &to_parts[common..] {
-        relative.push(part);
-    }
-    if relative.as_os_str().is_empty() {
-        relative.push(".");
-    }
-    Ok(relative)
-}
-
-/// Copies the complete patch set into the registry-backed debcargo overlay.
+/// Copies the complete patch set into the debcargo overlay.
 fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
     let patches = debian.join("patches");
     if !patches.is_dir() {
@@ -346,22 +247,21 @@ fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
     }
 
     let overlay_patches = overlay.join("patches");
-    let patches_root = patches.canonicalize()?;
-    copy_tree(
-        &patches_root,
-        &overlay_patches,
-        &patches_root,
-        &overlay_patches,
-    )?;
-
-    let series = overlay_patches.join("series");
-    if series.is_file()
-        && !fs::read_to_string(&series)?
-            .lines()
-            .any(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
-    {
-        fs::remove_file(series)?;
+    let output = Command::new("cp")
+        .arg("-a")
+        .arg("--reflink=auto")
+        .arg(format!("{}/.", patches.display()))
+        .arg(&overlay_patches)
+        .output()
+        .context("run cp -a --reflink=auto")?;
+    if !output.status.success() {
+        bail!(
+            "cp -a --reflink=auto failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
+
     Ok(())
 }
 
@@ -581,18 +481,16 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
             .any(|expected| path == Path::new(expected))
 }
 
-/// Builds the mixed-ownership patch-series update from generated auto entries and real manual entries.
+/// Builds the patch-series update from debcargo's merged output.
+///
+/// Debcargo preserves maintainer-owned lines from the overlay and regenerates
+/// only `auto/` entries, so its output is authoritative and needs no hint.
 fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> {
-    let path = PathBuf::from("debian/patches/series");
-    let old = read_state(&debian.join("patches/series"))?;
-    let generated = read_state(&stage.join("output/debian/patches/series"))?;
-    let primary_after = merge_patch_series(old.as_ref(), generated.as_ref())?;
-
     Ok(PathPlan {
-        path,
-        old,
+        path: PathBuf::from("debian/patches/series"),
+        old: read_state(&debian.join("patches/series"))?,
         base: None,
-        primary_after,
+        primary_after: read_state(&stage.join("output/debian/patches/series"))?,
         hint_after: None,
         tracks_hint: false,
         overridden: false,
@@ -600,112 +498,38 @@ fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> {
     })
 }
 
-/// Merges generated `auto/` entries with the maintainer-owned portion of a patch series.
-fn merge_patch_series(
-    current: Option<&FileState>,
-    generated: Option<&FileState>,
-) -> Result<Option<FileState>> {
-    let mut contents = Vec::new();
-
-    if let Some(generated) = generated {
-        let text = std::str::from_utf8(&generated.contents)
-            .context("generated patch series is not UTF-8")?;
-        for line in text.split_inclusive('\n') {
-            if is_auto_series_line(line) {
-                contents.extend_from_slice(line.as_bytes());
-            }
-        }
-    }
-
-    if let Some(current) = current {
-        let text =
-            std::str::from_utf8(&current.contents).context("existing patch series is not UTF-8")?;
-        for line in text.split_inclusive('\n') {
-            if !is_auto_series_line(line) {
-                if !contents.is_empty() && !contents.ends_with(b"\n") {
-                    contents.push(b'\n');
-                }
-                contents.extend_from_slice(line.as_bytes());
-            }
-        }
-    }
-
-    if contents.is_empty() && current.is_none() {
-        return Ok(None);
-    }
-    let mode = if let Some(current) = current {
-        current.mode
-    } else if let Some(generated) = generated {
-        generated.mode
-    } else {
-        0o644
-    };
-    Ok(Some(FileState { contents, mode }))
-}
-
-/// Reports whether a patch-series line belongs to debcargo's generated auto namespace.
-fn is_auto_series_line(line: &str) -> bool {
-    let line = line.trim_start();
-    if line.is_empty() || line.starts_with('#') {
-        return false;
-    }
-    line.split_whitespace()
-        .next()
-        .is_some_and(|name| name.starts_with("auto/"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    /// Verifies that generated auto entries replace only the generated portion of a series.
-    fn merges_auto_patch_entries_into_manual_series() {
-        let current = FileState {
-            contents: b"# manual patches\nfix.patch -p0\nauto/old.patch\n".to_vec(),
-            mode: 0o640,
-        };
-        let generated = FileState {
-            contents: b"auto/new.patch\nauto/second.patch\nfix.patch -p0\n".to_vec(),
-            mode: 0o644,
-        };
-
-        let merged = merge_patch_series(Some(&current), Some(&generated))
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(
-            merged.contents,
-            b"auto/new.patch\nauto/second.patch\n# manual patches\nfix.patch -p0\n"
-        );
-        assert_eq!(merged.mode, 0o640);
-    }
-
-    #[test]
-    /// Verifies that staged symlinks stay inside staging and escaping links fail.
-    fn validates_symlink_targets_while_copying() {
-        let source = tempfile::tempdir().unwrap();
-        let destination = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(source.path().join("payload"), "inside").unwrap();
-        unix_fs::symlink(
-            source.path().join("payload"),
-            source.path().join("inside-link"),
+    /// Verifies that the patch series uses debcargo's merged output without a hint.
+    fn uses_debcargo_patch_series_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        fs::create_dir_all(directory.path().join("patches")).unwrap();
+        fs::create_dir_all(stage.path().join("output/debian/patches")).unwrap();
+        fs::write(
+            directory.path().join("patches/series"),
+            "# manual\nfix.patch\nauto/old.patch\n",
+        )
+        .unwrap();
+        fs::write(
+            stage.path().join("output/debian/patches/series"),
+            "auto/new.patch\n# manual\nfix.patch\n",
         )
         .unwrap();
 
-        let staged = destination.path().join("source");
-        copy_tree(source.path(), &staged, source.path(), &staged).unwrap();
-        let staged_link = fs::read_link(staged.join("inside-link")).unwrap();
-        assert!(!staged_link.is_absolute());
-        assert_eq!(
-            staged.join(staged_link).canonicalize().unwrap(),
-            staged.join("payload").canonicalize().unwrap()
-        );
+        let plan = build_patch_series_plan(directory.path(), stage.path()).unwrap();
 
-        unix_fs::symlink(outside.path(), source.path().join("outside-link")).unwrap();
-        let rejected = destination.path().join("rejected");
-        assert!(copy_tree(source.path(), &rejected, source.path(), &rejected).is_err());
+        assert_eq!(plan.path, Path::new("debian/patches/series"));
+        assert_eq!(
+            plan.primary_after.unwrap().contents,
+            b"auto/new.patch\n# manual\nfix.patch\n".to_vec()
+        );
+        assert_eq!(plan.base, None);
+        assert_eq!(plan.hint_after, None);
+        assert!(!plan.tracks_hint);
     }
 
     #[test]
