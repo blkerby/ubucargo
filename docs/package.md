@@ -93,7 +93,7 @@ The orig tarball is placed beside the source directory using Debian naming:
 
 When repacking is not required, debcargo copies the verified `.crate` archive unchanged. Matching `excludes` entries cause debcargo to rebuild the archive without those paths. `repack_suffix` supplies the suffix added to the Debian upstream version; it defaults to `ds` when `excludes` is present.
 
-For an existing package, the old orig tarball is the source-merge baseline. Its source name and upstream version come from the top changelog entry. Ubucargo first looks beside the package, then tries `pristine-tar`, then uses `pull-lp-source --download-only SOURCE VERSION` to retrieve that exact Ubuntu source version independently of the host's configured APT series. Acquisition happens before the staged changelog is changed.
+For an existing package, the old orig tarball is the source-merge baseline. Its source name and upstream version come from the top changelog entry. Ubucargo first looks beside the package, then uses `pull-lp-source --download-only SOURCE VERSION` to retrieve that exact Ubuntu source version independently of the host's configured APT series. Acquisition happens before the staged changelog is changed.
 
 The downloaded `.dsc` and its checksums identify the orig tarball. If no valid old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
