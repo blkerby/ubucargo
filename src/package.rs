@@ -35,11 +35,11 @@ struct Metadata {
 
 /// Cargo metadata needed to identify the staged root package.
 #[derive(Deserialize)]
-struct MetadataPackage {
+pub(crate) struct MetadataPackage {
     /// Cargo package name passed to debcargo.
-    name: String,
+    pub(crate) name: String,
     /// Exact Cargo package version passed to debcargo.
-    version: String,
+    pub(crate) version: String,
     /// Manifest used to distinguish the root package from workspace members.
     manifest_path: PathBuf,
 }
@@ -169,7 +169,7 @@ fn has_debcargo_config(path: &Path) -> bool {
 }
 
 /// Uses Cargo to identify the package defined by the root manifest.
-fn read_root_package(root: &Path) -> Result<MetadataPackage> {
+pub(crate) fn read_root_package(root: &Path) -> Result<MetadataPackage> {
     let manifest = root.join("Cargo.toml").canonicalize()?;
     let output = Command::new("cargo")
         .args([
@@ -205,7 +205,7 @@ fn read_root_package(root: &Path) -> Result<MetadataPackage> {
 }
 
 /// Rejects debcargo versions not covered by the current compatibility target.
-fn check_debcargo_version() -> Result<()> {
+pub(crate) fn check_debcargo_version() -> Result<()> {
     let output = Command::new("debcargo")
         .arg("--version")
         .output()
@@ -386,7 +386,7 @@ fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileState
 }
 
 /// Adds file-like debcargo output paths to a package-relative result set.
-fn collect_output_paths(
+pub(crate) fn collect_output_paths(
     directory: &Path,
     root: &Path,
     paths: &mut BTreeSet<PathBuf>,
@@ -448,7 +448,7 @@ fn collect_managed_paths(
 }
 
 /// Reports whether the package command recognizes a staged path as managed output.
-fn is_package_managed(path: &Path) -> bool {
+pub(crate) fn is_package_managed(path: &Path) -> bool {
     PACKAGE_MANAGED_PATHS
         .iter()
         .any(|managed| path == Path::new(managed))

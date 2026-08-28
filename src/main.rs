@@ -1,3 +1,4 @@
+mod import;
 mod materialize;
 mod package;
 
@@ -17,6 +18,19 @@ struct Cli {
 /// Operations supported by the current Ubucargo release.
 #[derive(Subcommand)]
 enum Command {
+    /// Create a new source package from a crates.io crate.
+    Import {
+        /// Crate name to import from crates.io.
+        crate_name: String,
+
+        /// Exact crate version; defaults to debcargo's latest matching release.
+        version: Option<String>,
+
+        /// Destination source directory; defaults to the Debian source name.
+        #[arg(long, value_name = "DIR")]
+        directory: Option<PathBuf>,
+    },
+
     /// Regenerate packaging while preserving maintainer overrides.
     Package {
         /// Source package directory; defaults to the nearest parent package.
@@ -39,6 +53,11 @@ enum Command {
 /// Parses the command line, runs the selected command, and maps its result to an exit status.
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
+        Command::Import {
+            crate_name,
+            version,
+            directory,
+        } => import::run(&crate_name, version.as_deref(), directory.as_deref()).map(|()| false),
         Command::Package {
             package,
             check,

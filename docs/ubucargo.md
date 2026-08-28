@@ -36,13 +36,12 @@ Each source package contains its upstream source, Debian packaging, generator in
 
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
-| `ubucargo import` | Create a source tree from crates.io | [`import.md`](import.md) |
-| `ubucargo upgrade` | Upgrade source and packaging | [`upgrade.md`](upgrade.md) |
-| `ubucargo package` | Generate and materialize packaging | [`package.md`](package.md) |
+| `ubucargo package` | Create or update a complete source package | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
 
-- To create a new source package based on an upstream crate from crates.io, run `ubucargo import`. It creates the source tree, orig tarball, initial packaging, configuration, and hints.
-- For an existing source package, use `ubucargo package` to refresh generated files and hints without changing the upstream source or orig tarball.
-- To adopt a new upstream crate release, run `ubucargo upgrade`. It creates the new source tree and orig tarball while preserving existing Debian packaging and generated-file overrides.
-- After changing debcargo.toml or other inputs to packaging generation, run ubucargo package again. It may also be run with `--check` to inspect generated changes without writing.
+- Run `ubucargo package CRATE [VERSION]` outside a package to create a new source tree and orig tarball.
+- Run `ubucargo package` inside an existing package to regenerate its current release.
+- Run `ubucargo package CRATE VERSION` against an existing package to select another release.
+- After changing `debcargo.toml`, run `ubucargo package` again. Archive settings, source transformations, generated packaging, and hints are reconciled together.
+- Use `--check` to inspect the complete result without writing.
 - Run `ubucargo deps` whenever dependency candidates need inspection. It does not modify the source package.
