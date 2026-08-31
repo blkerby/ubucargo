@@ -110,15 +110,26 @@ impl Plan {
         }
     }
 
+    /// Applies primary changes first and writes generated baselines last.
     pub fn apply(&self) -> Result<()> {
+        // Install new generated files before changing references such as the
+        // patch series, then remove obsolete files and update hints last.
         for path in &self.paths {
-            if path.has_primary_changed() {
+            if path.has_primary_changed() && path.primary_after.is_some() {
                 install_state(
                     &resolve_managed_path(&self.debian, &path.path)?,
                     path.primary_after.as_ref(),
                 )
                 .context("package may be partially updated; rerun `ubucargo package`")?;
             }
+        }
+        for path in &self.paths {
+            if path.has_primary_changed() && path.primary_after.is_none() {
+                install_state(&resolve_managed_path(&self.debian, &path.path)?, None)
+                    .context("package may be partially updated; rerun `ubucargo package`")?;
+            }
+        }
+        for path in &self.paths {
             if path.has_hint_changed() {
                 install_state(
                     &resolve_managed_path(&self.debian, &make_hint_path(&path.path))?,

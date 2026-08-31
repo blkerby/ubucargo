@@ -11,13 +11,13 @@ ubucargo package [CRATE [VERSION]] [--directory DIR] [--check] [--force] \
 
 ## Target and version selection
 
-`--directory` selects the source-package directory. Without it, ubucargo uses the nearest parent containing `debian/debcargo.toml`. If no existing package is found and `CRATE` is supplied, the destination defaults to the generated Debian source name in the current directory.
+`--directory` selects the source-package directory. An existing directory is reconciled as a package; a nonexistent directory always creates a clean package there, even when the current directory is inside another package. Without `--directory`, ubucargo uses the nearest parent containing `debian/debcargo.toml`. If no existing package is found and `CRATE` is supplied, the destination defaults to the generated Debian source name in the current directory.
 
 For an existing package:
 
 - with no `CRATE`, ubucargo regenerates the crate and version identified by the root `Cargo.toml`;
 - with `CRATE` and `VERSION`, ubucargo selects that exact release;
-- with `CRATE` but no `VERSION`, debcargo selects the latest matching release; and
+- with `CRATE` but no `VERSION`, debcargo selects the latest matching release.
 
 When running Ubucargo on an existing package, the top `debian/changelog` entry must describe the upstream source currently present in the working tree.
 
@@ -128,7 +128,7 @@ Ubucargo copies the complete `debian/patches/` directory into a temporary debcar
 
 When a quilt patch is applied in the working tree, ubucargo runs `quilt diff -z` without modifying the tree. Unrefreshed changes trigger an error, since otherwise a stale version of the patch would be supplied to debcargo, which would likely be unintended.
 
-If the candidate changes the upstream source, orig tarball, an automatic patch, or the generated `auto/` portion of `debian/patches/series`, all real quilt patches must be unapplied before writing. `--check` may still preview the result.
+If the candidate changes the upstream source, all real quilt patches must be unapplied in both normal and `--check` modes. Changes limited to an automatic patch or the generated `auto/` portion of `debian/patches/series` may be previewed with `--check`, but the real quilt stack must be popped before writing them.
 
 Ubucargo understands ordinary on-disk quilt state but does not inspect Git history or VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
 
