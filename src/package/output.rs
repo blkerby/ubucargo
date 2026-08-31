@@ -162,44 +162,6 @@ pub(super) fn initialize_package(source: &Path, config: &PackageConfig) -> Resul
     Ok(())
 }
 
-/// Rejects any existing filesystem entry
-pub(super) fn ensure_destination_absent(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => bail!("destination already exists: {}", path.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
-    }
-}
-
-/// Copies a complete staged tree into place with one final directory rename.
-pub(super) fn install_new_tree(candidate: &Path, destination: &Path) -> Result<()> {
-    let parent = destination
-        .parent()
-        .context("source destination has no parent")?;
-    let temporary = tempfile::Builder::new()
-        .prefix(".ubucargo-package-")
-        .tempdir_in(parent)?;
-    let copied = temporary.path().join("source");
-    fs::create_dir(&copied)?;
-    let output = Command::new("cp")
-        .arg("-a")
-        .arg("--reflink=auto")
-        .arg(format!("{}/.", candidate.display()))
-        .arg(&copied)
-        .output()
-        .context("run cp -a --reflink=auto")?;
-    if !output.status.success() {
-        bail!(
-            "cp -a --reflink=auto failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    fs::rename(&copied, destination)
-        .with_context(|| format!("install {}", destination.display()))?;
-    Ok(())
-}
-
 /// Adds file-like debcargo output paths to a package-relative result set.
 fn collect_output_paths(
     directory: &Path,

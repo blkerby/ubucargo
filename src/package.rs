@@ -15,13 +15,13 @@ use self::{
         get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
         read_root_package, select_release, stage_candidate, validate_output,
     },
-    orig::{acquire_old_orig, extract_orig, files_differ},
+    orig::acquire_old_orig,
     output::{
-        build_patch_series_plan, check_patch_state, collect_managed_paths,
-        ensure_destination_absent, generated_patch_changes, initialize_package, install_new_tree,
-        read_generated_candidates,
+        build_patch_series_plan, check_patch_state, collect_managed_paths, generated_patch_changes,
+        initialize_package, read_generated_candidates,
     },
     source::{build_source_plan, scan_tree},
+    tree::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
 mod changelog;
@@ -29,6 +29,7 @@ mod generate;
 mod orig;
 mod output;
 mod source;
+mod tree;
 
 /// Existing-package reconciliation or clean-package creation mode.
 #[derive(Debug, Eq, PartialEq)]
@@ -222,7 +223,7 @@ fn reconcile_existing(
 
     let old_orig = acquire_old_orig(root, &top)?;
     let base = tempfile::tempdir().context("create old-source extraction directory")?;
-    extract_orig(&old_orig.path, base.path())?;
+    extract_tree(&old_orig.path, base.path())?;
     let patches_applied = check_patch_state(root)?;
 
     let stage = stage_candidate(
@@ -348,7 +349,7 @@ fn create_new(
     let source = requested_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| parent.join(&output.debian_source));
-    ensure_destination_absent(&source)?;
+    require_absent(&source)?;
     let orig = parent.join(
         output
             .orig
@@ -368,7 +369,7 @@ fn create_new(
     if orig_changed {
         fs::copy(&output.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
     }
-    install_new_tree(&output.source, &source)?;
+    copy_tree(&output.source, &source)?;
     Ok(false)
 }
 

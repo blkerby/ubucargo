@@ -7,6 +7,7 @@ use tempfile::TempDir;
 use toml_edit::{DocumentMut, value};
 
 use super::changelog::{TopChangelog, prepare_changelog};
+use super::tree::copy_tree;
 
 const DEBCARGO_VERSION: &str = "debcargo 2.8.4";
 
@@ -388,22 +389,7 @@ fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
     if !patches.is_dir() {
         return Ok(());
     }
-    let overlay_patches = overlay.join("patches");
-    let output = Command::new("cp")
-        .arg("-a")
-        .arg("--reflink=auto")
-        .arg(format!("{}/.", patches.display()))
-        .arg(&overlay_patches)
-        .output()
-        .context("run cp -a --reflink=auto")?;
-    if !output.status.success() {
-        bail!(
-            "cp -a --reflink=auto failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(())
+    copy_tree(&patches, &overlay.join("patches"))
 }
 
 /// Runs final debcargo generation for one exact selected release.

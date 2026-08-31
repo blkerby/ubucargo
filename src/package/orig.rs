@@ -44,60 +44,24 @@ pub(super) fn acquire_old_orig(root: &Path, top: &TopChangelog) -> Result<OrigBa
         );
     }
 
-    // pull-lp-source verifies downloaded source files against their `.dsc`.
-    let orig = locate_downloaded_orig(download.path(), top)?;
+    // pull-lp-source already verifies downloaded source files against their `.dsc`.
+    // So here we only check that the downloaded tarball exists.
+    let orig = download
+        .path()
+        .join(format!("{}_{}.orig.tar.gz", top.source, top.upstream));
+    if !orig.is_file() {
+        bail!("pull-lp-source did not produce {}", orig.display());
+    }
     Ok(OrigBaseline {
         path: orig,
         _temporary: Some(download),
     })
 }
 
-/// Locates the orig tarball downloaded for the old source version.
-fn locate_downloaded_orig(directory: &Path, top: &TopChangelog) -> Result<PathBuf> {
-    let expected_name = format!("{}_{}.orig.tar.gz", top.source, top.upstream);
-    let orig = directory.join(expected_name);
-    if !orig.is_file() {
-        bail!("pull-lp-source did not produce {}", orig.display());
-    }
-    Ok(orig)
-}
-
-/// Extracts an orig tarball as the pristine merge baseline.
-pub(super) fn extract_orig(orig: &Path, destination: &Path) -> Result<()> {
-    let output = Command::new("tar")
-        .arg("--extract")
-        .arg("--file")
-        .arg(orig)
-        .arg("--directory")
-        .arg(destination)
-        .arg("--strip-components=1")
-        .output()
-        .context("run tar")?;
-    if !output.status.success() {
-        bail!(
-            "could not extract {}:\n{}{}",
-            orig.display(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(())
-}
-
-/// Reports whether two files differ; a missing second file counts as differing.
-pub(super) fn files_differ(first: &Path, second: &Path) -> Result<bool> {
-    let output = Command::new("cmp")
-        .arg("--silent")
-        .arg(first)
-        .arg(second)
-        .output()
-        .context("run cmp")?;
-    Ok(!output.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::package::tree::files_differ;
     use std::fs;
 
     #[test]
