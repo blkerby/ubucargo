@@ -95,9 +95,9 @@ When repacking is not required, debcargo copies the verified `.crate` archive un
 
 For an existing package, the old orig tarball is the source-merge baseline. Its source name and upstream version come from the top changelog entry. Ubucargo first looks beside the package, then uses `pull-lp-source --download-only SOURCE VERSION` to retrieve that exact Ubuntu source version independently of the host's configured APT series. Acquisition happens before the staged changelog is changed.
 
-The downloaded `.dsc` and its checksums identify the orig tarball. If no valid old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
+`pull-lp-source` verifies the downloaded source files against their `.dsc`; ubucargo only checks that the expected orig tarball was produced. If no old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
-If the candidate orig path already exists, ubucargo reuses it only when its contents match. Other orig tarballs beside the package are left unchanged.
+If the candidate orig path already exists, ubucargo replaces it with the fresh debcargo result when its contents differ. Other orig tarballs beside the package are left unchanged.
 
 ### Source merge
 

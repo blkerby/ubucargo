@@ -15,7 +15,7 @@ use self::{
         get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
         read_root_package, select_release, stage_candidate, validate_output,
     },
-    orig::{acquire_old_orig, extract_orig, validate_candidate_orig},
+    orig::{acquire_old_orig, extract_orig, files_differ},
     output::{
         build_patch_series_plan, check_patch_state, collect_managed_paths,
         ensure_destination_absent, generated_patch_changes, initialize_package, install_new_tree,
@@ -273,7 +273,7 @@ fn reconcile_existing(
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    let orig_changed = validate_candidate_orig(&output.orig, &orig_destination)?;
+    let orig_changed = files_differ(&output.orig, &orig_destination)?;
 
     if orig_changed {
         println!("create {}", orig_destination.display());
@@ -355,7 +355,7 @@ fn create_new(
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    let orig_changed = validate_candidate_orig(&output.orig, &orig)?;
+    let orig_changed = files_differ(&output.orig, &orig)?;
     println!("create {}", source.display());
     if orig_changed {
         println!("create {}", orig.display());
