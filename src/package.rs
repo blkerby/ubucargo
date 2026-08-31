@@ -15,7 +15,7 @@ use self::{
         get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
         read_root_package, select_release, stage_candidate, validate_output,
     },
-    orig::{acquire_old_orig, extract_orig, install_orig, validate_candidate_orig},
+    orig::{acquire_old_orig, extract_orig, validate_candidate_orig},
     output::{
         build_patch_series_plan, check_patch_state, collect_managed_paths,
         ensure_destination_absent, generated_patch_changes, initialize_package, install_new_tree,
@@ -302,7 +302,8 @@ fn reconcile_existing(
     }
 
     if orig_changed {
-        install_orig(&output.orig, &orig_destination)?;
+        fs::copy(&output.orig, &orig_destination)
+            .with_context(|| format!("install {}", orig_destination.display()))?;
     }
     source_plan
         .apply(root)
@@ -365,7 +366,7 @@ fn create_new(
 
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     if orig_changed {
-        install_orig(&output.orig, &orig)?;
+        fs::copy(&output.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
     }
     install_new_tree(&output.source, &source)?;
     Ok(false)

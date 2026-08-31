@@ -1,13 +1,12 @@
 use std::{
     ffi::OsStr,
-    fs::{self, File},
-    io::Read,
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, Result, bail};
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::TempDir;
 
 use super::changelog::TopChangelog;
 
@@ -183,48 +182,21 @@ pub(super) fn validate_candidate_orig(candidate: &Path, destination: &Path) -> R
             destination.display()
         ),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(error).with_context(|| format!("inspect {}", destination.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("inspect metadata for {}", destination.display()))
+        }
     }
 }
 
-/// Installs an orig tarball atomically without replacing an existing path.
-pub(super) fn install_orig(candidate: &Path, destination: &Path) -> Result<()> {
-    let parent = destination
-        .parent()
-        .context("orig destination has no parent")?;
-    fs::create_dir_all(parent)?;
-    let mut temporary = NamedTempFile::new_in(parent)?;
-    let mut source = File::open(candidate)?;
-    std::io::copy(&mut source, &mut temporary)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::metadata(candidate)?.permissions())?;
-    temporary
-        .persist_noclobber(destination)
-        .map_err(|error| error.error)
-        .with_context(|| format!("install {}", destination.display()))?;
-    Ok(())
-}
-
-/// Compares two files without loading tarballs into memory.
+/// Compares two files without loading them into memory.
 fn files_equal(first: &Path, second: &Path) -> Result<bool> {
-    if fs::metadata(first)?.len() != fs::metadata(second)?.len() {
-        return Ok(false);
-    }
-    let mut first = File::open(first)?;
-    let mut second = File::open(second)?;
-    let mut first_buffer = [0_u8; 64 * 1024];
-    let mut second_buffer = [0_u8; 64 * 1024];
-    loop {
-        let first_read = first.read(&mut first_buffer)?;
-        let second_read = second.read(&mut second_buffer)?;
-        if first_read != second_read || first_buffer[..first_read] != second_buffer[..second_read] {
-            return Ok(false);
-        }
-        if first_read == 0 {
-            return Ok(true);
-        }
-    }
+    let output = Command::new("cmp")
+        .arg("--silent")
+        .arg(first)
+        .arg(second)
+        .output()
+        .context("run cmp")?;
+    Ok(output.status.success())
 }
 
 #[cfg(test)]

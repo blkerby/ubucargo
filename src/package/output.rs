@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::generate::{PackageConfig, read_new_package_config};
+use super::generate::PackageConfig;
 use crate::materialize::{FileState, PathPlan, make_hint_path, read_state};
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
@@ -162,7 +162,7 @@ pub(super) fn initialize_package(source: &Path, config: &PackageConfig) -> Resul
     Ok(())
 }
 
-/// Rejects any existing filesystem entry, including a broken symbolic link.
+/// Rejects any existing filesystem entry
 pub(super) fn ensure_destination_absent(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => bail!("destination already exists: {}", path.display()),
@@ -254,6 +254,7 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::generate::read_new_package_config;
     use super::*;
 
     #[test]
