@@ -58,7 +58,7 @@ pub(super) fn validate_top_changelog(
     Ok(())
 }
 
-/// Prepares one changelog with `dch`, then normalizes provenance in its top entry.
+/// Prepares changelog with `dch`, then normalizes its top entry.
 pub(super) fn prepare_changelog(
     old_path: Option<PathBuf>,
     staged_path: &Path,
@@ -72,7 +72,7 @@ pub(super) fn prepare_changelog(
         fs::copy(&old_path, staged_path)
             .with_context(|| format!("copy {} to {}", old_path.display(), staged_path.display()))?;
     }
-    let version = format!("{upstream}-0ubuntu1");
+    let initial_version = format!("{upstream}-0ubuntu1");
     let provenance = format!(
         "Package {crate_name} {crate_version} from crates.io using debcargo {} and ubucargo {}.",
         DEBCARGO_VERSION_NUMBER,
@@ -98,13 +98,13 @@ pub(super) fn prepare_changelog(
                 .arg("--package")
                 .arg(source_name)
                 .arg("--newversion")
-                .arg(&version);
+                .arg(&initial_version);
         }
         ChangelogAction::Increment => {
             command.arg("--increment");
         }
         ChangelogAction::NewVersion => {
-            command.arg("--newversion").arg(&version);
+            command.arg("--newversion").arg(&initial_version);
         }
         ChangelogAction::Append => {
             command.arg("--append");

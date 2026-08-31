@@ -11,8 +11,8 @@ use crate::materialize::{build_plan, install_state, read_state};
 use self::{
     changelog::{read_top_changelog, validate_top_changelog},
     generate::{
-        PackageConfig, Selection, cargo_to_debian_version, check_debcargo_version,
-        crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
+        CrateSelection, PackageConfig, cargo_to_debian_version, check_debcargo_version,
+        get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
         read_root_package, select_release, stage_candidate, validate_output,
     },
     orig::{acquire_old_orig, extract_orig, install_orig, validate_candidate_orig},
@@ -30,9 +30,9 @@ mod orig;
 mod output;
 mod source;
 
-/// Filesystem target selected for a package operation.
+/// Existing-package reconciliation or clean-package creation mode.
 #[derive(Debug, Eq, PartialEq)]
-enum Target {
+enum PackageMode {
     /// An existing Ubucargo source package.
     Existing(PathBuf),
     /// A clean destination that does not yet exist.
@@ -40,7 +40,7 @@ enum Target {
         /// Directory that will contain the source package and orig tarball.
         parent: PathBuf,
         /// Explicit source directory, or none when the Debian source name is used.
-        requested: Option<PathBuf>,
+        requested_dir: Option<PathBuf>,
     },
 }
 
@@ -65,11 +65,11 @@ pub fn run(
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let target = resolve_target(&current, directory, crate_name.is_some())?;
+    let mode = select_package_mode(&current, directory, crate_name.is_some())?;
     let (keep_paths, replace_paths) = collect_decisions(keep, replace)?;
     check_debcargo_version()?;
-    match target {
-        Target::Existing(root) => reconcile_existing(
+    match mode {
+        PackageMode::Existing(root) => reconcile_existing(
             &root,
             crate_name,
             version,
@@ -78,60 +78,76 @@ pub fn run(
             &keep_paths,
             &replace_paths,
         ),
-        Target::New { parent, requested } => {
+        PackageMode::New {
+            parent,
+            requested_dir,
+        } => {
             if !keep_paths.is_empty() || !replace_paths.is_empty() {
                 bail!("--keep and --replace apply only to existing packages");
             }
             let crate_name = crate_name.context("CRATE is required when creating a package")?;
-            create_new(&parent, requested.as_deref(), crate_name, version, check)
+            create_new(
+                &parent,
+                requested_dir.as_deref(),
+                crate_name,
+                version,
+                check,
+            )
         }
     }
 }
 
-/// Resolves explicit and implicit package modes without inheriting an enclosing package for a new explicit path.
-fn resolve_target(start: &Path, directory: Option<&Path>, has_crate: bool) -> Result<Target> {
+/// Selects existing-package reconciliation or clean-package creation.
+fn select_package_mode(
+    start: &Path,
+    directory: Option<&Path>,
+    has_crate: bool,
+) -> Result<PackageMode> {
     if let Some(directory) = directory {
-        let requested = if directory.is_absolute() {
+        let requested_dir = if directory.is_absolute() {
             directory.to_path_buf()
         } else {
             start.join(directory)
         };
-        match fs::symlink_metadata(&requested) {
+        match fs::symlink_metadata(&requested_dir) {
             Ok(metadata) if metadata.is_dir() => {
-                let root = requested
+                let root = requested_dir
                     .canonicalize()
-                    .with_context(|| format!("resolve {}", requested.display()))?;
+                    .with_context(|| format!("resolve {}", requested_dir.display()))?;
                 if !has_debcargo_config(&root) {
                     bail!(
                         "{} is not a source-package root with debian/debcargo.toml",
                         root.display()
                     );
                 }
-                return Ok(Target::Existing(root));
+                return Ok(PackageMode::Existing(root));
             }
-            Ok(_) => bail!("{} is not a directory", requested.display()),
+            Ok(_) => bail!("{} is not a directory", requested_dir.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if !has_crate {
-                    bail!("CRATE is required when creating {}", requested.display());
+                    bail!(
+                        "CRATE is required when creating {}",
+                        requested_dir.display()
+                    );
                 }
-                let parent = requested
+                let parent = requested_dir
                     .parent()
-                    .with_context(|| format!("{} has no parent", requested.display()))?
+                    .with_context(|| format!("{} has no parent", requested_dir.display()))?
                     .to_path_buf();
-                return Ok(Target::New {
+                return Ok(PackageMode::New {
                     parent,
-                    requested: Some(requested),
+                    requested_dir: Some(requested_dir),
                 });
             }
             Err(error) => {
-                return Err(error).with_context(|| format!("inspect {}", requested.display()));
+                return Err(error).with_context(|| format!("inspect {}", requested_dir.display()));
             }
         }
     }
 
     for candidate in start.ancestors() {
         if has_debcargo_config(candidate) {
-            return Ok(Target::Existing(candidate.to_path_buf()));
+            return Ok(PackageMode::Existing(candidate.to_path_buf()));
         }
     }
     if !has_crate {
@@ -140,9 +156,9 @@ fn resolve_target(start: &Path, directory: Option<&Path>, has_crate: bool) -> Re
             start.display()
         );
     }
-    Ok(Target::New {
+    Ok(PackageMode::New {
         parent: start.to_path_buf(),
-        requested: None,
+        requested_dir: None,
     })
 }
 
@@ -190,13 +206,13 @@ fn reconcile_existing(
     let current_upstream = cargo_to_debian_version(&current_version, None);
     validate_top_changelog(&top, &current_package.version, &current_upstream)?;
     let config = read_package_config(&debian.join("debcargo.toml"))?;
-    let selection = select_release(
+    let crate_selection = select_release(
         requested_name,
         requested_version,
         Some(&current_package),
         &config,
     )?;
-    let (source_name, upstream) = selected_debian_identity(&selection, &config)?;
+    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
     if source_name != top.source {
         bail!(
             "selected crate maps to Debian source {source_name}, not existing source {}",
@@ -215,14 +231,14 @@ fn reconcile_existing(
         Some(&top),
         &source_name,
         &upstream,
-        &selection,
+        &crate_selection,
     )?;
     let output = validate_output(
         stage.path(),
         &source_name,
         &upstream,
-        &selection.crate_name,
-        &selection.version,
+        &crate_selection.crate_name,
+        &crate_selection.version,
     )?;
 
     let base_tree = scan_tree(base.path(), false)?;
@@ -300,28 +316,35 @@ fn reconcile_existing(
     Ok(false)
 }
 
-/// Creates a clean package without inheriting any enclosing package state.
+/// Creates a clean source package
 fn create_new(
     parent: &Path,
-    requested: Option<&Path>,
+    requested_dir: Option<&Path>,
     crate_name: &str,
     requested_version: Option<&str>,
     check: bool,
 ) -> Result<bool> {
     let config = read_new_package_config()?;
-    let selection = select_release(Some(crate_name), requested_version, None, &config)?;
-    let (source_name, upstream) = selected_debian_identity(&selection, &config)?;
-    let stage = stage_candidate(&config, None, None, &source_name, &upstream, &selection)?;
+    let crate_selection = select_release(Some(crate_name), requested_version, None, &config)?;
+    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
+    let stage = stage_candidate(
+        &config,
+        None,
+        None,
+        &source_name,
+        &upstream,
+        &crate_selection,
+    )?;
     let output = validate_output(
         stage.path(),
         &source_name,
         &upstream,
-        &selection.crate_name,
-        &selection.version,
+        &crate_selection.crate_name,
+        &crate_selection.version,
     )?;
     initialize_package(&output.source)?;
 
-    let source = requested
+    let source = requested_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| parent.join(&output.debian_source));
     ensure_destination_absent(&source)?;
@@ -350,12 +373,12 @@ fn create_new(
 
 /// Computes the Debian source name and upstream version for a selected release.
 fn selected_debian_identity(
-    selection: &Selection,
+    crate_selection: &CrateSelection,
     config: &PackageConfig,
 ) -> Result<(String, String)> {
-    let version = parse_exact_version(&selection.version)?;
+    let version = parse_exact_version(&crate_selection.version)?;
     Ok((
-        crate_source_name(&selection.crate_name, &version, config.semver_suffix),
+        get_crate_source_name(&crate_selection.crate_name, &version, config.semver_suffix),
         cargo_to_debian_version(&version, config.repack_suffix.as_deref()),
     ))
 }
@@ -370,12 +393,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("debian")).unwrap();
         fs::write(root.path().join("debian/debcargo.toml"), "").unwrap();
-        let target = resolve_target(root.path(), Some(Path::new("new-package")), true).unwrap();
+        let mode = select_package_mode(root.path(), Some(Path::new("new-package")), true).unwrap();
         assert_eq!(
-            target,
-            Target::New {
+            mode,
+            PackageMode::New {
                 parent: root.path().to_path_buf(),
-                requested: Some(root.path().join("new-package")),
+                requested_dir: Some(root.path().join("new-package")),
             }
         );
     }
@@ -389,18 +412,18 @@ mod tests {
         let nested = root.path().join("a/b");
         fs::create_dir_all(&nested).unwrap();
         assert_eq!(
-            resolve_target(&nested, None, false).unwrap(),
-            Target::Existing(root.path().to_path_buf())
+            select_package_mode(&nested, None, false).unwrap(),
+            PackageMode::Existing(root.path().to_path_buf())
         );
 
         let clean = tempfile::tempdir().unwrap();
         assert_eq!(
-            resolve_target(clean.path(), None, true).unwrap(),
-            Target::New {
+            select_package_mode(clean.path(), None, true).unwrap(),
+            PackageMode::New {
                 parent: clean.path().to_path_buf(),
-                requested: None,
+                requested_dir: None,
             }
         );
-        assert!(resolve_target(clean.path(), None, false).is_err());
+        assert!(select_package_mode(clean.path(), None, false).is_err());
     }
 }

@@ -39,7 +39,7 @@ pub(super) struct PackageConfig {
 }
 
 /// Exact crate release selected for final generation.
-pub(super) struct Selection {
+pub(super) struct CrateSelection {
     /// Canonical crate name reported by Cargo.
     pub(super) crate_name: String,
     /// Exact Cargo semver string reported by Cargo.
@@ -112,15 +112,15 @@ pub(super) fn select_release(
     requested_version: Option<&str>,
     current: Option<&MetadataPackage>,
     config: &PackageConfig,
-) -> Result<Selection> {
+) -> Result<CrateSelection> {
     match (requested_name, requested_version, current) {
-        (None, None, Some(current)) => Ok(Selection {
+        (None, None, Some(current)) => Ok(CrateSelection {
             crate_name: current.name.clone(),
             version: current.version.clone(),
         }),
         (Some(name), Some(version), _) => {
             parse_exact_version(version)?;
-            Ok(Selection {
+            Ok(CrateSelection {
                 crate_name: name.to_owned(),
                 version: version.to_owned(),
             })
@@ -151,7 +151,7 @@ pub(super) fn cargo_to_debian_version(version: &Version, repack_suffix: Option<&
 }
 
 /// Computes debcargo's Debian source name for a crate release.
-pub(super) fn crate_source_name(
+pub(super) fn get_crate_source_name(
     crate_name: &str,
     version: &Version,
     semver_suffix: bool,
@@ -185,7 +185,7 @@ pub(super) fn stage_candidate(
     old_top: Option<&TopChangelog>,
     source_name: &str,
     upstream: &str,
-    selection: &Selection,
+    crate_selection: &CrateSelection,
 ) -> Result<TempDir> {
     let stage = tempfile::tempdir().context("create package staging directory")?;
     let overlay = stage.path().join("overlay");
@@ -200,10 +200,10 @@ pub(super) fn stage_candidate(
         old_top,
         source_name,
         upstream,
-        &selection.crate_name,
-        &selection.version,
+        &crate_selection.crate_name,
+        &crate_selection.version,
     )?;
-    run_debcargo(stage.path(), selection)?;
+    run_debcargo(stage.path(), crate_selection)?;
     Ok(stage)
 }
 
@@ -292,7 +292,7 @@ pub(super) fn validate_output(
 }
 
 /// Resolves the latest crate release with `debcargo extract` and reads its Cargo identity.
-fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<Selection> {
+fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelection> {
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
     fs::create_dir(stage.path().join("overlay"))?;
     write_staged_config(config, stage.path())?;
@@ -320,7 +320,7 @@ fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<Selection>
             package.name
         );
     }
-    Ok(Selection {
+    Ok(CrateSelection {
         crate_name: package.name,
         version: package.version,
     })
@@ -407,7 +407,7 @@ fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
 }
 
 /// Runs final debcargo generation for one exact selected release.
-fn run_debcargo(stage: &Path, selection: &Selection) -> Result<()> {
+fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
     let output = Command::new("debcargo")
         .arg("package")
         .arg("--config")
@@ -416,8 +416,8 @@ fn run_debcargo(stage: &Path, selection: &Selection) -> Result<()> {
         .arg(stage.join("output"))
         .arg("--no-overlay-write-back")
         .arg("--changelog-ready")
-        .arg(&selection.crate_name)
-        .arg(&selection.version)
+        .arg(&crate_selection.crate_name)
+        .arg(&crate_selection.version)
         .current_dir(stage)
         .output()
         .context("run debcargo package")?;
