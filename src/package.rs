@@ -342,7 +342,7 @@ fn create_new(
         &crate_selection.crate_name,
         &crate_selection.version,
     )?;
-    initialize_package(&output.source)?;
+    initialize_package(&output.source, &config)?;
 
     let source = requested_dir
         .map(Path::to_path_buf)

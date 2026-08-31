@@ -31,7 +31,7 @@ pub(super) struct MetadataPackage {
 /// Debcargo configuration values that affect package identity.
 pub(super) struct PackageConfig {
     /// Complete in-tree configuration text.
-    contents: String,
+    pub(super) contents: String,
     /// Whether the Debian source name includes the crate's semver line.
     pub(super) semver_suffix: bool,
     /// Effective repack suffix, including debcargo's default for exclusions.

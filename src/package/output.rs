@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+use super::generate::{PackageConfig, read_new_package_config};
 use crate::materialize::{FileState, PathPlan, make_hint_path, read_state};
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
@@ -144,10 +145,10 @@ pub(super) fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<Pat
     })
 }
 
-/// Adds Ubucargo configuration and generated-file baselines to a new staged package.
-pub(super) fn initialize_package(source: &Path) -> Result<()> {
+/// Adds the used Ubucargo configuration and generated-file baselines to a new staged package.
+pub(super) fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let debian = source.join("debian");
-    fs::write(debian.join("debcargo.toml"), "[ubucargo]\n")?;
+    fs::write(debian.join("debcargo.toml"), &config.contents)?;
     let mut paths = BTreeSet::new();
     collect_output_paths(&debian, &debian, &mut paths)?;
     for path in paths {
@@ -267,7 +268,7 @@ mod tests {
             "patch",
         )
         .unwrap();
-        initialize_package(root.path()).unwrap();
+        initialize_package(root.path(), &read_new_package_config().unwrap()).unwrap();
         assert_eq!(
             fs::read_to_string(root.path().join("debian/debcargo.toml")).unwrap(),
             "[ubucargo]\n"
