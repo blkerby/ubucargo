@@ -276,7 +276,7 @@ fn resolve_managed_path(debian: &Path, path: &Path) -> Result<PathBuf> {
 }
 
 /// Atomically replaces one file with the requested state, or removes it.
-fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
+pub(crate) fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
