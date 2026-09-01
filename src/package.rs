@@ -11,9 +11,9 @@ use crate::materialize::{build_plan, install_state, read_state};
 use self::{
     changelog::{read_top_changelog, validate_top_changelog},
     generate::{
-        CrateSelection, PackageConfig, cargo_to_debian_version, check_debcargo_version,
+        CrateSelection, PackageConfig, cargo_to_debian_upstream_version, check_debcargo_version,
         get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
-        read_root_package, select_release, stage_candidate, validate_output,
+        read_root_package, select_release, build_debcargo_tree, validate_debcargo_output,
     },
     orig::acquire_old_orig,
     output::{
@@ -204,7 +204,7 @@ fn reconcile_existing(
     let current_package = read_root_package(root)?;
     let top = read_top_changelog(&debian.join("changelog"))?;
     let current_version = parse_exact_version(&current_package.version)?;
-    let current_upstream = cargo_to_debian_version(&current_version, None);
+    let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
     validate_top_changelog(&top, &current_package.version, &current_upstream)?;
     let config = read_package_config(&debian.join("debcargo.toml"))?;
     let crate_selection = select_release(
@@ -226,7 +226,7 @@ fn reconcile_existing(
     extract_tree(&old_orig.path, base.path())?;
     let patches_applied = check_patch_state(root)?;
 
-    let stage = stage_candidate(
+    let stage = build_debcargo_tree(
         &config,
         Some(&debian),
         Some(&top),
@@ -234,7 +234,7 @@ fn reconcile_existing(
         &upstream,
         &crate_selection,
     )?;
-    let output = validate_output(
+    let output = validate_debcargo_output(
         stage.path(),
         &source_name,
         &upstream,
@@ -329,7 +329,7 @@ fn create_new(
     let config = read_new_package_config()?;
     let crate_selection = select_release(Some(crate_name), requested_version, None, &config)?;
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
-    let stage = stage_candidate(
+    let stage = build_debcargo_tree(
         &config,
         None,
         None,
@@ -337,7 +337,7 @@ fn create_new(
         &upstream,
         &crate_selection,
     )?;
-    let output = validate_output(
+    let output = validate_debcargo_output(
         stage.path(),
         &source_name,
         &upstream,
@@ -381,7 +381,7 @@ fn selected_debian_identity(
     let version = parse_exact_version(&crate_selection.version)?;
     Ok((
         get_crate_source_name(&crate_selection.crate_name, &version, config.semver_suffix),
-        cargo_to_debian_version(&version, config.repack_suffix.as_deref()),
+        cargo_to_debian_upstream_version(&version, config.repack_suffix.as_deref()),
     ))
 }
 

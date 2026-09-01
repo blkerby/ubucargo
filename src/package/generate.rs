@@ -138,7 +138,7 @@ pub fn parse_exact_version(version: &str) -> Result<Version> {
 }
 
 /// Converts Cargo semver to debcargo's Debian upstream-version syntax.
-pub fn cargo_to_debian_version(version: &Version, repack_suffix: Option<&str>) -> String {
+pub fn cargo_to_debian_upstream_version(version: &Version, repack_suffix: Option<&str>) -> String {
     let mut converted = format!("{}.{}.{}", version.major, version.minor, version.patch);
     if !version.pre.is_empty() {
         converted.push('~');
@@ -179,8 +179,8 @@ pub fn read_new_package_config() -> Result<PackageConfig> {
     read_package_config_text("[ubucargo]\n")
 }
 
-/// Builds the final debcargo staging tree with a prepared Ubuntu changelog.
-pub fn stage_candidate(
+/// Builds a debcargo source tree with a prepared Ubuntu changelog.
+pub fn build_debcargo_tree(
     config: &PackageConfig,
     existing_debian: Option<&Path>,
     old_top: Option<&TopChangelog>,
@@ -209,7 +209,7 @@ pub fn stage_candidate(
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
-pub fn validate_output(
+pub fn validate_debcargo_output(
     stage: &Path,
     expected_source: &str,
     expected_upstream: &str,
@@ -430,11 +430,11 @@ mod tests {
     /// Verifies exact Cargo-to-Debian upstream conversion.
     fn converts_cargo_versions() {
         assert_eq!(
-            cargo_to_debian_version(&Version::parse("1.2.3-alpha.1+build").unwrap(), None),
+            cargo_to_debian_upstream_version(&Version::parse("1.2.3-alpha.1+build").unwrap(), None),
             "1.2.3~alpha.1"
         );
         assert_eq!(
-            cargo_to_debian_version(&Version::parse("0.4.0").unwrap(), Some("ds")),
+            cargo_to_debian_upstream_version(&Version::parse("0.4.0").unwrap(), Some("ds")),
             "0.4.0+ds"
         );
         assert!(parse_exact_version("^1.2").is_err());
