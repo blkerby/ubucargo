@@ -223,6 +223,10 @@ fn option_states_match(first: &Option<TreeNode>, second: &Option<TreeNode>) -> b
 }
 
 /// Builds the complete conservative three-tree source merge.
+///
+/// - `base`: source extracted from the existing package's orig tarball.
+/// - `old`: current working source, including local changes.
+/// - `new`: candidate source produced by debcargo after configured repacking.
 pub fn build_source_plan(
     base: &BTreeMap<PathBuf, TreeNode>,
     old: &BTreeMap<PathBuf, TreeNode>,
@@ -242,12 +246,19 @@ pub fn build_source_plan(
         let old_matches_base = option_states_match(&old_state.cloned(), &base_state.cloned());
         let old_matches_new = option_states_match(&old_state.cloned(), &new_state.cloned());
         let selected = if old_matches_base {
+            // No local change: accept the candidate's addition, update, or removal.
             new_state.cloned()
-        } else if old_matches_new || (base_state.is_none() && new_state.is_none()) {
+        } else if old_matches_new {
+            // The working tree already has the candidate state.
+            new_state.cloned()
+        } else if base_state.is_none() && new_state.is_none() {
+            // Neither orig owns this path, so preserve the local-only state.
             old_state.cloned()
         } else if force {
+            // Resolve a local/upstream conflict in favor of the candidate.
             new_state.cloned()
         } else {
+            // Retain the working state for reporting, then reject the plan below.
             conflicts.push(path.clone());
             old_state.cloned()
         };
@@ -261,6 +272,7 @@ pub fn build_source_plan(
         bail!("source conflicts: {}", names.join(", "));
     }
 
+    // Reject or remove retained paths whose selected parent is absent or not a directory.
     let mut blocked = Vec::new();
     for path in &all {
         if after.get(path).and_then(Option::as_ref).is_none() {
