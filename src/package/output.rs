@@ -23,7 +23,7 @@ const PACKAGE_MANAGED_PATHS: &[&str] = &[
 const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &["debian/changelog"];
 
 /// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
-pub(super) fn check_patch_state(source: &Path) -> Result<bool> {
+pub fn check_patch_state(source: &Path) -> Result<bool> {
     let path = source.join(".pc/applied-patches");
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -53,7 +53,7 @@ pub(super) fn check_patch_state(source: &Path) -> Result<bool> {
 }
 
 /// Reports whether generated automatic patches or their series change.
-pub(super) fn generated_patch_changes(plan: &crate::materialize::Plan) -> bool {
+pub fn generated_patch_changes(plan: &crate::materialize::Plan) -> bool {
     for path in &plan.paths {
         let generated_patch_changed =
             path.path == Path::new("debian/patches/series") || is_auto_patch(&path.path);
@@ -65,7 +65,7 @@ pub(super) fn generated_patch_changes(plan: &crate::materialize::Plan) -> bool {
 }
 
 /// Reads fresh debcargo outputs proposed for reconciliation.
-pub(super) fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
+pub fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
     let output_debian = stage.join("output/debian");
     if !output_debian.is_dir() {
         bail!("debcargo produced no debian directory");
@@ -89,7 +89,7 @@ pub(super) fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf
 }
 
 /// Collects paths reconciled by generated-file hint rules.
-pub(super) fn collect_managed_paths(
+pub fn collect_managed_paths(
     debian: &Path,
     generated: &BTreeMap<PathBuf, FileState>,
 ) -> Result<BTreeSet<PathBuf>> {
@@ -132,7 +132,7 @@ pub(super) fn collect_managed_paths(
 }
 
 /// Builds the patch-series update from debcargo's merged output.
-pub(super) fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> {
+pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> {
     Ok(PathPlan {
         path: PathBuf::from("debian/patches/series"),
         old: read_state(&debian.join("patches/series"))?,
@@ -146,7 +146,7 @@ pub(super) fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<Pat
 }
 
 /// Adds the used Ubucargo configuration and generated-file baselines to a new staged package.
-pub(super) fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
+pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let debian = source.join("debian");
     fs::write(debian.join("debcargo.toml"), &config.contents)?;
     let mut paths = BTreeSet::new();

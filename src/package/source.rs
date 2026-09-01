@@ -11,7 +11,7 @@ use crate::materialize::{FileState, install_state};
 
 /// Source-tree entry relevant to three-way reconciliation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum TreeNode {
+pub enum TreeNode {
     /// Directory with its Unix permission mode.
     Directory(u32),
     /// Regular file contents and Unix permission mode.
@@ -21,14 +21,14 @@ pub(super) enum TreeNode {
 }
 
 /// Complete source-tree update outside `debian/`.
-pub(super) struct SourcePlan {
+pub struct SourcePlan {
     /// Deterministic path transitions.
     paths: BTreeMap<PathBuf, (Option<TreeNode>, Option<TreeNode>)>,
 }
 
 impl SourcePlan {
     /// Reports whether applying the source plan changes any path.
-    pub(super) fn has_changes(&self) -> bool {
+    pub fn has_changes(&self) -> bool {
         for (old, new) in self.paths.values() {
             if old != new {
                 return true;
@@ -38,7 +38,7 @@ impl SourcePlan {
     }
 
     /// Prints source-tree changes in deterministic path order.
-    pub(super) fn print_report(&self) {
+    pub fn print_report(&self) {
         for (path, (old, new)) in &self.paths {
             if old == new {
                 continue;
@@ -53,7 +53,7 @@ impl SourcePlan {
     }
 
     /// Applies validated source transitions without recursively deleting paths.
-    pub(super) fn apply(&self, root: &Path) -> Result<()> {
+    pub fn apply(&self, root: &Path) -> Result<()> {
         let mut paths = Vec::new();
         for (path, states) in &self.paths {
             if states.0 != states.1 {
@@ -121,7 +121,7 @@ impl SourcePlan {
 }
 
 /// Scans a deterministic tree while rejecting special files and optionally excluding `debian/`.
-pub(super) fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, TreeNode>> {
+pub fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, TreeNode>> {
     let mut tree = BTreeMap::new();
     let mut directories = vec![PathBuf::new()];
     while let Some(relative) = directories.pop() {
@@ -168,7 +168,7 @@ pub(super) fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<Pa
 }
 
 /// Builds the complete conservative three-tree source merge.
-pub(super) fn build_source_plan(
+pub fn build_source_plan(
     base: &BTreeMap<PathBuf, TreeNode>,
     old: &BTreeMap<PathBuf, TreeNode>,
     new: &BTreeMap<PathBuf, TreeNode>,

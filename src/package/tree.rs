@@ -3,7 +3,7 @@ use std::{fs, path::Path, process::Command};
 use anyhow::{Context, Result, bail};
 
 /// Rejects a path that already exists.
-pub(super) fn require_absent(path: &Path) -> Result<()> {
+pub fn require_absent(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => bail!("destination already exists: {}", path.display()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -12,7 +12,7 @@ pub(super) fn require_absent(path: &Path) -> Result<()> {
 }
 
 /// Copies a directory tree, preserving file attributes and metadata.
-pub(super) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     let output = Command::new("cp")
         .arg("-a")
         .arg("--reflink=auto")
@@ -31,7 +31,7 @@ pub(super) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 /// Extracts a tarball, removing its top-level directory component.
-pub(super) fn extract_tree(archive: &Path, destination: &Path) -> Result<()> {
+pub fn extract_tree(archive: &Path, destination: &Path) -> Result<()> {
     let output = Command::new("tar")
         .arg("--extract")
         .arg("--file")
@@ -53,7 +53,7 @@ pub(super) fn extract_tree(archive: &Path, destination: &Path) -> Result<()> {
 }
 
 /// Reports whether two files differ; a missing second file counts as differing.
-pub(super) fn files_differ(first: &Path, second: &Path) -> Result<bool> {
+pub fn files_differ(first: &Path, second: &Path) -> Result<bool> {
     let output = Command::new("cmp")
         .arg("--silent")
         .arg(first)

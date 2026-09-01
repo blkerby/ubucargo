@@ -20,45 +20,45 @@ struct Metadata {
 
 /// Cargo metadata needed to identify the staged root package.
 #[derive(Clone, Debug, Deserialize)]
-pub(super) struct MetadataPackage {
+pub struct MetadataPackage {
     /// Cargo package name passed to debcargo.
-    pub(super) name: String,
+    pub name: String,
     /// Exact Cargo package version passed to debcargo.
-    pub(super) version: String,
+    pub version: String,
     /// Manifest used to distinguish the root package from workspace members.
     manifest_path: PathBuf,
 }
 
 /// Debcargo configuration values that affect package identity.
-pub(super) struct PackageConfig {
+pub struct PackageConfig {
     /// Complete in-tree configuration text.
-    pub(super) contents: String,
+    pub contents: String,
     /// Whether the Debian source name includes the crate's semver line.
-    pub(super) semver_suffix: bool,
+    pub semver_suffix: bool,
     /// Effective repack suffix, including debcargo's default for exclusions.
-    pub(super) repack_suffix: Option<String>,
+    pub repack_suffix: Option<String>,
 }
 
 /// Exact crate release selected for final generation.
-pub(super) struct CrateSelection {
+pub struct CrateSelection {
     /// Canonical crate name reported by Cargo.
-    pub(super) crate_name: String,
+    pub crate_name: String,
     /// Exact Cargo semver string reported by Cargo.
-    pub(super) version: String,
+    pub version: String,
 }
 
 /// Validated files and identities produced by final debcargo generation.
-pub(super) struct GeneratedOutput {
+pub struct GeneratedOutput {
     /// Staged source package tree.
-    pub(super) source: PathBuf,
+    pub source: PathBuf,
     /// Staged Debian orig tarball.
-    pub(super) orig: PathBuf,
+    pub orig: PathBuf,
     /// Debian source package name.
-    pub(super) debian_source: String,
+    pub debian_source: String,
 }
 
 /// Rejects debcargo versions not covered by the current compatibility target.
-pub(super) fn check_debcargo_version() -> Result<()> {
+pub fn check_debcargo_version() -> Result<()> {
     let output = Command::new("debcargo")
         .arg("--version")
         .output()
@@ -74,7 +74,7 @@ pub(super) fn check_debcargo_version() -> Result<()> {
 }
 
 /// Uses Cargo to identify the package defined by the root manifest.
-pub(super) fn read_root_package(root: &Path) -> Result<MetadataPackage> {
+pub fn read_root_package(root: &Path) -> Result<MetadataPackage> {
     let manifest = root.join("Cargo.toml").canonicalize()?;
     let output = Command::new("cargo")
         .args([
@@ -108,7 +108,7 @@ pub(super) fn read_root_package(root: &Path) -> Result<MetadataPackage> {
 }
 
 /// Selects an exact release, using preliminary extraction only for latest-version resolution.
-pub(super) fn select_release(
+pub fn select_release(
     requested_name: Option<&str>,
     requested_version: Option<&str>,
     current: Option<&MetadataPackage>,
@@ -133,12 +133,12 @@ pub(super) fn select_release(
 }
 
 /// Parses an exact Cargo semantic version and rejects requirement syntax.
-pub(super) fn parse_exact_version(version: &str) -> Result<Version> {
+pub fn parse_exact_version(version: &str) -> Result<Version> {
     Version::parse(version).with_context(|| format!("{version:?} is not an exact Cargo version"))
 }
 
 /// Converts Cargo semver to debcargo's Debian upstream-version syntax.
-pub(super) fn cargo_to_debian_version(version: &Version, repack_suffix: Option<&str>) -> String {
+pub fn cargo_to_debian_version(version: &Version, repack_suffix: Option<&str>) -> String {
     let mut converted = format!("{}.{}.{}", version.major, version.minor, version.patch);
     if !version.pre.is_empty() {
         converted.push('~');
@@ -152,7 +152,7 @@ pub(super) fn cargo_to_debian_version(version: &Version, repack_suffix: Option<&
 }
 
 /// Computes debcargo's Debian source name for a crate release.
-pub(super) fn get_crate_source_name(
+pub fn get_crate_source_name(
     crate_name: &str,
     version: &Version,
     semver_suffix: bool,
@@ -169,18 +169,18 @@ pub(super) fn get_crate_source_name(
 }
 
 /// Reads and validates the in-tree debcargo configuration.
-pub(super) fn read_package_config(path: &Path) -> Result<PackageConfig> {
+pub fn read_package_config(path: &Path) -> Result<PackageConfig> {
     let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     read_package_config_text(&contents).with_context(|| format!("parse {}", path.display()))
 }
 
 /// Reads the default configuration used for a new package.
-pub(super) fn read_new_package_config() -> Result<PackageConfig> {
+pub fn read_new_package_config() -> Result<PackageConfig> {
     read_package_config_text("[ubucargo]\n")
 }
 
 /// Builds the final debcargo staging tree with a prepared Ubuntu changelog.
-pub(super) fn stage_candidate(
+pub fn stage_candidate(
     config: &PackageConfig,
     existing_debian: Option<&Path>,
     old_top: Option<&TopChangelog>,
@@ -209,7 +209,7 @@ pub(super) fn stage_candidate(
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
-pub(super) fn validate_output(
+pub fn validate_output(
     stage: &Path,
     expected_source: &str,
     expected_upstream: &str,
