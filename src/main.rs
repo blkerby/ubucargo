@@ -1,4 +1,3 @@
-mod materialize;
 mod package;
 
 use std::{path::PathBuf, process::ExitCode};

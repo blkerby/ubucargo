@@ -7,8 +7,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::generate::PackageConfig;
-use crate::materialize::{FileState, PathPlan, make_hint_path, read_state};
+use super::{
+    generate::PackageConfig,
+    managed::{FileState, PathPlan, make_hint_path, read_state},
+};
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
     "debian/cargo-checksum.json",
@@ -53,7 +55,7 @@ pub fn check_patch_state(source: &Path) -> Result<bool> {
 }
 
 /// Reports whether generated automatic patches or their series change.
-pub fn generated_patch_changes(plan: &crate::materialize::Plan) -> bool {
+pub fn generated_patch_changes(plan: &super::managed::Plan) -> bool {
     for path in &plan.paths {
         let generated_patch_changed =
             path.path == Path::new("debian/patches/series") || is_auto_patch(&path.path);

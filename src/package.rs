@@ -6,8 +6,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::materialize::{build_plan, install_state, read_state};
-
 use self::{
     changelog::{read_top_changelog, validate_top_changelog},
     generate::{
@@ -16,6 +14,7 @@ use self::{
         read_new_package_config, read_package_config, read_root_package, select_release,
         validate_debcargo_output,
     },
+    managed::{build_plan, install_state, read_state},
     orig::acquire_old_orig,
     output::{
         build_patch_series_plan, check_patch_state, collect_managed_paths, generated_patch_changes,
@@ -27,6 +26,7 @@ use self::{
 
 mod changelog;
 mod generate;
+mod managed;
 mod orig;
 mod output;
 mod source;

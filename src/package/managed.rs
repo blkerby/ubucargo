@@ -1,3 +1,5 @@
+//! Updates generated Debian files while preserving maintainer overrides.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
