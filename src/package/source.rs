@@ -5,17 +5,25 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::tree::files_differ;
 use anyhow::{Context, Result, bail};
 
-use crate::materialize::{FileState, install_state};
+/// Regular file metadata and its backing path on disk.
+#[derive(Clone, Debug)]
+pub struct SourceFile {
+    /// Permission and special bits, excluding the file-type bits.
+    mode: u32,
+    /// Backing file path, valid while the scanned tree's directory exists.
+    origin: PathBuf,
+}
 
 /// Source-tree entry relevant to three-way reconciliation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum TreeNode {
     /// Directory with its Unix permission mode.
     Directory(u32),
-    /// Regular file contents and Unix permission mode.
-    File(FileState),
+    /// Regular file metadata backed by an on-disk path.
+    File(SourceFile),
     /// Symbolic-link target.
     Symlink(PathBuf),
 }
@@ -24,25 +32,20 @@ pub enum TreeNode {
 pub struct SourcePlan {
     /// Deterministic path transitions.
     paths: BTreeMap<PathBuf, (Option<TreeNode>, Option<TreeNode>)>,
+    /// Paths whose old and new states differ.
+    changed: BTreeSet<PathBuf>,
 }
 
 impl SourcePlan {
     /// Reports whether applying the source plan changes any path.
     pub fn has_changes(&self) -> bool {
-        for (old, new) in self.paths.values() {
-            if old != new {
-                return true;
-            }
-        }
-        false
+        !self.changed.is_empty()
     }
 
     /// Prints source-tree changes in deterministic path order.
     pub fn print_report(&self) {
-        for (path, (old, new)) in &self.paths {
-            if old == new {
-                continue;
-            }
+        for path in &self.changed {
+            let (old, new) = &self.paths[path];
             let verb = match (old, new) {
                 (None, Some(_)) => "create",
                 (Some(_), None) => "remove",
@@ -52,32 +55,31 @@ impl SourcePlan {
         }
     }
 
-    /// Applies validated source transitions without recursively deleting paths.
+    /// Applies a source transition plan, creating/overwriting/deleting files and directories.
     pub fn apply(&self, root: &Path) -> Result<()> {
-        let mut paths = Vec::new();
-        for (path, states) in &self.paths {
-            if states.0 != states.1 {
-                paths.push(path);
-            }
+        let mut changed = Vec::new();
+        for path in &self.changed {
+            changed.push(path);
         }
-        paths.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        changed.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
 
-        for path in &paths {
-            let (old, new) = self.paths.get(*path).unwrap();
-            let remove = match (old, new) {
-                (Some(TreeNode::Directory(_)), Some(TreeNode::Directory(_))) => false,
-                (Some(TreeNode::File(_)), Some(TreeNode::File(_))) => false,
-                (Some(_), _) => true,
-                _ => false,
-            };
-            if !remove || matches!(old, Some(TreeNode::Directory(_))) {
-                continue;
+        // Remove leaf files and symlinks that are being deleted or replaced.
+        for path in &changed {
+            let (old, new) = &self.paths[*path];
+            let keep_file = matches!(
+                (old, new),
+                (Some(TreeNode::File(_)), Some(TreeNode::File(_)))
+            );
+            if !keep_file && matches!(old, Some(TreeNode::File(_) | TreeNode::Symlink(_))) {
+                fs::remove_file(root.join(path))
+                    .with_context(|| format!("remove {}", root.join(path).display()))?;
             }
-            fs::remove_file(root.join(path))
-                .with_context(|| format!("remove {}", root.join(path).display()))?;
         }
-        for path in &paths {
-            let (old, new) = self.paths.get(*path).unwrap();
+
+        // Remove directories that are being deleted or replaced, deepest first so
+        // child directories are emptied before their parents.
+        for path in &changed {
+            let (old, new) = &self.paths[*path];
             if matches!(old, Some(TreeNode::Directory(_)))
                 && !matches!(new, Some(TreeNode::Directory(_)))
             {
@@ -86,9 +88,11 @@ impl SourcePlan {
             }
         }
 
-        paths.sort_by_key(|path| path.components().count());
-        for path in &paths {
-            let (old, new) = self.paths.get(*path).unwrap();
+        changed.sort_by_key(|path| path.components().count());
+
+        // Create new directories, shallowest first so parents exist before children.
+        for path in &changed {
+            let (old, new) = &self.paths[*path];
             if matches!(new, Some(TreeNode::Directory(_)))
                 && !matches!(old, Some(TreeNode::Directory(_)))
             {
@@ -96,23 +100,33 @@ impl SourcePlan {
                     .with_context(|| format!("create {}", root.join(path).display()))?;
             }
         }
-        for path in &paths {
+
+        // Copy changed file contents from their origin trees and recreate symlinks.
+        for path in &changed {
             let destination = root.join(path);
-            let (old, new) = self.paths.get(*path).unwrap();
+            let (_old, new) = &self.paths[*path];
             match new {
-                Some(TreeNode::File(state)) if old != new => {
-                    install_state(&destination, Some(state))?;
+                Some(TreeNode::File(file)) => {
+                    fs::copy(&file.origin, &destination).with_context(|| {
+                        format!(
+                            "copy {} to {}",
+                            file.origin.display(),
+                            destination.display()
+                        )
+                    })?;
                 }
-                Some(TreeNode::Symlink(target)) if old != new => {
+                Some(TreeNode::Symlink(target)) => {
                     symlink(target, &destination)
                         .with_context(|| format!("create symlink {}", destination.display()))?;
                 }
                 _ => {}
             }
         }
-        for path in &paths {
-            if let Some(TreeNode::Directory(mode)) = self.paths.get(*path).unwrap().1 {
-                fs::set_permissions(root.join(path), fs::Permissions::from_mode(mode))
+
+        // Set directory permissions after all content exists beneath them.
+        for path in &changed {
+            if let Some(TreeNode::Directory(mode)) = &self.paths[*path].1 {
+                fs::set_permissions(root.join(path), fs::Permissions::from_mode(*mode))
                     .with_context(|| format!("set mode for {}", root.join(path).display()))?;
             }
         }
@@ -122,6 +136,7 @@ impl SourcePlan {
 
 /// Scans a deterministic tree while rejecting special files and optionally excluding `debian/`.
 pub fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, TreeNode>> {
+    let root = fs::canonicalize(root).with_context(|| format!("resolve {}", root.display()))?;
     let mut tree = BTreeMap::new();
     let mut directories = vec![PathBuf::new()];
     while let Some(relative) = directories.pop() {
@@ -149,9 +164,9 @@ pub fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, 
             } else if file_type.is_file() {
                 tree.insert(
                     path,
-                    TreeNode::File(FileState {
-                        contents: fs::read(entry.path())?,
+                    TreeNode::File(SourceFile {
                         mode: metadata.permissions().mode() & 0o7777,
+                        origin: entry.path(),
                     }),
                 );
             } else if file_type.is_symlink() {
@@ -165,6 +180,46 @@ pub fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, 
         }
     }
     Ok(tree)
+}
+
+/// Reports whether two source-tree states are equivalent, comparing file contents on disk.
+pub fn states_match(first: &TreeNode, second: &TreeNode) -> bool {
+    match (first, second) {
+        (TreeNode::Directory(first_mode), TreeNode::Directory(second_mode)) => {
+            first_mode == second_mode
+        }
+        (TreeNode::Symlink(first_target), TreeNode::Symlink(second_target)) => {
+            first_target == second_target
+        }
+        (TreeNode::File(first), TreeNode::File(second)) => {
+            first.mode == second.mode
+                // Treat comparison errors as a difference to stay conservative.
+                && !files_differ(&first.origin, &second.origin).unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
+/// Reports whether two scanned trees contain equivalent states.
+pub fn trees_match(
+    first: &BTreeMap<PathBuf, TreeNode>,
+    second: &BTreeMap<PathBuf, TreeNode>,
+) -> bool {
+    first.len() == second.len()
+        && first.iter().zip(second.iter()).all(
+            |((first_path, first_node), (second_path, second_node))| {
+                first_path == second_path && states_match(first_node, second_node)
+            },
+        )
+}
+
+/// Reports whether two optional states are equivalent.
+fn option_states_match(first: &Option<TreeNode>, second: &Option<TreeNode>) -> bool {
+    match (first, second) {
+        (Some(first), Some(second)) => states_match(first, second),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// Builds the complete conservative three-tree source merge.
@@ -184,9 +239,11 @@ pub fn build_source_plan(
         let base_state = base.get(path);
         let old_state = old.get(path);
         let new_state = new.get(path);
-        let selected = if old_state == base_state {
+        let old_matches_base = option_states_match(&old_state.cloned(), &base_state.cloned());
+        let old_matches_new = option_states_match(&old_state.cloned(), &new_state.cloned());
+        let selected = if old_matches_base {
             new_state.cloned()
-        } else if old_state == new_state || (base_state.is_none() && new_state.is_none()) {
+        } else if old_matches_new || (base_state.is_none() && new_state.is_none()) {
             old_state.cloned()
         } else if force {
             new_state.cloned()
@@ -233,106 +290,169 @@ pub fn build_source_plan(
     }
 
     let mut paths = BTreeMap::new();
+    let mut changed = BTreeSet::new();
     for path in all {
-        paths.insert(
-            path.clone(),
-            (old.get(&path).cloned(), after.remove(&path).unwrap()),
-        );
+        let old_state = old.get(&path).cloned();
+        let after_state = after.remove(&path).unwrap();
+        if !option_states_match(&old_state, &after_state) {
+            changed.insert(path.clone());
+        }
+        paths.insert(path, (old_state, after_state));
     }
-    Ok(SourcePlan { paths })
+    Ok(SourcePlan { paths, changed })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink as create_symlink;
+    use tempfile::tempdir;
 
-    /// Creates a compact file node for source-merge tests.
-    fn file(value: &str) -> TreeNode {
-        TreeNode::File(FileState {
-            contents: value.as_bytes().to_vec(),
-            mode: 0o644,
-        })
+    /// Writes a file with contents into a directory.
+    fn write_file(root: &Path, name: &str, contents: &str) {
+        fs::write(root.join(name), contents).unwrap();
+    }
+
+    /// Applies a file's permission mode on disk.
+    fn set_mode(path: &Path, mode: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 
     #[test]
     /// Verifies the complete non-conflicting source merge table.
     fn merges_source_states() {
-        let base = BTreeMap::from([
-            (PathBuf::from("unchanged"), file("base")),
-            (PathBuf::from("removed"), file("base")),
-            (PathBuf::from("upstream"), file("base")),
-            (PathBuf::from("same"), file("old-new")),
-        ]);
-        let old = BTreeMap::from([
-            (PathBuf::from("unchanged"), file("base")),
-            (PathBuf::from("removed"), file("base")),
-            (PathBuf::from("upstream"), file("base")),
-            (PathBuf::from("same"), file("old-new")),
-            (PathBuf::from("local"), file("local")),
-        ]);
-        let new = BTreeMap::from([
-            (PathBuf::from("unchanged"), file("new")),
-            (PathBuf::from("upstream"), file("new")),
-            (PathBuf::from("same"), file("old-new")),
-            (PathBuf::from("added"), file("new")),
-        ]);
+        let base_directory = tempdir().unwrap();
+        write_file(base_directory.path(), "unchanged", "base");
+        write_file(base_directory.path(), "removed", "base");
+        write_file(base_directory.path(), "upstream", "base");
+        write_file(base_directory.path(), "same", "base");
+        let base = scan_tree(base_directory.path(), false).unwrap();
+
+        let old_directory = tempdir().unwrap();
+        write_file(old_directory.path(), "unchanged", "base");
+        write_file(old_directory.path(), "removed", "base");
+        write_file(old_directory.path(), "upstream", "base");
+        write_file(old_directory.path(), "same", "old-new");
+        write_file(old_directory.path(), "local", "local");
+        let old = scan_tree(old_directory.path(), false).unwrap();
+
+        let new_directory = tempdir().unwrap();
+        write_file(new_directory.path(), "unchanged", "new");
+        write_file(new_directory.path(), "upstream", "new");
+        write_file(new_directory.path(), "same", "old-new");
+        write_file(new_directory.path(), "added", "new");
+        let new = scan_tree(new_directory.path(), false).unwrap();
+
         let plan = build_source_plan(&base, &old, &new, false).unwrap();
-        assert_eq!(plan.paths[Path::new("unchanged")].1, Some(file("new")));
-        assert_eq!(plan.paths[Path::new("removed")].1, None);
-        assert_eq!(plan.paths[Path::new("local")].1, Some(file("local")));
-        assert_eq!(plan.paths[Path::new("added")].1, Some(file("new")));
+        let after = |path: &str| plan.paths[Path::new(path)].1.as_ref().unwrap();
+        assert!(states_match(
+            new.get(Path::new("unchanged")).unwrap(),
+            after("unchanged")
+        ));
+        assert!(plan.paths[Path::new("removed")].1.is_none());
+        assert!(states_match(
+            old.get(Path::new("local")).unwrap(),
+            after("local")
+        ));
+        assert!(states_match(
+            new.get(Path::new("added")).unwrap(),
+            after("added")
+        ));
+        assert!(states_match(
+            new.get(Path::new("upstream")).unwrap(),
+            after("upstream")
+        ));
+        assert!(states_match(
+            old.get(Path::new("same")).unwrap(),
+            after("same")
+        ));
     }
 
     #[test]
     /// Verifies conflict refusal, forced replacement, and structural descendant pruning.
     fn handles_source_conflicts_and_force() {
-        let base = BTreeMap::from([(PathBuf::from("path"), file("base"))]);
-        let old = BTreeMap::from([(PathBuf::from("path"), file("local"))]);
-        let new = BTreeMap::from([(PathBuf::from("path"), file("new"))]);
+        let base_directory = tempdir().unwrap();
+        write_file(base_directory.path(), "path", "base");
+        let base = scan_tree(base_directory.path(), false).unwrap();
+        let old_directory = tempdir().unwrap();
+        write_file(old_directory.path(), "path", "local");
+        let old = scan_tree(old_directory.path(), false).unwrap();
+        let new_directory = tempdir().unwrap();
+        write_file(new_directory.path(), "path", "new");
+        let new = scan_tree(new_directory.path(), false).unwrap();
         assert!(build_source_plan(&base, &old, &new, false).is_err());
         let plan = build_source_plan(&base, &old, &new, true).unwrap();
-        assert_eq!(plan.paths[Path::new("path")].1, Some(file("new")));
+        assert!(states_match(
+            new.get(Path::new("path")).unwrap(),
+            plan.paths[Path::new("path")].1.as_ref().unwrap()
+        ));
 
-        let base = BTreeMap::from([(PathBuf::from("dir"), TreeNode::Directory(0o755))]);
-        let old = BTreeMap::from([
-            (PathBuf::from("dir"), TreeNode::Directory(0o755)),
-            (PathBuf::from("dir/local"), file("local")),
-        ]);
-        let new = BTreeMap::new();
+        let base_directory = tempdir().unwrap();
+        fs::create_dir(base_directory.path().join("dir")).unwrap();
+        let base = scan_tree(base_directory.path(), false).unwrap();
+        let old_directory = tempdir().unwrap();
+        fs::create_dir(old_directory.path().join("dir")).unwrap();
+        write_file(old_directory.path(), "dir/local", "local");
+        let old = scan_tree(old_directory.path(), false).unwrap();
+        let new_directory = tempdir().unwrap();
+        let new = scan_tree(new_directory.path(), false).unwrap();
         assert!(build_source_plan(&base, &old, &new, false).is_err());
         let plan = build_source_plan(&base, &old, &new, true).unwrap();
-        assert_eq!(plan.paths[Path::new("dir/local")].1, None);
+        assert!(plan.paths[Path::new("dir/local")].1.is_none());
     }
 
     #[test]
     /// Verifies source reconciliation preserves modes and accepts upstream file-type changes.
     fn handles_modes_and_symlink_changes() {
-        let base = BTreeMap::from([
-            (PathBuf::from("mode"), file("same")),
-            (
-                PathBuf::from("kind"),
-                TreeNode::Symlink(PathBuf::from("old-target")),
-            ),
-        ]);
-        let old = base.clone();
-        let new = BTreeMap::from([
-            (
-                PathBuf::from("mode"),
-                TreeNode::File(FileState {
-                    contents: b"same".to_vec(),
-                    mode: 0o755,
-                }),
-            ),
-            (PathBuf::from("kind"), file("now a file")),
-        ]);
-        let plan = build_source_plan(&base, &old, &new, false).unwrap();
+        let base_directory = tempdir().unwrap();
+        write_file(base_directory.path(), "mode", "same");
+        create_symlink("old-target", base_directory.path().join("kind")).unwrap();
+        let base = scan_tree(base_directory.path(), false).unwrap();
+
+        let new_directory = tempdir().unwrap();
+        write_file(new_directory.path(), "mode", "same");
+        set_mode(&new_directory.path().join("mode"), 0o755);
+        write_file(new_directory.path(), "kind", "now a file");
+        let new = scan_tree(new_directory.path(), false).unwrap();
+
+        let plan = build_source_plan(&base, &base, &new, false).unwrap();
+        assert!(states_match(
+            new.get(Path::new("mode")).unwrap(),
+            plan.paths[Path::new("mode")].1.as_ref().unwrap()
+        ));
+        assert!(states_match(
+            new.get(Path::new("kind")).unwrap(),
+            plan.paths[Path::new("kind")].1.as_ref().unwrap()
+        ));
+    }
+
+    #[test]
+    /// Verifies applying a plan copies changed contents and modes from their origins.
+    fn applies_source_updates_from_disk() {
+        let old_directory = tempdir().unwrap();
+        write_file(old_directory.path(), "file", "old");
+        let old = scan_tree(old_directory.path(), false).unwrap();
+
+        let new_directory = tempdir().unwrap();
+        write_file(new_directory.path(), "file", "new");
+        set_mode(&new_directory.path().join("file"), 0o755);
+        write_file(new_directory.path(), "added", "new");
+        let new = scan_tree(new_directory.path(), false).unwrap();
+
+        let plan = build_source_plan(&old, &old, &new, false).unwrap();
+        plan.apply(old_directory.path()).unwrap();
+        assert_eq!(fs::read(old_directory.path().join("file")).unwrap(), b"new");
         assert_eq!(
-            plan.paths[Path::new("mode")].1,
-            new.get(Path::new("mode")).cloned()
+            fs::metadata(old_directory.path().join("file"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
         );
         assert_eq!(
-            plan.paths[Path::new("kind")].1,
-            new.get(Path::new("kind")).cloned()
+            fs::read(old_directory.path().join("added")).unwrap(),
+            b"new"
         );
     }
 }

@@ -152,11 +152,7 @@ pub fn cargo_to_debian_upstream_version(version: &Version, repack_suffix: Option
 }
 
 /// Computes debcargo's Debian source name for a crate release.
-pub fn get_crate_source_name(
-    crate_name: &str,
-    version: &Version,
-    semver_suffix: bool,
-) -> String {
+pub fn get_crate_source_name(crate_name: &str, version: &Version, semver_suffix: bool) -> String {
     let mut source = format!("rust-{}", normalize_crate_name(crate_name));
     if semver_suffix {
         if version.major == 0 {

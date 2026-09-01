@@ -11,16 +11,17 @@ use crate::materialize::{build_plan, install_state, read_state};
 use self::{
     changelog::{read_top_changelog, validate_top_changelog},
     generate::{
-        CrateSelection, PackageConfig, cargo_to_debian_upstream_version, check_debcargo_version,
-        get_crate_source_name, parse_exact_version, read_new_package_config, read_package_config,
-        read_root_package, select_release, build_debcargo_tree, validate_debcargo_output,
+        CrateSelection, PackageConfig, build_debcargo_tree, cargo_to_debian_upstream_version,
+        check_debcargo_version, get_crate_source_name, parse_exact_version,
+        read_new_package_config, read_package_config, read_root_package, select_release,
+        validate_debcargo_output,
     },
     orig::acquire_old_orig,
     output::{
         build_patch_series_plan, check_patch_state, collect_managed_paths, generated_patch_changes,
         initialize_package, read_generated_candidates,
     },
-    source::{build_source_plan, scan_tree},
+    source::{build_source_plan, scan_tree, trees_match},
     tree::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
@@ -242,10 +243,10 @@ fn reconcile_existing(
         &crate_selection.version,
     )?;
 
-    let base_tree = scan_tree(base.path(), false)?;
+    let base_tree = scan_tree(base.path(), true)?;
     let old_tree = scan_tree(root, true)?;
     let new_tree = scan_tree(&output.source, true)?;
-    if base_tree != new_tree && patches_applied {
+    if !trees_match(&base_tree, &new_tree) && patches_applied {
         bail!("pop the complete quilt stack before reconciling changed upstream source");
     }
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
