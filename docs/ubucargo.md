@@ -1,16 +1,28 @@
-# Ubucargo design
+# Ubucargo
 
 ## Overview
 
 Ubucargo adapts Debian's Rust packaging model for Ubuntu. Ubucargo wraps `debcargo`, translating Cargo dependencies in `Cargo.toml` into Debian source package data such as `debian/control`.
 
-Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the source tree in the `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian; this is avoided by treating the source packages themselves as the authoritative place for this configuration. Overrides to generated packaging such as `debian/control` can be overwritten in place by maintainers, while corresponding `.debcargo.hint` files record the latest generated output and prevent later regeneration from silently replacing those edits.
+Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the packaged `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian and with independent maintenance across various Ubuntu series. Treating the Archive as the source of truth for the packaging state, including the `debcargo.toml`, keeps things simpler for Ubuntu.
 
-Detailed command behavior lives in the [command documents](#commands); this document covers shared concepts and boundaries.
+## Benefits
 
-## Source-package state
+Key benefits of Ubucargo include the following:
 
-Each source package contains its upstream source, Debian packaging, generator input, and previous generated state. Its orig tarball sits beside the source directory:
+- Maintainers can override Debian packaging in place (such as `debian/control`) without risk of them being overwritten by `ubucargo`, and without needing to manage a separate overlay directory. Regardless of overrides, the generated output of `ubucargo` is available as corresponding `.debcargo.hint` files.
+- Regenerating source packaging can be done without interfering with local files such as a `.git` directory. This way `ubucargo` can be conveniently used in conjunction with tools such as `git-ubuntu` and `gbp`.
+- Ubucargo invokes `debcargo` internally, to ensure good alignment with Debian Rust policy.
+
+## Drawbacks
+
+The main complication of this approach is that `ubucargo` must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides. The basic rule is that a packaging file matching its `.debcargo.hint` byte-for-byte is generator-owned, while one deviating from its `.debcargo.hint` is a maintainer override. If a `.debcargo.hint` file is missing and the new generated output would deviate from the existing file, it is treated as ambiguous and `ubucargo` will prompt the maintainer to disambiguate it. To minimize such ambiguity, `ubucargo` writes `.debcargo.hint` files unconditionally; this deviates from the `debcargo` behavior which only writes hint files if a maintainer override exists for it.
+
+Similarly, when an operation affects the upstream source tree, `ubucargo` must infer which files were part of the old upstream and should be replaced, and which files are local and should be retained. This applies, for example, when upgrading a package to a new upstream version, or when repackaging after changing the `excludes` filter in `debcargo.toml`. To resolve this in a general way, `ubucargo` compares the current source tree with the orig tarball referenced in the top-most `changelog` entry: files in the source tree that are not present in the orig tarball are treated as local additions to be retained, while missing or modified files are treated as inconsistencies resulting in an error.
+
+## Source-package structure
+
+Each source package contains its upstream source, generator input `debcargo.toml`, and Debian packaging, including previous generated state. Its orig tarball sits beside the source directory:
 
 ```text
 <parent>/
@@ -30,13 +42,11 @@ Each source package contains its upstream source, Debian packaging, generator in
       copyright.debcargo.hint     # latest generated state
 ```
 
-`debian/debcargo.toml` is the generator configuration. Ubuntu-only settings use a `[ubucargo]` namespace; existing debcargo keys keep their standard meaning.
-
 ## Commands
 
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
-| `ubucargo package` | Create or update a complete source package | [`package.md`](package.md) |
+| `ubucargo package` | Create or update a source package | [`package.md`](package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`deps.md`](deps.md) |
 
 - Run `ubucargo package CRATE [VERSION]` outside a package to create a new source tree and orig tarball.

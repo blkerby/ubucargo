@@ -1,4 +1,4 @@
-//! Updates generated Debian files while preserving maintainer overrides.
+//! Plans and applies managed-file updates using generated-state hints.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

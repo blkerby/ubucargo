@@ -1,4 +1,4 @@
-//! Classifies debcargo output and manages generated packaging metadata.
+//! Selects managed files and patch metadata from debcargo output.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -238,7 +238,7 @@ mod tests {
         initialize_package(root.path(), &read_new_package_config().unwrap()).unwrap();
         assert_eq!(
             fs::read_to_string(root.path().join("debian/debcargo.toml")).unwrap(),
-            "[ubucargo]\n"
+            ""
         );
         assert!(root.path().join("debian/control.debcargo.hint").is_file());
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());

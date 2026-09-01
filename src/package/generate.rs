@@ -184,7 +184,7 @@ pub fn read_package_config(path: &Path) -> Result<PackageConfig> {
 
 /// Reads the default configuration used for a new package.
 pub fn read_new_package_config() -> Result<PackageConfig> {
-    read_package_config_text("[ubucargo]\n")
+    read_package_config_text("")
 }
 
 /// Builds a debcargo source tree with a prepared Ubuntu changelog.
