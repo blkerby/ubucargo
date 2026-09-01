@@ -1,3 +1,5 @@
+//! Configures, runs, and validates debcargo generation.
+
 use std::{ffi::OsStr, fs, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};

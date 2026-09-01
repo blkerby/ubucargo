@@ -1,3 +1,5 @@
+//! Provides filesystem operations for package trees and archives.
+
 use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};

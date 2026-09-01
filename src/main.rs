@@ -1,3 +1,5 @@
+//! Command-line interface for creating and updating Ubuntu Rust source packages.
+
 mod package;
 
 use std::{path::PathBuf, process::ExitCode};

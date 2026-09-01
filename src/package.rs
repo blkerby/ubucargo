@@ -1,3 +1,5 @@
+//! Orchestrates source-package creation and updating.
+
 use std::{
     collections::BTreeSet,
     fs,

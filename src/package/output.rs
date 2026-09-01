@@ -1,3 +1,5 @@
+//! Classifies debcargo output and manages generated packaging metadata.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,

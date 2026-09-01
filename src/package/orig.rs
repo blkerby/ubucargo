@@ -1,3 +1,5 @@
+//! Acquires existing orig tarballs used as source-merge baselines.
+
 use std::{
     path::{Path, PathBuf},
     process::Command,

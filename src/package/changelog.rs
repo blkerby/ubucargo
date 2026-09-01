@@ -1,3 +1,5 @@
+//! Parses, validates, and prepares Debian changelog entries.
+
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};

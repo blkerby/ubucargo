@@ -1,3 +1,5 @@
+//! Plans and applies updates to the upstream source tree.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
