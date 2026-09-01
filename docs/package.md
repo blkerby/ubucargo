@@ -230,4 +230,5 @@ Ubucargo validates the selected crate identity, Debian source identity, source t
 
 Installation changes files only. It does not create commits, branches, tags, pristine-tar data, `.dsc` files, source `.changes`, or `.buildinfo` files. Standard Debian and VCS tools remain responsible for those artifacts.
 
-Ubucargo checks the debcargo version before running it.
+Ubucargo requires debcargo 2.8.4 or a later compatible 2.x release and checks
+the installed version before running it.

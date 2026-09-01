@@ -69,7 +69,6 @@ pub fn run(
         .context("resolve current directory")?;
     let mode = select_package_mode(&current, directory, crate_name.is_some())?;
     let (keep_paths, replace_paths) = collect_decisions(keep, replace)?;
-    check_debcargo_version()?;
     match mode {
         PackageMode::Existing(root) => reconcile_existing(
             &root,
@@ -201,6 +200,7 @@ fn reconcile_existing(
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<bool> {
+    let debcargo_version = check_debcargo_version()?;
     let debian = root.join("debian");
     let current_package = read_root_package(root)?;
     let top = read_top_changelog(&debian.join("changelog"))?;
@@ -234,6 +234,7 @@ fn reconcile_existing(
         &source_name,
         &upstream,
         &crate_selection,
+        &debcargo_version,
     )?;
     let output = validate_debcargo_output(
         stage.path(),
@@ -327,6 +328,7 @@ fn create_new(
     requested_version: Option<&str>,
     check: bool,
 ) -> Result<bool> {
+    let debcargo_version = check_debcargo_version()?;
     let config = read_new_package_config()?;
     let crate_selection = select_release(Some(crate_name), requested_version, None, &config)?;
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
@@ -337,6 +339,7 @@ fn create_new(
         &source_name,
         &upstream,
         &crate_selection,
+        &debcargo_version,
     )?;
     let output = validate_debcargo_output(
         stage.path(),

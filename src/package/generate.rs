@@ -1,7 +1,7 @@
 use std::{ffi::OsStr, fs, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::Deserialize;
 use tempfile::TempDir;
 use toml_edit::{DocumentMut, value};
@@ -9,7 +9,7 @@ use toml_edit::{DocumentMut, value};
 use super::changelog::{TopChangelog, prepare_changelog};
 use super::tree::copy_tree;
 
-const DEBCARGO_VERSION: &str = "debcargo 2.8.4";
+const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
 
 /// Relevant package records returned by `cargo metadata`.
 #[derive(Deserialize)]
@@ -57,8 +57,8 @@ pub struct GeneratedOutput {
     pub debian_source: String,
 }
 
-/// Rejects debcargo versions not covered by the current compatibility target.
-pub fn check_debcargo_version() -> Result<()> {
+/// Returns the installed debcargo version when it is compatible.
+pub fn check_debcargo_version() -> Result<Version> {
     let output = Command::new("debcargo")
         .arg("--version")
         .output()
@@ -66,11 +66,21 @@ pub fn check_debcargo_version() -> Result<()> {
     if !output.status.success() {
         bail!("debcargo --version failed");
     }
-    let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if actual != DEBCARGO_VERSION {
-        bail!("unsupported {actual}; this release requires {DEBCARGO_VERSION}");
+    parse_debcargo_version(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+/// Parses and checks one `debcargo --version` response.
+fn parse_debcargo_version(output: &str) -> Result<Version> {
+    let version = output
+        .strip_prefix("debcargo ")
+        .with_context(|| format!("unrecognized debcargo version output {output:?}"))?;
+    let version = Version::parse(version)
+        .with_context(|| format!("unrecognized debcargo version output {output:?}"))?;
+    let requirement = VersionReq::parse(DEBCARGO_VERSION_REQUIREMENT).unwrap();
+    if !requirement.matches(&version) {
+        bail!("unsupported debcargo {version}; this release requires {requirement}");
     }
-    Ok(())
+    Ok(version)
 }
 
 /// Uses Cargo to identify the package defined by the root manifest.
@@ -183,6 +193,7 @@ pub fn build_debcargo_tree(
     source_name: &str,
     upstream: &str,
     crate_selection: &CrateSelection,
+    debcargo_version: &Version,
 ) -> Result<TempDir> {
     let stage = tempfile::tempdir().context("create package staging directory")?;
     let overlay = stage.path().join("overlay");
@@ -191,14 +202,20 @@ pub fn build_debcargo_tree(
         prepare_patch_overlay(debian, &overlay)?;
     }
     write_staged_config(config, stage.path())?;
+    let provenance = format!(
+        "Package {} {} from crates.io using debcargo {} and ubucargo {}.",
+        crate_selection.crate_name,
+        crate_selection.version,
+        debcargo_version,
+        env!("CARGO_PKG_VERSION")
+    );
     prepare_changelog(
         existing_debian.map(|debian| debian.join("changelog")),
         &overlay.join("changelog"),
         old_top,
         source_name,
         upstream,
-        &crate_selection.crate_name,
-        &crate_selection.version,
+        &provenance,
     )?;
     run_debcargo(stage.path(), crate_selection)?;
     Ok(stage)
@@ -434,5 +451,18 @@ mod tests {
             "0.4.0+ds"
         );
         assert!(parse_exact_version("^1.2").is_err());
+    }
+
+    #[test]
+    /// Accepts compatible debcargo releases and rejects other major versions.
+    fn checks_debcargo_versions() {
+        assert_eq!(
+            parse_debcargo_version("debcargo 2.8.4").unwrap(),
+            Version::new(2, 8, 4)
+        );
+        assert!(parse_debcargo_version("debcargo 2.9.0").is_ok());
+        assert!(parse_debcargo_version("debcargo 2.8.3").is_err());
+        assert!(parse_debcargo_version("debcargo 3.0.0").is_err());
+        assert!(parse_debcargo_version("2.8.4").is_err());
     }
 }
