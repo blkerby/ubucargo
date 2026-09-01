@@ -353,14 +353,6 @@ fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
     if config.get("crate_src_path").is_some() {
         bail!("crate_src_path is not supported by ubucargo package");
     }
-    if let Some(item) = config.get("ubucargo") {
-        let Some(table) = item.as_table() else {
-            bail!("ubucargo must be a table");
-        };
-        if !table.is_empty() {
-            bail!("[ubucargo] settings are not implemented yet");
-        }
-    }
     let semver_suffix = config
         .get("semver_suffix")
         .and_then(|item| item.as_bool())
@@ -386,7 +378,6 @@ fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
 /// Writes registry-backed staged configuration with a temporary overlay.
 fn write_staged_config(config: &PackageConfig, stage: &Path) -> Result<()> {
     let mut document: DocumentMut = config.contents.parse()?;
-    document.remove("ubucargo");
     document["overlay"] = value(require_utf8_path(&stage.join("overlay"))?);
     fs::write(stage.join("debcargo.toml"), document.to_string())?;
     Ok(())

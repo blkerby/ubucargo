@@ -35,7 +35,7 @@ Replace the separate `import` command with one `package` command that creates cl
   - Always pass the prepared changelog to debcargo with `--changelog-ready`.
 - Run final debcargo generation with the exact selected version, then validate source identity, Cargo identity, orig name, and essential packaging.
 - For existing packages, combine the source merge plan with the current hint-based Debian plan. Install the candidate orig first, source changes next, generated Debian files and patches afterward, and changelog/hints last; interrupted runs remain rerunnable.
-- For clean new packages, write the default `[ubucargo]` config, initialize generated hints, and install the staged tree and orig without inheriting state from an existing package.
+- For clean new packages, initialize generated hints and install the staged tree and orig without inheriting state from an existing package.
 - Keep `--check` fully non-writing while reporting orig, source, changelog, patch, generated-file, and hint changes with the existing 0/1/2 exit convention.
 
 ## Tests and Documentation
