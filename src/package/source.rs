@@ -192,7 +192,7 @@ pub fn states_match(first: &TreeNode, second: &TreeNode) -> bool {
             first_target == second_target
         }
         (TreeNode::File(first), TreeNode::File(second)) => {
-            first.mode & 0o111 == second.mode & 0o111
+            (first.mode & 0o111 != 0) == (second.mode & 0o111 != 0)
                 // Treat comparison errors as a difference to stay conservative.
                 && !files_differ(&first.origin, &second.origin).unwrap_or(true)
         }
@@ -419,6 +419,8 @@ mod tests {
         let base_directory = tempdir().unwrap();
         fs::create_dir(base_directory.path().join("directory")).unwrap();
         write_file(base_directory.path(), "mode", "same");
+        write_file(base_directory.path(), "executable-mode", "same");
+        set_mode(&base_directory.path().join("executable-mode"), 0o744);
         write_file(base_directory.path(), "non-executable-mode", "same");
         create_symlink("old-target", base_directory.path().join("kind")).unwrap();
         let base = scan_tree(base_directory.path(), false).unwrap();
@@ -428,6 +430,8 @@ mod tests {
         set_mode(&new_directory.path().join("directory"), 0o775);
         write_file(new_directory.path(), "mode", "same");
         set_mode(&new_directory.path().join("mode"), 0o755);
+        write_file(new_directory.path(), "executable-mode", "same");
+        set_mode(&new_directory.path().join("executable-mode"), 0o755);
         write_file(new_directory.path(), "non-executable-mode", "same");
         set_mode(&new_directory.path().join("non-executable-mode"), 0o664);
         write_file(new_directory.path(), "kind", "now a file");
@@ -440,6 +444,10 @@ mod tests {
         assert!(states_match(
             base.get(Path::new("non-executable-mode")).unwrap(),
             new.get(Path::new("non-executable-mode")).unwrap()
+        ));
+        assert!(states_match(
+            base.get(Path::new("executable-mode")).unwrap(),
+            new.get(Path::new("executable-mode")).unwrap()
         ));
         let plan = build_source_plan(&base, &base, &new, false).unwrap();
         assert!(states_match(
