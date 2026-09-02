@@ -68,11 +68,12 @@ See [`docs/package.md`](docs/package.md) for full behavior and options.
 
 ```console
 ubucargo deps [CRATE [VERSION]] [--directory DIR] --series SERIES \
-  [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
+  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
 - Run `ubucargo deps --series SERIES` inside a source package, or use `--directory DIR` to select one explicitly.
 - Run `ubucargo deps CRATE [VERSION] --series SERIES` to inspect a crates.io release without creating a source package.
+- Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when all dependencies are satisfiable, 1 when any are incompatible or missing, and 2 on errors.
 

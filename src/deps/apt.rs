@@ -115,11 +115,12 @@ impl AptView {
 pub fn load_candidates(
     series: &str,
     architecture: &str,
+    proposed: bool,
     ppas: &[String],
 ) -> Result<Vec<PackageCandidate>> {
     validate_name("series", series)?;
     validate_name("architecture", architecture)?;
-    let view = prepare_view(series, architecture, ppas)?;
+    let view = prepare_view(series, architecture, proposed, ppas)?;
 
     eprintln!("updating APT metadata for {series}/{architecture}");
     let mut update = Command::new("apt-get");
@@ -173,7 +174,12 @@ pub fn load_candidates(
 }
 
 /// Creates the temporary APT files and source list for one invocation.
-fn prepare_view(series: &str, architecture: &str, ppas: &[String]) -> Result<AptView> {
+fn prepare_view(
+    series: &str,
+    architecture: &str,
+    proposed: bool,
+    ppas: &[String],
+) -> Result<AptView> {
     let temporary = tempfile::tempdir().context("create APT configuration directory")?;
     fs::create_dir(temporary.path().join("sourceparts"))?;
     fs::create_dir(temporary.path().join("preferences.d"))?;
@@ -204,8 +210,13 @@ fn prepare_view(series: &str, architecture: &str, ppas: &[String]) -> Result<Apt
     } else {
         "https://security.ubuntu.com/ubuntu"
     };
+    let proposed_suite = if proposed {
+        format!(" {series}-proposed")
+    } else {
+        String::new()
+    };
     sources.push_str(&format!(
-        "Types: deb\nURIs: {archive}\nSuites: {series} {series}-updates\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n\nTypes: deb\nURIs: {security}\nSuites: {series}-security\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n"
+        "Types: deb\nURIs: {archive}\nSuites: {series} {series}-updates{proposed_suite}\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n\nTypes: deb\nURIs: {security}\nSuites: {series}-security\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n"
     ));
     fs::write(temporary.path().join("sources.sources"), sources)?;
     Ok(AptView {
@@ -480,6 +491,19 @@ mod tests {
             ),
             "ppa:example/rust-staging (noble)"
         );
+    }
+
+    #[test]
+    /// Adds the proposed pocket only when explicitly requested.
+    fn configures_proposed_pocket() {
+        let normal = prepare_view("noble", "amd64", false, &[]).unwrap();
+        let normal = fs::read_to_string(normal.temporary.path().join("sources.sources")).unwrap();
+        assert!(!normal.contains("noble-proposed"));
+
+        let proposed = prepare_view("noble", "amd64", true, &[]).unwrap();
+        let proposed =
+            fs::read_to_string(proposed.temporary.path().join("sources.sources")).unwrap();
+        assert!(proposed.contains("Suites: noble noble-updates noble-proposed"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 ```console
 ubucargo deps [CRATE [VERSION]] [--directory DIR] --series SERIES \
-  [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
+  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
 With no `CRATE` or `--directory`, `deps` uses the nearest parent source package.
@@ -33,7 +33,7 @@ Crates.io mode generates a temporary package with the default debcargo
 configuration and leaves no source package behind. Its results therefore do
 not account for configuration or patches that a maintainer might add later.
 
-`--series` selects an Ubuntu release. Ubucargo queries its release, updates, and security pockets from `main` and `universe`. Each `--ppa` adds a public Launchpad PPA's `main` component for the same series; private PPAs are not supported. `--architecture` defaults to `dpkg --print-architecture`.
+`--series` selects an Ubuntu release. Ubucargo queries its release, updates, and security pockets from `main` and `universe`. `--proposed` additionally includes the release's proposed pocket with normal candidate consideration. Each `--ppa` adds a public Launchpad PPA's `main` component for the same series; private PPAs are not supported. `--architecture` defaults to `dpkg --print-architecture`.
 
 ## Output
 

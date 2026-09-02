@@ -34,6 +34,7 @@ pub fn run(
     version: Option<&str>,
     directory: Option<&Path>,
     series: &str,
+    proposed: bool,
     ppas: &[String],
     architecture: Option<&str>,
 ) -> Result<bool> {
@@ -44,7 +45,7 @@ pub fn run(
     let stage = crate::package::stage_for_dependency_inspection(crate_name, version, directory)?;
     let dependencies =
         control::read_dependencies(&stage.path().join("output/debian/control"), &architecture)?;
-    let candidates = apt::load_candidates(series, &architecture, ppas)?;
+    let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
     let rows = classify(&dependencies, &candidates);
     print!("{}", format_table(&rows));
     Ok(rows

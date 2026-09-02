@@ -21,7 +21,7 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 ## Sources
 
-For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
+For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `noble-proposed` from the same Archive source. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
 
 The generated deb822 entries select only their required APT targets:
 

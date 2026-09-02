@@ -37,6 +37,10 @@ enum Command {
         #[arg(long, value_name = "SERIES")]
         series: String,
 
+        /// Include the Ubuntu proposed pocket.
+        #[arg(long)]
+        proposed: bool,
+
         /// Public Launchpad PPA to include.
         #[arg(long, value_name = "ppa:OWNER/NAME")]
         ppa: Vec<String>,
@@ -90,6 +94,7 @@ fn main() -> ExitCode {
             version,
             directory,
             series,
+            proposed,
             ppa,
             architecture,
         } => deps::run(
@@ -97,6 +102,7 @@ fn main() -> ExitCode {
             version.as_deref(),
             directory.as_deref(),
             &series,
+            proposed,
             &ppa,
             architecture.as_deref(),
         ),
@@ -183,6 +189,7 @@ mod tests {
             "1.0.220",
             "--series",
             "noble",
+            "--proposed",
             "--ppa",
             "ppa:example/rust-staging",
             "--architecture",
@@ -195,6 +202,7 @@ mod tests {
             version,
             directory,
             series,
+            proposed,
             ppa,
             architecture,
         } = cli.command
@@ -205,6 +213,7 @@ mod tests {
         assert_eq!(version.as_deref(), Some("1.0.220"));
         assert_eq!(directory, None);
         assert_eq!(series, "noble");
+        assert!(proposed);
         assert_eq!(ppa, ["ppa:example/rust-staging"]);
         assert_eq!(architecture.as_deref(), Some("arm64"));
     }
