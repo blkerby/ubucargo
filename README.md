@@ -4,7 +4,7 @@ Ubucargo is tool for creating and maintaining Ubuntu packages for Rust crates, t
 
 ## Overview
 
-Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the packaged `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external `debcargo-conf` repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian and with independent maintenance across various Ubuntu series. Treating the Archive as the source of truth for the packaging state, including the `debcargo.toml`, keeps things simpler for Ubuntu.
+Ubucargo is designed to operate directly on a Debian source package, with its `debcargo.toml` and related configuration embedded in the packaged `debian` directory. This differs from the usual Debian `debcargo` workflow, in which the configuration primarily resides in an external [debcargo-conf](https://salsa.debian.org/rust-team/debcargo-conf) repository. For Ubuntu, a separate configuration repository would be difficult to reconcile with source packages synced from Debian and with independent maintenance across various Ubuntu series. Treating the Archive as the source of truth for the packaging state, including the `debcargo.toml`, keeps things simpler.
 
 ## Benefits
 
@@ -66,7 +66,15 @@ See [`docs/package.md`](docs/package.md) for full behavior and options.
 
 ### `deps`
 
-- Run `ubucargo deps` whenever dependency candidates need inspection. It does not modify the source package.
+```console
+ubucargo deps [CRATE [VERSION]] [--directory DIR] --series SERIES \
+  [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
+```
+
+- Run `ubucargo deps --series SERIES` inside a source package, or use `--directory DIR` to select one explicitly.
+- Run `ubucargo deps CRATE [VERSION] --series SERIES` to inspect a crates.io release without creating a source package.
+- `deps` does not modify the source package.
+- It exits 0 when all dependencies are satisfiable, 1 when any are incompatible or missing, and 2 on errors.
 
 See [`docs/deps.md`](docs/deps.md) for details.
 

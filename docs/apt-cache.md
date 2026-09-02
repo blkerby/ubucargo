@@ -21,7 +21,7 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 ## Sources
 
-For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble.
+For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
 
 The generated deb822 entries select only their required APT targets:
 
@@ -40,7 +40,7 @@ Security pockets use the standard Ubuntu security URI. Ubucargo selects the norm
 ## Repository trust
 
 - Ubuntu sources use the packaged Ubuntu Archive keyring.
-- PPA sources trust Launchpad over authenticated HTTPS. Ubucargo retrieves the signing key and advertised fingerprint, requires them to match, and caches the key by fingerprint.
+- Public PPA sources trust Launchpad over authenticated HTTPS. Ubucargo retrieves the signing key and advertised fingerprint, requires them to match, and caches the key by fingerprint.
 
 The PPA key and advertised fingerprint come from the same Launchpad authority, so the fingerprint is not treated as an independent pin. Ubucargo maintains no trust-on-first-use database or separate fingerprint configuration.
 
