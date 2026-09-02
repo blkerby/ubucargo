@@ -3,6 +3,7 @@
 use std::{ffi::OsStr, fs, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
+use debian_control::lossless::control::Control;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -270,21 +271,11 @@ pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
 /// Removes Debian packaging repository fields from generated control output.
 pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
     let path = stage.join("output/debian/control");
-    let control = fs::read_to_string(&path)?;
-    let mut filtered = String::with_capacity(control.len());
-    let mut skip_continuation = false;
-    for line in control.split_inclusive('\n') {
-        if line.starts_with("Vcs-Git:") || line.starts_with("Vcs-Browser:") {
-            skip_continuation = true;
-            continue;
-        }
-        if skip_continuation && (line.starts_with(' ') || line.starts_with('\t')) {
-            continue;
-        }
-        skip_continuation = false;
-        filtered.push_str(line);
-    }
-    fs::write(&path, filtered).with_context(|| format!("write {}", path.display()))
+    let control = Control::from_file(&path).with_context(|| format!("parse {}", path.display()))?;
+    let mut source = control.source().context("generated control has no source paragraph")?;
+    source.as_mut_deb822().remove("Vcs-Git");
+    source.as_mut_deb822().remove("Vcs-Browser");
+    fs::write(&path, control.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
@@ -323,15 +314,13 @@ pub fn validate_debcargo_output(
         );
     }
 
-    let control = fs::read_to_string(source.join("debian/control"))?;
-    let mut debian_source = None;
-    for line in control.lines() {
-        if let Some(value) = line.strip_prefix("Source:") {
-            debian_source = Some(value.trim().to_owned());
-            break;
-        }
-    }
-    let debian_source = debian_source.context("generated debian/control has no Source field")?;
+    let control = Control::from_file(source.join("debian/control"))
+        .context("parse generated debian/control")?;
+    let debian_source = control
+        .source()
+        .context("generated debian/control has no source paragraph")?
+        .name()
+        .context("generated debian/control has no Source field")?;
     if debian_source != expected_source {
         bail!("debcargo produced Debian source {debian_source}, expected {expected_source}");
     }

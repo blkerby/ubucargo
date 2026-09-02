@@ -12,3 +12,4 @@ semver = "1"
 tempfile = "3"
 toml_edit = "0.23"
 debian-changelog = { version = "0.2", default-features = false }
+debian-control = { version = "0.3", default-features = false, features = ["lossless"] }
