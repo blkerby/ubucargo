@@ -207,9 +207,11 @@ fn normalize_top_entry(changelog: &mut ChangeLog, provenance: &str) -> Result<()
         }
     }
     if let Some(bullet) = provenance_bullet {
-        bullet.replace_with(vec![&provenance]);
+        bullet.replace_with(provenance.lines().collect());
     } else {
-        entry.prepend_change_line(&provenance);
+        for line in provenance.lines().rev() {
+            entry.prepend_change_line(line);
+        }
     }
     Ok(())
 }
@@ -219,7 +221,9 @@ fn is_provenance(lines: Vec<String>) -> bool {
     let Some(first) = lines.first() else {
         return false;
     };
-    first.starts_with("* Package ") && lines.iter().any(|line| line.contains(" using debcargo "))
+    first.starts_with("* Package ")
+        && lines.iter().any(|line| line.contains("from crates.io"))
+        && lines.iter().any(|line| line.contains("debcargo"))
 }
 
 #[cfg(test)]
@@ -273,6 +277,8 @@ mod tests {
             "    with an old wrapped continuation.\n",
             "  * local change\n",
             "  * Package example 1.0.0 from crates.io using debcargo 2.8.0 and ubucargo 0.0.1.\n",
+            "  * Package example 1.0.0 from crates.io.   Generated with debcargo\n",
+            "    2.8.4 and ubucargo 0.1.0.\n",
             "\n",
             " -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n",
             "\n",
@@ -285,13 +291,17 @@ mod tests {
         let mut changelog: ChangeLog = old.parse().unwrap();
         normalize_top_entry(
             &mut changelog,
-            "Package example 1.0.0 from crates.io using debcargo 2.8.4 and ubucargo 0.1.0.",
+            "Package example 1.0.0 from crates.io.\n  Generated with debcargo 2.8.4 and ubucargo 0.1.0.",
         )
         .unwrap();
         let new = changelog.to_string();
         assert!(new.contains(") UNRELEASED;"));
-        assert_eq!(new.matches("using debcargo").count(), 2);
+        assert_eq!(new.matches("debcargo").count(), 2);
         assert!(new.contains("* Package example 0.9.0 from crates.io using debcargo 2.7.0"));
         assert!(new.contains("  * local change"));
+        assert!(new.contains(concat!(
+            "  * Package example 1.0.0 from crates.io.\n",
+            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0."
+        )));
     }
 }

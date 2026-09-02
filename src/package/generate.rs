@@ -231,7 +231,7 @@ pub fn build_debcargo_tree(
     }
     write_staged_config(config, stage.path(), existing_debian.is_none())?;
     let provenance = format!(
-        "Package {} {} from crates.io using debcargo {} and ubucargo {}.",
+        "Package {} {} from crates.io.\n  Generated with debcargo {} and ubucargo {}.",
         crate_selection.crate_name,
         crate_selection.version,
         debcargo_version,

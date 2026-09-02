@@ -74,7 +74,8 @@ The changelog remains primarily maintainer-owned, but ubucargo updates the versi
 Ubucargo adds a provenance item recording the crate release and both tool versions:
 
 ```text
-  * Package serde 1.0.229 from crates.io using debcargo 2.8.4 and ubucargo 0.1.0.
+  * Package serde 1.0.229 from crates.io.
+    Generated with debcargo 2.8.4 and ubucargo 0.1.0.
 ```
 
 An existing ubucargo provenance item in the current `UNRELEASED` entry is updated in place when the crate or either tool version changes. An unchanged item is not duplicated on later runs.
