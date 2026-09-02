@@ -1,7 +1,7 @@
 //! Orchestrates source-package creation and updating.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -14,7 +14,7 @@ use self::{
         CrateSelection, PackageConfig, build_debcargo_tree, cargo_to_debian_upstream_version,
         check_debcargo_version, get_crate_source_name, parse_exact_version,
         read_new_package_config, read_package_config, read_root_package, select_release,
-        validate_debcargo_output,
+        update_staged_maintainer, validate_debcargo_output,
     },
     managed::{build_plan, install_state, read_state},
     orig::acquire_old_orig,
@@ -55,6 +55,7 @@ pub fn run(
     directory: Option<&Path>,
     check: bool,
     force: bool,
+    keep_staging: bool,
     keep: &[PathBuf],
     replace: &[PathBuf],
 ) -> Result<bool> {
@@ -78,6 +79,7 @@ pub fn run(
             version,
             check,
             force,
+            keep_staging,
             &keep_paths,
             &replace_paths,
         ),
@@ -95,6 +97,7 @@ pub fn run(
                 crate_name,
                 version,
                 check,
+                keep_staging,
             )
         }
     }
@@ -199,6 +202,7 @@ fn reconcile_existing(
     requested_version: Option<&str>,
     check: bool,
     force: bool,
+    keep_staging: bool,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<bool> {
@@ -209,7 +213,8 @@ fn reconcile_existing(
     let current_version = parse_exact_version(&current_package.version)?;
     let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
     validate_top_changelog(&top, &current_package.version, &current_upstream)?;
-    let config = read_package_config(&debian.join("debcargo.toml"))?;
+    let mut config = read_package_config(&debian.join("debcargo.toml"))?;
+    config.preserve_repack_suffix(&current_upstream, &top.upstream);
     let crate_selection = select_release(
         requested_name,
         requested_version,
@@ -237,7 +242,10 @@ fn reconcile_existing(
         &upstream,
         &crate_selection,
         &debcargo_version,
+        keep_staging,
     )?;
+    let raw_control = read_state(&stage.path().join("output/debian/control"))?;
+    update_staged_maintainer(stage.path())?;
     let output = validate_debcargo_output(
         stage.path(),
         &source_name,
@@ -256,7 +264,19 @@ fn reconcile_existing(
 
     let generated = read_generated_candidates(stage.path())?;
     let managed = collect_managed_paths(&debian, &generated)?;
-    let mut generated_plan = build_plan(&debian, &managed, &generated, keep, replace)?;
+    let control = PathBuf::from("debian/control");
+    let mut inferred_bases = BTreeMap::new();
+    if let Some(raw_control) = raw_control {
+        inferred_bases.insert(control, raw_control);
+    }
+    let mut generated_plan = build_plan(
+        &debian,
+        &managed,
+        &generated,
+        &inferred_bases,
+        keep,
+        replace,
+    )?;
     generated_plan
         .paths
         .push(build_patch_series_plan(&debian, stage.path())?);
@@ -329,6 +349,7 @@ fn create_new(
     crate_name: &str,
     requested_version: Option<&str>,
     check: bool,
+    keep_staging: bool,
 ) -> Result<bool> {
     let debcargo_version = check_debcargo_version()?;
     let config = read_new_package_config()?;
@@ -342,7 +363,9 @@ fn create_new(
         &upstream,
         &crate_selection,
         &debcargo_version,
+        keep_staging,
     )?;
+    update_staged_maintainer(stage.path())?;
     let output = validate_debcargo_output(
         stage.path(),
         &source_name,

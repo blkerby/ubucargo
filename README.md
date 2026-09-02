@@ -7,7 +7,7 @@ The initial MVP implements:
 
 ```console
 ubucargo package [CRATE [VERSION]] [--directory DIR] [--check] [--force] \
-  [--keep PATH]... [--replace PATH]...
+  [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
 `package` creates a new source package when no destination exists, regenerates

@@ -40,6 +40,10 @@ enum Command {
         #[arg(long)]
         force: bool,
 
+        /// Retain the temporary debcargo staging directory for inspection.
+        #[arg(long)]
+        keep_staging: bool,
+
         /// Preserve an ambiguous existing file and establish it as an override.
         #[arg(long, value_name = "PATH")]
         keep: Vec<PathBuf>,
@@ -59,6 +63,7 @@ fn main() -> ExitCode {
             directory,
             check,
             force,
+            keep_staging,
             keep,
             replace,
         } => package::run(
@@ -67,6 +72,7 @@ fn main() -> ExitCode {
             directory.as_deref(),
             check,
             force,
+            keep_staging,
             &keep,
             &replace,
         ),
@@ -100,6 +106,7 @@ mod tests {
             "rust-serde",
             "--check",
             "--force",
+            "--keep-staging",
         ])
         .unwrap();
 
@@ -109,6 +116,7 @@ mod tests {
             directory,
             check,
             force,
+            keep_staging,
             ..
         } = cli.command;
         assert_eq!(crate_name.as_deref(), Some("serde"));
@@ -116,6 +124,7 @@ mod tests {
         assert_eq!(directory.as_deref(), Some(Path::new("rust-serde")));
         assert!(check);
         assert!(force);
+        assert!(keep_staging);
     }
 
     #[test]

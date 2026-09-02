@@ -149,6 +149,7 @@ pub fn build_plan(
     debian: &Path,
     managed: &BTreeSet<PathBuf>,
     generated: &BTreeMap<PathBuf, FileState>,
+    inferred_bases: &BTreeMap<PathBuf, FileState>,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<Plan> {
@@ -159,8 +160,13 @@ pub fn build_plan(
         let old = read_state(&resolve_managed_path(debian, path)?)?;
         let base = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
         let new = generated.get(path).cloned();
-        let ambiguous =
-            base.is_none() && matches!((&old, &new), (Some(old), Some(new)) if old != new);
+        let effective_base = base.as_ref().or_else(|| {
+            inferred_bases
+                .get(path)
+                .filter(|inferred| old.as_ref() == Some(*inferred))
+        });
+        let ambiguous = effective_base.is_none()
+            && matches!((&old, &new), (Some(old), Some(new)) if old != new);
         let decision_replace = if ambiguous {
             match (keep.contains(path), replace.contains(path)) {
                 (true, false) => {
@@ -183,7 +189,7 @@ pub fn build_plan(
 
         // A managed path is not necessarily generator-controlled: when the
         // primary differs from its hint, the primary is a maintainer override.
-        let (primary_after, hint_after, overridden, unresolved) = match &base {
+        let (primary_after, hint_after, overridden, unresolved) = match effective_base {
             // The primary still matches the last generated state, so accept the
             // new generated state as both the primary and the hint.
             Some(base) if old.as_ref() == Some(base) => (new.clone(), new.clone(), false, false),
@@ -355,6 +361,7 @@ mod tests {
             &debian,
             &managed,
             &generated,
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -367,6 +374,20 @@ mod tests {
             &debian,
             &managed,
             &generated,
+            &BTreeMap::from([(path.clone(), make_state("maintainer"))]),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert!(!plan.paths[0].ambiguous);
+        assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
+        assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
+
+        let plan = build_plan(
+            &debian,
+            &managed,
+            &generated,
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -377,6 +398,7 @@ mod tests {
             &debian,
             &managed,
             &generated,
+            &BTreeMap::new(),
             &BTreeSet::from([path.clone()]),
             &BTreeSet::new(),
         )
@@ -389,6 +411,7 @@ mod tests {
             &debian,
             &managed,
             &generated,
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::from([path.clone()]),
         )
@@ -412,6 +435,7 @@ mod tests {
             &debian,
             &managed,
             &generated,
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -425,6 +449,7 @@ mod tests {
             &debian,
             &managed,
             &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -436,6 +461,7 @@ mod tests {
         let plan = build_plan(
             &debian,
             &managed,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
@@ -462,6 +488,7 @@ mod tests {
             &debian,
             &BTreeSet::from([path.clone()]),
             &BTreeMap::from([(path.clone(), generated.clone())]),
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )
@@ -489,6 +516,7 @@ mod tests {
                     mode: 0o750,
                 },
             )]),
+            &BTreeMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
         )

@@ -177,6 +177,11 @@ fn select_changelog_action(
 /// Normalizes the top entry distribution and provenance bullet.
 fn normalize_top_entry(changelog: &mut ChangeLog, provenance: &str) -> Result<()> {
     let mut entry = changelog.iter().next().context("changelog is empty")?;
+    let top_version = entry
+        .try_version()
+        .transpose()
+        .context("parse top changelog version")?
+        .context("top changelog entry has no version")?;
     let mut distributions = entry
         .distributions()
         .context("changelog entry has no distribution")?;
@@ -187,8 +192,12 @@ fn normalize_top_entry(changelog: &mut ChangeLog, provenance: &str) -> Result<()
     }
     entry.set_distributions(distributions);
 
+    let provenance = format!("* {provenance}");
     let mut provenance_bullet = None;
     for change in debian_changelog::iter_changes_by_author(changelog) {
+        if change.try_version().transpose()? != Some(top_version.clone()) {
+            break;
+        }
         for bullet in change.split_into_bullets() {
             if is_provenance(bullet.lines())
                 && let Some(previous) = provenance_bullet.replace(bullet)
@@ -198,9 +207,9 @@ fn normalize_top_entry(changelog: &mut ChangeLog, provenance: &str) -> Result<()
         }
     }
     if let Some(bullet) = provenance_bullet {
-        bullet.replace_with(vec![provenance]);
+        bullet.replace_with(vec![&provenance]);
     } else {
-        entry.prepend_change_line(provenance);
+        entry.prepend_change_line(&provenance);
     }
     Ok(())
 }
@@ -265,17 +274,24 @@ mod tests {
             "  * local change\n",
             "  * Package example 1.0.0 from crates.io using debcargo 2.8.0 and ubucargo 0.0.1.\n",
             "\n",
-            " -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n"
+            " -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n",
+            "\n",
+            "rust-example (0.9.0-1) unstable; urgency=medium\n",
+            "\n",
+            "  * Package example 0.9.0 from crates.io using debcargo 2.7.0\n",
+            "\n",
+            " -- B <b@example.com>  Sun, 31 Dec 2023 00:00:00 +0000\n"
         );
         let mut changelog: ChangeLog = old.parse().unwrap();
         normalize_top_entry(
             &mut changelog,
-            "* Package example 1.0.0 from crates.io using debcargo 2.8.4 and ubucargo 0.1.0.",
+            "Package example 1.0.0 from crates.io using debcargo 2.8.4 and ubucargo 0.1.0.",
         )
         .unwrap();
         let new = changelog.to_string();
         assert!(new.contains(") UNRELEASED;"));
-        assert_eq!(new.matches("using debcargo").count(), 1);
+        assert_eq!(new.matches("using debcargo").count(), 2);
+        assert!(new.contains("* Package example 0.9.0 from crates.io using debcargo 2.7.0"));
         assert!(new.contains("  * local change"));
     }
 }

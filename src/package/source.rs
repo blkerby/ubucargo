@@ -187,14 +187,12 @@ pub fn scan_tree(root: &Path, exclude_debian: bool) -> Result<BTreeMap<PathBuf, 
 /// Reports whether two source-tree states are equivalent, comparing file contents on disk.
 pub fn states_match(first: &TreeNode, second: &TreeNode) -> bool {
     match (first, second) {
-        (TreeNode::Directory(first_mode), TreeNode::Directory(second_mode)) => {
-            first_mode == second_mode
-        }
+        (TreeNode::Directory(_), TreeNode::Directory(_)) => true,
         (TreeNode::Symlink(first_target), TreeNode::Symlink(second_target)) => {
             first_target == second_target
         }
         (TreeNode::File(first), TreeNode::File(second)) => {
-            first.mode == second.mode
+            first.mode & 0o111 == second.mode & 0o111
                 // Treat comparison errors as a difference to stay conservative.
                 && !files_differ(&first.origin, &second.origin).unwrap_or(true)
         }
@@ -419,16 +417,30 @@ mod tests {
     /// Verifies source reconciliation preserves modes and accepts upstream file-type changes.
     fn handles_modes_and_symlink_changes() {
         let base_directory = tempdir().unwrap();
+        fs::create_dir(base_directory.path().join("directory")).unwrap();
         write_file(base_directory.path(), "mode", "same");
+        write_file(base_directory.path(), "non-executable-mode", "same");
         create_symlink("old-target", base_directory.path().join("kind")).unwrap();
         let base = scan_tree(base_directory.path(), false).unwrap();
 
         let new_directory = tempdir().unwrap();
+        fs::create_dir(new_directory.path().join("directory")).unwrap();
+        set_mode(&new_directory.path().join("directory"), 0o775);
         write_file(new_directory.path(), "mode", "same");
         set_mode(&new_directory.path().join("mode"), 0o755);
+        write_file(new_directory.path(), "non-executable-mode", "same");
+        set_mode(&new_directory.path().join("non-executable-mode"), 0o664);
         write_file(new_directory.path(), "kind", "now a file");
         let new = scan_tree(new_directory.path(), false).unwrap();
 
+        assert!(states_match(
+            base.get(Path::new("directory")).unwrap(),
+            new.get(Path::new("directory")).unwrap()
+        ));
+        assert!(states_match(
+            base.get(Path::new("non-executable-mode")).unwrap(),
+            new.get(Path::new("non-executable-mode")).unwrap()
+        ));
         let plan = build_source_plan(&base, &base, &new, false).unwrap();
         assert!(states_match(
             new.get(Path::new("mode")).unwrap(),

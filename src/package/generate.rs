@@ -12,6 +12,7 @@ use super::changelog::{TopChangelog, prepare_changelog};
 use super::tree::copy_tree;
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
+const UBUNTU_MAINTAINER: &str = "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>";
 
 /// Relevant package records returned by `cargo metadata`.
 #[derive(Deserialize)]
@@ -39,6 +40,24 @@ pub struct PackageConfig {
     pub semver_suffix: bool,
     /// Effective repack suffix, including debcargo's default for exclusions.
     pub repack_suffix: Option<String>,
+    /// Whether the repack suffix was explicitly configured by the maintainer.
+    repack_suffix_explicit: bool,
+}
+
+impl PackageConfig {
+    /// Preserves an existing package's repack suffix when none is configured explicitly.
+    pub fn preserve_repack_suffix(&mut self, cargo_upstream: &str, existing_upstream: &str) {
+        if self.repack_suffix_explicit {
+            return;
+        }
+        if let Some(suffix) = existing_upstream
+            .strip_prefix(cargo_upstream)
+            .and_then(|suffix| suffix.strip_prefix('+'))
+            .filter(|suffix| !suffix.is_empty())
+        {
+            self.repack_suffix = Some(suffix.to_owned());
+        }
+    }
 }
 
 /// Exact crate release selected for final generation.
@@ -196,14 +215,21 @@ pub fn build_debcargo_tree(
     upstream: &str,
     crate_selection: &CrateSelection,
     debcargo_version: &Version,
+    keep_staging: bool,
 ) -> Result<TempDir> {
-    let stage = tempfile::tempdir().context("create package staging directory")?;
+    let stage = tempfile::Builder::new()
+        .disable_cleanup(keep_staging)
+        .tempdir()
+        .context("create package staging directory")?;
+    if keep_staging {
+        eprintln!("package staging directory: {}", stage.path().display());        
+    }
     let overlay = stage.path().join("overlay");
     fs::create_dir(&overlay)?;
     if let Some(debian) = existing_debian {
         prepare_patch_overlay(debian, &overlay)?;
     }
-    write_staged_config(config, stage.path())?;
+    write_staged_config(config, stage.path(), existing_debian.is_none())?;
     let provenance = format!(
         "Package {} {} from crates.io using debcargo {} and ubucargo {}.",
         crate_selection.crate_name,
@@ -221,6 +247,24 @@ pub fn build_debcargo_tree(
     )?;
     run_debcargo(stage.path(), crate_selection)?;
     Ok(stage)
+}
+
+/// Applies Ubuntu maintainer fields to staged debcargo output.
+pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
+    let output = Command::new("update-maintainer")
+        .arg("--quiet")
+        .arg("--debian-directory")
+        .arg(stage.join("output/debian"))
+        .output()
+        .context("run update-maintainer")?;
+    if !output.status.success() {
+        bail!(
+            "update-maintainer failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
@@ -311,7 +355,7 @@ pub fn validate_debcargo_output(
 fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelection> {
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
     fs::create_dir(stage.path().join("overlay"))?;
-    write_staged_config(config, stage.path())?;
+    write_staged_config(config, stage.path(), false)?;
     let output = Command::new("debcargo")
         .arg("extract")
         .arg("--config")
@@ -357,6 +401,7 @@ fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
         .get("semver_suffix")
         .and_then(|item| item.as_bool())
         .unwrap_or(false);
+    let repack_suffix_explicit = config.get("repack_suffix").is_some();
     let repack_suffix = if let Some(item) = config.get("repack_suffix") {
         Some(
             item.as_str()
@@ -372,12 +417,23 @@ fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
         contents: contents.to_owned(),
         semver_suffix,
         repack_suffix,
+        repack_suffix_explicit,
     })
 }
 
 /// Writes registry-backed staged configuration with a temporary overlay.
-fn write_staged_config(config: &PackageConfig, stage: &Path) -> Result<()> {
+fn write_staged_config(
+    config: &PackageConfig,
+    stage: &Path,
+    use_ubuntu_maintainer: bool,
+) -> Result<()> {
     let mut document: DocumentMut = config.contents.parse()?;
+    if use_ubuntu_maintainer {
+        document["maintainer"] = value(UBUNTU_MAINTAINER);
+    }
+    if let Some(repack_suffix) = &config.repack_suffix {
+        document["repack_suffix"] = value(repack_suffix);
+    }
     document["overlay"] = value(require_utf8_path(&stage.join("overlay"))?);
     fs::write(stage.join("debcargo.toml"), document.to_string())?;
     Ok(())
@@ -457,5 +513,42 @@ mod tests {
         assert!(parse_debcargo_version("debcargo 2.8.3").is_err());
         assert!(parse_debcargo_version("debcargo 3.0.0").is_err());
         assert!(parse_debcargo_version("2.8.4").is_err());
+    }
+
+    #[test]
+    /// Sets the Ubuntu maintainer only when generating a fresh package.
+    fn writes_fresh_package_maintainer() {
+        let stage = tempfile::tempdir().unwrap();
+        let config = read_new_package_config().unwrap();
+
+        write_staged_config(&config, stage.path(), true).unwrap();
+        let document: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
+    }
+
+    #[test]
+    /// Preserves an existing implicit suffix while respecting an explicit suffix.
+    fn selects_repack_suffix() {
+        let mut inferred = read_package_config_text("excludes = [\"benches/**\"]").unwrap();
+        inferred.preserve_repack_suffix("1.0.0", "1.0.0+dfsg");
+        assert_eq!(inferred.repack_suffix.as_deref(), Some("dfsg"));
+
+        let stage = tempfile::tempdir().unwrap();
+        write_staged_config(&inferred, stage.path(), false).unwrap();
+        let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(staged["repack_suffix"].as_str(), Some("dfsg"));
+
+        let mut explicit =
+            read_package_config_text("excludes = [\"benches/**\"]\nrepack_suffix = \"custom\"")
+                .unwrap();
+        explicit.preserve_repack_suffix("1.0.0", "1.0.0+dfsg");
+        assert_eq!(explicit.repack_suffix.as_deref(), Some("custom"));
     }
 }
