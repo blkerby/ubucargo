@@ -823,6 +823,7 @@ dependencies = [
  "clap",
  "debian-changelog",
  "debian-control",
+ "debversion",
  "semver",
  "serde",
  "serde_json",

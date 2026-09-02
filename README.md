@@ -80,4 +80,5 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 ## Requirements
 
-It currently requires Cargo, quilt, devscripts, ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
+It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts,
+ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.

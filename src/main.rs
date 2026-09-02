@@ -1,5 +1,6 @@
 //! Command-line interface for creating and updating Ubuntu Rust source packages.
 
+mod deps;
 mod package;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -18,6 +19,33 @@ struct Cli {
 /// Operations supported by the current Ubucargo release.
 #[derive(Subcommand)]
 enum Command {
+    /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
+    Deps {
+        /// Crate name from crates.io; conflicts with --directory.
+        #[arg(value_name = "CRATE")]
+        crate_name: Option<String>,
+
+        /// Exact crate version; defaults to the latest release when a crate is named.
+        #[arg(value_name = "VERSION")]
+        version: Option<String>,
+
+        /// Existing source package directory; defaults to the nearest parent package.
+        #[arg(long, value_name = "DIR")]
+        directory: Option<PathBuf>,
+
+        /// Ubuntu series to query.
+        #[arg(long, value_name = "SERIES")]
+        series: String,
+
+        /// Public Launchpad PPA to include.
+        #[arg(long, value_name = "ppa:OWNER/NAME")]
+        ppa: Vec<String>,
+
+        /// Debian architecture; defaults to dpkg --print-architecture.
+        #[arg(long, value_name = "ARCH")]
+        architecture: Option<String>,
+    },
+
     /// Create or reconcile a complete source package.
     Package {
         /// Crate name; defaults to the existing package's root Cargo identity.
@@ -57,6 +85,21 @@ enum Command {
 /// Parses the command line, runs the selected command, and maps its result to an exit status.
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
+        Command::Deps {
+            crate_name,
+            version,
+            directory,
+            series,
+            ppa,
+            architecture,
+        } => deps::run(
+            crate_name.as_deref(),
+            version.as_deref(),
+            directory.as_deref(),
+            &series,
+            &ppa,
+            architecture.as_deref(),
+        ),
         Command::Package {
             crate_name,
             version,
@@ -118,13 +161,52 @@ mod tests {
             force,
             keep_staging,
             ..
-        } = cli.command;
+        } = cli.command
+        else {
+            panic!("expected package command");
+        };
         assert_eq!(crate_name.as_deref(), Some("serde"));
         assert_eq!(version.as_deref(), Some("1.0.220"));
         assert_eq!(directory.as_deref(), Some(Path::new("rust-serde")));
         assert!(check);
         assert!(force);
         assert!(keep_staging);
+    }
+
+    #[test]
+    /// Verifies dependency command target and Archive argument parsing.
+    fn parses_dependency_arguments() {
+        let cli = Cli::try_parse_from([
+            "ubucargo",
+            "deps",
+            "serde",
+            "1.0.220",
+            "--series",
+            "noble",
+            "--ppa",
+            "ppa:example/rust-staging",
+            "--architecture",
+            "arm64",
+        ])
+        .unwrap();
+
+        let Command::Deps {
+            crate_name,
+            version,
+            directory,
+            series,
+            ppa,
+            architecture,
+        } = cli.command
+        else {
+            panic!("expected deps command");
+        };
+        assert_eq!(crate_name.as_deref(), Some("serde"));
+        assert_eq!(version.as_deref(), Some("1.0.220"));
+        assert_eq!(directory, None);
+        assert_eq!(series, "noble");
+        assert_eq!(ppa, ["ppa:example/rust-staging"]);
+        assert_eq!(architecture.as_deref(), Some("arm64"));
     }
 
     #[test]

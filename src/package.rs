@@ -152,10 +152,8 @@ fn select_package_mode(
         }
     }
 
-    for candidate in start.ancestors() {
-        if has_debcargo_config(candidate) {
-            return Ok(PackageMode::Existing(candidate.to_path_buf()));
-        }
+    if let Some(root) = find_parent_package(start) {
+        return Ok(PackageMode::Existing(root));
     }
     if !has_crate {
         bail!(
@@ -169,9 +167,122 @@ fn select_package_mode(
     })
 }
 
+/// Finds the nearest source-package root at or above a directory.
+fn find_parent_package(start: &Path) -> Option<PathBuf> {
+    for candidate in start.ancestors() {
+        if has_debcargo_config(candidate) {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
+}
+
 /// Reports whether a directory contains Ubucargo's source-package marker.
 fn has_debcargo_config(path: &Path) -> bool {
     path.join("debian/debcargo.toml").is_file()
+}
+
+/// Stages one crate package for read-only dependency inspection.
+pub(crate) fn stage_for_dependency_inspection(
+    crate_name: Option<&str>,
+    version: Option<&str>,
+    directory: Option<&Path>,
+) -> Result<tempfile::TempDir> {
+    if version.is_some() && crate_name.is_none() {
+        bail!("VERSION requires CRATE");
+    }
+    if crate_name.is_some() && directory.is_some() {
+        bail!("CRATE and --directory may not be combined");
+    }
+    if let Some(version) = version {
+        parse_exact_version(version)?;
+    }
+
+    let debcargo_version = check_debcargo_version()?;
+    if let Some(crate_name) = crate_name {
+        let config = read_new_package_config()?;
+        let crate_selection = select_release(Some(crate_name), version, None, &config)?;
+        let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
+        let stage = build_debcargo_tree(
+            &config,
+            None,
+            None,
+            &source_name,
+            &upstream,
+            &crate_selection,
+            &debcargo_version,
+            false,
+        )?;
+        validate_debcargo_output(
+            stage.path(),
+            &source_name,
+            &upstream,
+            &crate_selection.crate_name,
+            &crate_selection.version,
+        )?;
+        return Ok(stage);
+    }
+
+    let current = std::env::current_dir()
+        .context("get current directory")?
+        .canonicalize()
+        .context("resolve current directory")?;
+    let root = if let Some(directory) = directory {
+        let requested = if directory.is_absolute() {
+            directory.to_path_buf()
+        } else {
+            current.join(directory)
+        };
+        let root = requested
+            .canonicalize()
+            .with_context(|| format!("resolve {}", requested.display()))?;
+        if !has_debcargo_config(&root) {
+            bail!(
+                "{} is not a source-package root with debian/debcargo.toml",
+                root.display()
+            );
+        }
+        root
+    } else {
+        find_parent_package(&current)
+            .with_context(|| format!("{} is not inside a source package", current.display()))?
+    };
+
+    let debian = root.join("debian");
+    let current_package = read_root_package(&root)?;
+    let current_version = parse_exact_version(&current_package.version)?;
+    let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
+    let top = read_top_changelog(&debian.join("changelog"))?;
+    validate_top_changelog(&top, &current_package.version, &current_upstream)?;
+    let mut config = read_package_config(&debian.join("debcargo.toml"))?;
+    config.preserve_repack_suffix(&current_upstream, &top.upstream);
+    check_patch_state(&root)?;
+    let crate_selection = select_release(None, None, Some(&current_package), &config)?;
+    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
+    if source_name != top.source {
+        bail!(
+            "selected crate maps to Debian source {source_name}, not existing source {}",
+            top.source
+        );
+    }
+    let stage = build_debcargo_tree(
+        &config,
+        Some(&debian),
+        Some(&top),
+        &source_name,
+        &upstream,
+        &crate_selection,
+        &debcargo_version,
+        false,
+    )?;
+    validate_debcargo_output(
+        stage.path(),
+        &source_name,
+        &upstream,
+        &crate_selection.crate_name,
+        &crate_selection.version,
+    )?;
+    Ok(stage)
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -459,5 +570,14 @@ mod tests {
             }
         );
         assert!(select_package_mode(clean.path(), None, false).is_err());
+    }
+
+    #[test]
+    /// Rejects mixing explicit registry and source-package dependency targets.
+    fn rejects_ambiguous_dependency_target() {
+        assert!(
+            stage_for_dependency_inspection(Some("serde"), None, Some(Path::new("rust-serde")))
+                .is_err()
+        );
     }
 }
