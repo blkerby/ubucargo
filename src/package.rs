@@ -13,8 +13,9 @@ use self::{
     generate::{
         CrateSelection, PackageConfig, build_debcargo_tree, cargo_to_debian_upstream_version,
         check_debcargo_version, get_crate_source_name, parse_exact_version,
-        read_new_package_config, read_package_config, read_root_package, select_release,
-        update_staged_maintainer, validate_debcargo_output,
+        read_new_package_config, read_package_config, read_root_package,
+        remove_generated_vcs_fields, select_release, update_staged_maintainer,
+        validate_debcargo_output,
     },
     managed::{build_plan, install_state, read_state},
     orig::acquire_old_orig,
@@ -245,6 +246,7 @@ fn reconcile_existing(
         keep_staging,
     )?;
     let raw_control = read_state(&stage.path().join("output/debian/control"))?;
+    remove_generated_vcs_fields(stage.path())?;
     update_staged_maintainer(stage.path())?;
     let output = validate_debcargo_output(
         stage.path(),
@@ -365,6 +367,7 @@ fn create_new(
         &debcargo_version,
         keep_staging,
     )?;
+    remove_generated_vcs_fields(stage.path())?;
     update_staged_maintainer(stage.path())?;
     let output = validate_debcargo_output(
         stage.path(),

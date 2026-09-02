@@ -84,6 +84,8 @@ Ubucargo prepares the staged changelog before final generation and always passes
 
 After generation, ubucargo runs `update-maintainer` on the staged package so Ubuntu revisions use the Ubuntu Developers maintainer and retain Debian's maintainer in `XSBC-Original-Maintainer`. For an existing package without a control hint, an exact match with debcargo's raw control output establishes generator ownership before this Ubuntu adjustment; other differing controls remain ambiguous.
 
+Ubucargo removes debcargo's Debian-specific `Vcs-Git` and `Vcs-Browser` fields from generated control files. A maintainer-overridden `debian/control` remains unchanged under the normal generated-file reconciliation rules.
+
 ## Orig tarball and source tree
 
 The orig tarball is placed beside the source directory using Debian naming:

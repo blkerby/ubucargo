@@ -267,6 +267,26 @@ pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Removes Debian packaging repository fields from generated control output.
+pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
+    let path = stage.join("output/debian/control");
+    let control = fs::read_to_string(&path)?;
+    let mut filtered = String::with_capacity(control.len());
+    let mut skip_continuation = false;
+    for line in control.split_inclusive('\n') {
+        if line.starts_with("Vcs-Git:") || line.starts_with("Vcs-Browser:") {
+            skip_continuation = true;
+            continue;
+        }
+        if skip_continuation && (line.starts_with(' ') || line.starts_with('\t')) {
+            continue;
+        }
+        skip_continuation = false;
+        filtered.push_str(line);
+    }
+    fs::write(&path, filtered).with_context(|| format!("write {}", path.display()))
+}
+
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
 pub fn validate_debcargo_output(
     stage: &Path,
@@ -528,6 +548,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
+    }
+
+    #[test]
+    /// Removes generated VCS fields without changing adjacent control fields.
+    fn removes_generated_vcs_fields() {
+        let stage = tempfile::tempdir().unwrap();
+        let debian = stage.path().join("output/debian");
+        fs::create_dir_all(&debian).unwrap();
+        fs::write(
+            debian.join("control"),
+            concat!(
+                "Source: rust-example\n",
+                "Vcs-Git: https://salsa.debian.org/rust-team/debcargo-conf.git\n",
+                " [src/example]\n",
+                "Vcs-Browser: https://salsa.debian.org/rust-team/debcargo-conf/src/example\n",
+                "Homepage: https://example.com\n",
+            ),
+        )
+        .unwrap();
+
+        remove_generated_vcs_fields(stage.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(debian.join("control")).unwrap(),
+            "Source: rust-example\nHomepage: https://example.com\n"
+        );
     }
 
     #[test]
