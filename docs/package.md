@@ -146,7 +146,6 @@ Generated files may include:
 - `debian/control`
 - `debian/copyright`
 - `debian/rules`
-- `debian/source/format`
 - `debian/watch`
 - `debian/tests/control`, for library packages
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
@@ -155,6 +154,10 @@ Generated files may include:
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output and is used to detect maintainer overrides to the primary `<file>`.
 
 If debcargo emits an unrecognized path, `package` warns and ignores it. The changelog, configuration, and non-automatic patch files remain maintainer-owned.
+
+For a new package, ubucargo retains debcargo's `debian/source/format`. On
+subsequent regenerations it leaves that file unchanged and does not create a
+`.debcargo.hint` for it.
 
 ### Generated patches
 

@@ -7,11 +7,11 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 use super::{
     generate::PackageConfig,
-    managed::{FileState, PathPlan, make_hint_path, read_state},
+    managed::{make_hint_path, read_state, FileState, PathPlan},
 };
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
@@ -19,12 +19,11 @@ const PACKAGE_MANAGED_PATHS: &[&str] = &[
     "debian/control",
     "debian/copyright",
     "debian/rules",
-    "debian/source/format",
     "debian/tests/control",
     "debian/upstream/metadata",
     "debian/watch",
 ];
-const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &["debian/changelog"];
+const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &["debian/changelog", "debian/source/format"];
 
 /// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
 pub fn check_patch_state(source: &Path) -> Result<bool> {
@@ -228,8 +227,10 @@ mod tests {
     fn initializes_config_and_managed_hints() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("debian/patches/auto")).unwrap();
+        fs::create_dir_all(root.path().join("debian/source")).unwrap();
         fs::write(root.path().join("debian/control"), "control").unwrap();
         fs::write(root.path().join("debian/changelog"), "changelog").unwrap();
+        fs::write(root.path().join("debian/source/format"), "3.0 (quilt)\n").unwrap();
         fs::write(
             root.path().join("debian/patches/auto/change.patch"),
             "patch",
@@ -242,5 +243,10 @@ mod tests {
         );
         assert!(root.path().join("debian/control.debcargo.hint").is_file());
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());
+        assert!(root.path().join("debian/source/format").is_file());
+        assert!(!root
+            .path()
+            .join("debian/source/format.debcargo.hint")
+            .exists());
     }
 }
