@@ -9,6 +9,7 @@ use debian_control::{
     relations::{BuildProfile, VersionConstraint},
 };
 use debversion::Version;
+use semver::{Version as SemverVersion, VersionReq};
 
 /// One Debian package alternative in a dependency expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,8 +36,8 @@ pub struct Dependency {
 struct DependencyParts {
     /// Comma-separated package requirements and their alternatives.
     entries: Vec<Vec<PackageRequirement>>,
-    /// Semver lines encoded in Debian virtual package names.
-    versions: Vec<String>,
+    /// Semver lines and strongest lower bounds encoded in Debian relations.
+    versions: BTreeMap<String, Option<SemverVersion>>,
     /// Cargo features encoded in Debian virtual package names.
     features: Vec<String>,
 }
@@ -66,8 +67,6 @@ fn parse_dependencies(contents: &str, architecture: &str) -> Result<Vec<Dependen
 
     let mut dependencies = Vec::new();
     for (name, mut parts) in grouped {
-        parts.versions.sort();
-        parts.versions.dedup();
         parts.features.sort();
         parts.features.dedup();
         let mut requirement = if parts.versions.is_empty() {
@@ -76,7 +75,9 @@ fn parse_dependencies(contents: &str, architecture: &str) -> Result<Vec<Dependen
             parts
                 .versions
                 .into_iter()
-                .map(|version| format!("^{version}"))
+                .map(|(line, minimum)| {
+                    format!("^{}", minimum.map_or(line, |value| value.to_string()))
+                })
                 .collect::<Vec<_>>()
                 .join("|")
         };
@@ -102,7 +103,7 @@ fn collect_dependencies(
     for entry in relations.iter() {
         let mut alternatives = Vec::new();
         let mut crate_name = None;
-        let mut versions = Vec::new();
+        let mut versions = BTreeMap::new();
         let mut features = Vec::new();
         for relation in &entry {
             if !relation_applies(relation, architecture)? {
@@ -119,7 +120,29 @@ fn collect_dependencies(
             }
             crate_name = Some(name);
             if let Some(version) = version {
-                versions.push(version);
+                let minimum = match &relation.version {
+                    Some((VersionConstraint::GreaterThanEqual, minimum)) => {
+                        let minimum = minimum
+                            .upstream_version
+                            .strip_suffix("-~~")
+                            .unwrap_or(&minimum.upstream_version);
+                        SemverVersion::parse(minimum).ok().filter(|minimum| {
+                            VersionReq::parse(&format!("^{version}"))
+                                .is_ok_and(|line| line.matches(minimum))
+                        })
+                    }
+                    _ => None,
+                };
+                match versions.entry(version) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(minimum);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        if minimum < *entry.get() {
+                            entry.insert(minimum);
+                        }
+                    }
+                }
             }
             if let Some(feature) = feature {
                 features.push(feature);
@@ -132,7 +155,12 @@ fn collect_dependencies(
         if let Some(crate_name) = crate_name {
             let grouped = grouped.entry(crate_name).or_default();
             grouped.entries.push(alternatives);
-            grouped.versions.extend(versions);
+            for (version, minimum) in versions {
+                let current = grouped.versions.entry(version).or_default();
+                if minimum > *current {
+                    *current = minimum;
+                }
+            }
             grouped.features.extend(features);
         }
     }
@@ -243,11 +271,26 @@ Description: example
         let dependencies = parse_dependencies(control, "amd64").unwrap();
         assert_eq!(dependencies.len(), 2);
         assert_eq!(dependencies[0].name, "serde");
-        assert_eq!(dependencies[0].requirement, "^1 +derive +std");
+        assert_eq!(dependencies[0].requirement, "^1.0.100 +derive +std");
         assert_eq!(dependencies[0].entries.len(), 2);
         assert_eq!(dependencies[1].name, "syn");
         assert_eq!(dependencies[1].requirement, "^2");
         assert_eq!(dependencies[1].entries[0].len(), 2);
+    }
+
+    #[test]
+    /// Includes a Debian lower bound in the effective Cargo-style requirement.
+    fn includes_lower_bound_in_requirement() {
+        let control = r#"Source: rust-example
+Build-Depends: librust-actix-http-3+default-dev (>= 3.13.0)
+
+Package: librust-example-dev
+Architecture: any
+Description: example
+"#;
+        let dependencies = parse_dependencies(control, "amd64").unwrap();
+
+        assert_eq!(dependencies[0].requirement, "^3.13.0 +default");
     }
 
     #[test]

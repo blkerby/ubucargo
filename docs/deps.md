@@ -61,6 +61,12 @@ candidate independently. `REQUIREMENT` is last so a long, sorted feature list
 may extend beyond the nominal column width without disturbing the other columns.
 Requirements are not truncated or wrapped by ubucargo.
 
+The displayed semver requirement is inferred from the Debian virtual-package
+compatibility line and its strongest applicable lower bound. For example,
+`librust-actix-http-3+default-dev (>= 3.13.0)` is shown as `^3.13.0 +default`.
+This describes the effective relation checked by `deps`; it does not attempt to
+reproduce the original spelling from `Cargo.toml`.
+
 Statuses have the following meanings:
 
 - `selected`: APT's selected package satisfies the complete dependency expression;

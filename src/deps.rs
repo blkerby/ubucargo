@@ -87,7 +87,6 @@ pub fn run(
     let dependencies =
         control::read_dependencies(&stage.path().join("output/debian/control"), &architecture)?;
     let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
-    eprintln!("Processing dependencies");
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
     print!("{}", format_table(&rows, color));
