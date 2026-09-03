@@ -375,15 +375,10 @@ fn read_index(
     candidates: &mut Vec<PackageCandidate>,
     candidate_indexes: &mut BTreeMap<(String, Version, String), usize>,
 ) -> Result<()> {
-    let mut child = Command::new("/usr/lib/apt/apt-helper")
-        .arg("cat-file")
-        .arg(path)
-        .stdout(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("read APT index {}", path.display()))?;
-    let stdout = child.stdout.take().context("capture apt-helper output")?;
+    let file =
+        fs::File::open(path).with_context(|| format!("read APT index {}", path.display()))?;
     let mut paragraph = String::new();
-    for line in BufReader::new(stdout).lines() {
+    for line in BufReader::new(file).lines() {
         let line = line?;
         if line.is_empty() {
             add_package(&paragraph, location, candidates, candidate_indexes)?;
@@ -394,10 +389,6 @@ fn read_index(
         }
     }
     add_package(&paragraph, location, candidates, candidate_indexes)?;
-    let status = child.wait()?;
-    if !status.success() {
-        bail!("apt-helper could not read {}", path.display());
-    }
     Ok(())
 }
 

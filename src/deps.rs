@@ -144,22 +144,24 @@ fn satisfies(dependency: &Dependency, candidate: &PackageCandidate) -> bool {
 
 /// Reports whether one candidate satisfies one concrete or virtual package relation.
 fn satisfies_package(requirement: &PackageRequirement, candidate: &PackageCandidate) -> bool {
-    let Some((constraint, expected)) = &requirement.version else {
+    let Some((constraint, expected_version)) = &requirement.version else {
         return candidate.provides.contains_key(&requirement.name);
     };
-    let Some(actual) = candidate.provided_version(&requirement.name) else {
+    let Some(actual_version) = candidate.provided_version(&requirement.name) else {
         return false;
     };
     match constraint {
-        VersionConstraint::GreaterThanEqual => actual >= expected,
-        VersionConstraint::LessThanEqual => actual <= expected,
-        VersionConstraint::Equal => actual == expected,
-        VersionConstraint::GreaterThan => actual > expected,
-        VersionConstraint::LessThan => actual < expected,
+        VersionConstraint::GreaterThanEqual => actual_version >= expected_version,
+        VersionConstraint::LessThanEqual => actual_version <= expected_version,
+        VersionConstraint::Equal => actual_version == expected_version,
+        VersionConstraint::GreaterThan => actual_version > expected_version,
+        VersionConstraint::LessThan => actual_version < expected_version,
     }
 }
 
 /// Formats report rows as an unbordered, space-aligned table.
+/// The last column is not padded, so that an outlier long field
+/// avoids making the entire output too wide.
 fn format_table(rows: &[Row]) -> String {
     let headers = ["DEPENDENCY", "STATUS", "LOCATION", "VERSION"];
     let mut widths = headers.map(str::len);
