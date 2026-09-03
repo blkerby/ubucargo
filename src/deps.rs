@@ -5,6 +5,8 @@ mod control;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    env,
+    io::{self, IsTerminal},
     path::Path,
 };
 
@@ -15,6 +17,42 @@ use self::{
     apt::PackageCandidate,
     control::{Dependency, PackageRequirement, parse_rust_package_name},
 };
+
+const GREEN: &str = "\x1b[32m";
+const GRAY: &str = "\x1b[90m";
+const YELLOW: &str = "\x1b[33m";
+const RED: &str = "\x1b[31m";
+const RESET: &str = "\x1b[0m";
+
+/// Availability of one displayed requirement component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequirementStatus {
+    /// The displayed candidate satisfies the relation.
+    Satisfied,
+    /// A corresponding package exists but does not satisfy the relation.
+    Incompatible,
+    /// No corresponding package exists for the displayed candidate.
+    Missing,
+}
+
+/// One independently colored component of a Cargo-style requirement.
+#[derive(Debug, Eq, PartialEq)]
+struct RequirementPart {
+    /// Semver expression or feature name, including its `+` prefix.
+    text: String,
+    /// Candidate availability for this component.
+    status: RequirementStatus,
+}
+
+/// Feature identity used to recognize a related package with the wrong relation.
+enum RequirementKind<'a> {
+    /// Any package for the crate when no featureless relation was generated.
+    Any,
+    /// A package relation without a feature component.
+    Base,
+    /// A package relation for the named Cargo feature.
+    Feature(&'a str),
+}
 
 /// One printable dependency-candidate row.
 #[derive(Debug, Eq, PartialEq)]
@@ -27,8 +65,8 @@ struct Row {
     location: String,
     /// Debian package version.
     version: String,
-    /// Cargo-style requirement, omitted on continuation rows.
-    requirement: String,
+    /// Cargo-style requirement components classified for this candidate.
+    requirement: Vec<RequirementPart>,
 }
 
 /// Stages a crate, queries APT, prints the report, and returns whether it is unsatisfied.
@@ -51,7 +89,8 @@ pub fn run(
     let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
     eprintln!("Processing dependencies");
     let rows = classify(&dependencies, &candidates);
-    print!("{}", format_table(&rows));
+    let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
+    print!("{}", format_table(&rows, color));
     Ok(rows
         .iter()
         .any(|row| matches!(row.status, "incompatible" | "missing")))
@@ -111,7 +150,7 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
                 status: "missing",
                 location: "-".to_owned(),
                 version: "-".to_owned(),
-                requirement: dependency.requirement.clone(),
+                requirement: make_requirement(dependency, None),
             });
         }
     }
@@ -134,12 +173,103 @@ fn make_row(
         status,
         location: candidate.location.clone(),
         version: candidate.version.to_string(),
-        requirement: if first {
-            dependency.requirement.clone()
-        } else {
-            String::new()
-        },
+        requirement: make_requirement(dependency, Some(candidate)),
     }
+}
+
+/// Builds independently classified semver and feature display components.
+fn make_requirement(
+    dependency: &Dependency,
+    candidate: Option<&PackageCandidate>,
+) -> Vec<RequirementPart> {
+    let mut parts = dependency.requirement.split_whitespace();
+    let mut output = Vec::new();
+    if let Some(version) = parts.next() {
+        let mut requirements = Vec::new();
+        for alternatives in &dependency.entries {
+            for requirement in alternatives {
+                if parse_rust_package_name(&requirement.name)
+                    .is_some_and(|(_, _, feature)| feature.is_none())
+                {
+                    requirements.push(requirement);
+                }
+            }
+        }
+        let featureless = !requirements.is_empty();
+        if !featureless {
+            for alternatives in &dependency.entries {
+                requirements.extend(alternatives);
+            }
+        }
+        output.push(RequirementPart {
+            text: version.to_owned(),
+            status: classify_requirement(
+                &requirements,
+                candidate,
+                &dependency.name,
+                if featureless {
+                    RequirementKind::Base
+                } else {
+                    RequirementKind::Any
+                },
+            ),
+        });
+    }
+    for feature in parts {
+        let name = feature.strip_prefix('+').unwrap_or(feature);
+        let mut requirements = Vec::new();
+        for alternatives in &dependency.entries {
+            for requirement in alternatives {
+                if parse_rust_package_name(&requirement.name)
+                    .is_some_and(|(_, _, candidate)| candidate.as_deref() == Some(name))
+                {
+                    requirements.push(requirement);
+                }
+            }
+        }
+        output.push(RequirementPart {
+            text: feature.to_owned(),
+            status: classify_requirement(
+                &requirements,
+                candidate,
+                &dependency.name,
+                RequirementKind::Feature(name),
+            ),
+        });
+    }
+    output
+}
+
+/// Classifies one visible requirement component against a package candidate.
+fn classify_requirement(
+    requirements: &[&PackageRequirement],
+    candidate: Option<&PackageCandidate>,
+    crate_name: &str,
+    kind: RequirementKind<'_>,
+) -> RequirementStatus {
+    let Some(candidate) = candidate else {
+        return RequirementStatus::Missing;
+    };
+    if requirements
+        .iter()
+        .any(|requirement| satisfies_package(requirement, candidate))
+    {
+        return RequirementStatus::Satisfied;
+    }
+    for provided in candidate.provides.keys() {
+        let Some((name, _, provided_feature)) = parse_rust_package_name(provided) else {
+            continue;
+        };
+        let related = match kind {
+            RequirementKind::Any => true,
+            RequirementKind::Base => provided_feature.is_none(),
+            RequirementKind::Feature(feature) => provided_feature.as_deref() == Some(feature),
+        };
+        if name == crate_name && related {
+            return RequirementStatus::Incompatible;
+        }
+    }
+    RequirementStatus::Missing
 }
 
 /// Reports whether one binary package satisfies every entry for a dependency.
@@ -179,7 +309,7 @@ fn satisfies_package(requirement: &PackageRequirement, candidate: &PackageCandid
 /// Formats report rows as an unbordered, space-aligned table.
 /// The last column is not padded, so that an outlier long field
 /// avoids making the entire output too wide.
-fn format_table(rows: &[Row]) -> String {
+fn format_table(rows: &[Row], color: bool) -> String {
     let headers = ["DEPENDENCY", "STATUS", "LOCATION", "VERSION"];
     let mut widths = headers.map(str::len);
     for row in rows {
@@ -201,15 +331,46 @@ fn format_table(rows: &[Row]) -> String {
         version_width = widths[3],
     );
     for row in rows {
+        let status = if color {
+            let code = match row.status {
+                "selected" => GREEN,
+                "available" => GRAY,
+                "incompatible" => YELLOW,
+                "missing" => RED,
+                _ => "",
+            };
+            format!("{code}{:<width$}{RESET}", row.status, width = widths[1])
+        } else {
+            format!("{:<width$}", row.status, width = widths[1])
+        };
+        let mut requirement = String::new();
+        for (index, part) in row.requirement.iter().enumerate() {
+            if index > 0 {
+                requirement.push(' ');
+            }
+            let code = if color {
+                match part.status {
+                    RequirementStatus::Satisfied => "",
+                    RequirementStatus::Incompatible => YELLOW,
+                    RequirementStatus::Missing => RED,
+                }
+            } else {
+                ""
+            };
+            requirement.push_str(code);
+            requirement.push_str(&part.text);
+            if !code.is_empty() {
+                requirement.push_str(RESET);
+            }
+        }
         output.push_str(&format!(
-            "{:<dependency_width$}  {:<status_width$}  {:<location_width$}  {:<version_width$}  {}\n",
+            "{:<dependency_width$}  {}  {:<location_width$}  {:<version_width$}  {}\n",
             row.dependency,
-            row.status,
+            status,
             row.location,
             row.version,
-            row.requirement,
+            requirement,
             dependency_width = widths[0],
-            status_width = widths[1],
             location_width = widths[2],
             version_width = widths[3],
         ));
@@ -293,6 +454,12 @@ mod tests {
         assert_eq!(rows[0].version, "1.0.219-1");
         assert_eq!(rows[1].status, "available");
         assert_eq!(rows[1].dependency, "");
+        assert!(
+            rows[1]
+                .requirement
+                .iter()
+                .all(|part| part.status == RequirementStatus::Satisfied)
+        );
         assert_eq!(rows[2].status, "incompatible");
         assert_eq!(rows[3].status, "incompatible");
         assert_eq!(rows[4].status, "missing");
@@ -307,22 +474,98 @@ mod tests {
                 status: "selected",
                 location: "noble/universe".to_owned(),
                 version: "1.0.219-1".to_owned(),
-                requirement: "^1 +derive".to_owned(),
+                requirement: vec![
+                    RequirementPart {
+                        text: "^1".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                    RequirementPart {
+                        text: "+derive".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                ],
             },
             Row {
                 dependency: String::new(),
                 status: "available",
                 location: "noble-updates/universe".to_owned(),
                 version: "1.0.217-1".to_owned(),
-                requirement: String::new(),
+                requirement: vec![
+                    RequirementPart {
+                        text: "^1".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                    RequirementPart {
+                        text: "+derive".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                ],
             },
         ];
         assert_eq!(
-            format_table(&rows),
+            format_table(&rows, false),
             concat!(
                 "DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT\n",
                 "serde       selected   noble/universe          1.0.219-1  ^1 +derive\n",
-                "            available  noble-updates/universe  1.0.217-1  \n",
+                "            available  noble-updates/universe  1.0.217-1  ^1 +derive\n",
+            )
+        );
+        assert_eq!(
+            format_table(&rows, true),
+            concat!(
+                "DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT\n",
+                "serde       \x1b[32mselected \x1b[0m  noble/universe          1.0.219-1  ^1 +derive\n",
+                "            \x1b[90mavailable\x1b[0m  noble-updates/universe  1.0.217-1  ^1 +derive\n",
+            )
+        );
+    }
+
+    #[test]
+    /// Colors each requirement component according to its matching package relation.
+    fn colors_requirement_components() {
+        let dependency = Dependency {
+            name: "serde".to_owned(),
+            requirement: "^1 +alloc +derive +std".to_owned(),
+            entries: vec![
+                vec![PackageRequirement {
+                    name: "librust-serde-1-dev".to_owned(),
+                    version: None,
+                }],
+                vec![PackageRequirement {
+                    name: "librust-serde-1+alloc-dev".to_owned(),
+                    version: None,
+                }],
+                vec![PackageRequirement {
+                    name: "librust-serde-1+derive-dev".to_owned(),
+                    version: Some((
+                        VersionConstraint::GreaterThanEqual,
+                        "1.0.200-~~".parse().unwrap(),
+                    )),
+                }],
+                vec![PackageRequirement {
+                    name: "librust-serde-1+std-dev".to_owned(),
+                    version: None,
+                }],
+            ],
+        };
+        let mut candidate = candidate(
+            "1.0.219-1",
+            "noble/universe",
+            &["librust-serde-1-dev", "librust-serde-0.9+std-dev"],
+        );
+        candidate.provides.insert(
+            "librust-serde-1+derive-dev".to_owned(),
+            Some("1.0.100-1".parse().unwrap()),
+        );
+        let row = make_row(&dependency, &candidate, "incompatible", true);
+
+        assert_eq!(
+            format_table(&[row], true),
+            concat!(
+                "DEPENDENCY  STATUS        LOCATION        VERSION    REQUIREMENT\n",
+                "serde       \x1b[33mincompatible\x1b[0m  noble/universe  1.0.219-1  ",
+                "^1 \x1b[31m+alloc\x1b[0m ",
+                "\x1b[33m+derive\x1b[0m \x1b[33m+std\x1b[0m\n",
             )
         );
     }

@@ -50,16 +50,16 @@ The report shows each dependency and its candidates:
 ```text
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
 serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    ^1 +derive
-            available     noble-updates/universe              1.0.217-1
+            available     noble-updates/universe              1.0.217-1    ^1 +derive
 syn         incompatible  noble/universe                      1.0.109-2    ^2
 foo         missing       -                                   -            ^3
 ```
 
-The dependency and requirement appear on the first row for a dependency;
-additional candidates leave those fields blank. `REQUIREMENT` is last so a
-long, sorted feature list may extend beyond the nominal column width without
-disturbing the other columns. Requirements are not truncated or wrapped by
-ubucargo.
+The dependency appears on the first row for a dependency; additional candidates
+leave it blank. The requirement is repeated because its colors describe each
+candidate independently. `REQUIREMENT` is last so a long, sorted feature list
+may extend beyond the nominal column width without disturbing the other columns.
+Requirements are not truncated or wrapped by ubucargo.
 
 Statuses have the following meanings:
 
@@ -67,6 +67,14 @@ Statuses have the following meanings:
 - `available`: another version or origin also satisfies it but was not selected by APT;
 - `incompatible`: packages for the crate exist, but none satisfy the required semver line and features; and
 - `missing`: no package for the crate exists in the selected sources.
+
+When standard output is a terminal, statuses are colored green for `selected`,
+gray for `available`, yellow for `incompatible`, and red for `missing`. The
+semver expression and each `+feature` in `REQUIREMENT` are colored independently:
+yellow when a corresponding package exists but is incompatible, and red when it
+is missing. Satisfied components remain neutral on every row, reserving green
+for the `selected` status. Set `NO_COLOR` to disable colors; redirected output
+is always plain text.
 
 APT alternatives are satisfied when any alternative resolves. When a dependency
 requires multiple feature packages, all of them must resolve for the dependency
