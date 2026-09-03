@@ -2,6 +2,7 @@
 name = "ubucargo"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1"
@@ -10,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 tempfile = "3"
-toml_edit = "0.23"
+toml_edit = "0.25"
 debian-changelog = { version = "0.2", default-features = false }
 debian-control = { version = "0.3", default-features = false, features = ["lossless"] }
 debversion = "0.5"
