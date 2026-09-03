@@ -3,14 +3,17 @@
 mod apt;
 mod control;
 
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use anyhow::Result;
 use debian_control::relations::VersionConstraint;
 
 use self::{
     apt::PackageCandidate,
-    control::{Dependency, PackageRequirement},
+    control::{Dependency, PackageRequirement, parse_rust_package_name},
 };
 
 /// One printable dependency-candidate row.
@@ -46,6 +49,7 @@ pub fn run(
     let dependencies =
         control::read_dependencies(&stage.path().join("output/debian/control"), &architecture)?;
     let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
+    eprintln!("Processing dependencies");
     let rows = classify(&dependencies, &candidates);
     print!("{}", format_table(&rows));
     Ok(rows
@@ -55,12 +59,25 @@ pub fn run(
 
 /// Classifies all candidates for each dependency in deterministic order.
 fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec<Row> {
+    let mut candidates_by_crate: BTreeMap<String, Vec<&PackageCandidate>> = BTreeMap::new();
+    for candidate in candidates {
+        let mut crate_names = BTreeSet::new();
+        for provided in candidate.provides.keys() {
+            if let Some((name, _, _)) = parse_rust_package_name(provided) {
+                crate_names.insert(name);
+            }
+        }
+        for name in crate_names {
+            candidates_by_crate.entry(name).or_default().push(candidate);
+        }
+    }
+
     let mut rows = Vec::new();
     for dependency in dependencies {
-        let mut matching: Vec<_> = candidates
-            .iter()
-            .filter(|candidate| candidate.belongs_to(&dependency.name))
-            .collect();
+        let mut matching = candidates_by_crate
+            .get(&dependency.name)
+            .cloned()
+            .unwrap_or_default();
         matching.sort_by(|first, second| second.version.cmp(&first.version));
         let mut satisfying: Vec<_> = matching
             .iter()

@@ -15,8 +15,6 @@ use debversion::Version;
 use serde::Deserialize;
 use tempfile::{NamedTempFile, TempDir};
 
-use super::control::parse_rust_package_name;
-
 const UBUNTU_KEYRING: &str = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
 
 /// One binary package version from one configured repository location.
@@ -36,13 +34,6 @@ impl PackageCandidate {
     /// Returns the supplied version for a concrete or virtual package name.
     pub fn provided_version(&self, name: &str) -> Option<&Version> {
         self.provides.get(name).and_then(Option::as_ref)
-    }
-
-    /// Reports whether the candidate belongs to one normalized Rust crate.
-    pub fn belongs_to(&self, crate_name: &str) -> bool {
-        self.provides.keys().any(|provided| {
-            parse_rust_package_name(provided).is_some_and(|parsed| parsed.0 == crate_name)
-        })
     }
 }
 
