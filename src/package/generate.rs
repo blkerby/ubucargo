@@ -77,7 +77,9 @@ pub struct CrateSelection {
 }
 
 /// Validated files and identities produced by final debcargo generation.
-pub struct GeneratedOutput {
+pub struct GeneratedPackage {
+    /// Temporary directory containing all staged generation state.
+    pub stage: TempDir,
     /// Staged source package tree.
     pub source: PathBuf,
     /// Staged Debian orig tarball.
@@ -240,8 +242,8 @@ pub fn read_new_local_package_config(
     Ok(config)
 }
 
-/// Builds a debcargo source tree with a prepared Ubuntu changelog.
-pub fn build_debcargo_tree(
+/// Builds and validates a debcargo source tree with a prepared Ubuntu changelog.
+pub fn generate_debcargo_package(
     config: &PackageConfig,
     existing_debian: Option<&Path>,
     old_top: Option<&TopChangelog>,
@@ -250,7 +252,7 @@ pub fn build_debcargo_tree(
     crate_selection: &CrateSelection,
     debcargo_version: &Version,
     keep_staging: bool,
-) -> Result<TempDir> {
+) -> Result<GeneratedPackage> {
     let stage = tempfile::Builder::new()
         .disable_cleanup(keep_staging)
         .tempdir()
@@ -285,7 +287,13 @@ pub fn build_debcargo_tree(
         &provenance,
     )?;
     run_debcargo(stage.path(), crate_selection)?;
-    Ok(stage)
+    validate_debcargo_output(
+        stage,
+        source_name,
+        upstream,
+        &crate_selection.crate_name,
+        &crate_selection.version,
+    )
 }
 
 /// Applies Ubuntu maintainer fields to staged debcargo output.
@@ -319,14 +327,14 @@ pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
-pub fn validate_debcargo_output(
-    stage: &Path,
+fn validate_debcargo_output(
+    stage: TempDir,
     expected_source: &str,
     expected_upstream: &str,
     requested_name: &str,
     requested_version: &str,
-) -> Result<GeneratedOutput> {
-    let source = stage.join("output");
+) -> Result<GeneratedPackage> {
+    let source = stage.path().join("output");
     for path in [
         source.join("Cargo.toml"),
         source.join("debian/changelog"),
@@ -364,13 +372,15 @@ pub fn validate_debcargo_output(
     if debian_source != expected_source {
         bail!("debcargo produced Debian source {debian_source}, expected {expected_source}");
     }
-    if fs::read(source.join("debian/changelog"))? != fs::read(stage.join("overlay/changelog"))? {
+    if fs::read(source.join("debian/changelog"))?
+        != fs::read(stage.path().join("overlay/changelog"))?
+    {
         bail!("debcargo changed the prepared changelog despite --changelog-ready");
     }
 
     let expected_orig = format!("{expected_source}_{expected_upstream}.orig.tar.gz");
     let mut origs = Vec::new();
-    for entry in fs::read_dir(stage)? {
+    for entry in fs::read_dir(stage.path())? {
         let path = entry?.path();
         if path
             .file_name()
@@ -393,7 +403,8 @@ pub fn validate_debcargo_output(
             orig.display()
         );
     }
-    Ok(GeneratedOutput {
+    Ok(GeneratedPackage {
+        stage,
         source,
         orig,
         debian_source,

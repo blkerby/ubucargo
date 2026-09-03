@@ -9,13 +9,12 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use self::{
-    changelog::{read_top_changelog, validate_top_changelog},
+    changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
     generate::{
-        CrateSelection, PackageConfig, build_debcargo_tree, cargo_to_debian_upstream_version,
-        check_debcargo_version, get_crate_source_name, parse_exact_version,
+        CrateSelection, PackageConfig, cargo_to_debian_upstream_version, check_debcargo_version,
+        generate_debcargo_package, get_crate_source_name, parse_exact_version,
         read_new_local_package_config, read_new_package_config, read_package_config,
         read_root_package, remove_generated_vcs_fields, select_release, update_staged_maintainer,
-        validate_debcargo_output,
     },
     managed::{build_plan, install_state, read_state},
     orig::acquire_old_orig,
@@ -57,6 +56,18 @@ pub struct PackageSource<'a> {
     pub version: Option<&'a str>,
     /// Local crate used only when creating a package.
     pub local_crate: Option<&'a Path>,
+}
+
+/// Validated configuration and release selection for an existing package.
+struct ExistingPackage {
+    /// Top changelog entry describing the current upstream source.
+    top: TopChangelog,
+    /// Effective debcargo configuration.
+    config: PackageConfig,
+    /// Exact crate release selected for regeneration.
+    crate_selection: CrateSelection,
+    /// Debian upstream version for the selected crate release.
+    upstream: String,
 }
 
 /// Creates or reconciles one source package, returning true when check mode finds changes.
@@ -225,7 +236,7 @@ pub(crate) fn stage_for_dependency_inspection(
         let config = read_new_package_config()?;
         let crate_selection = select_release(Some(crate_name), version, None, &config)?;
         let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
-        let stage = build_debcargo_tree(
+        let generated = generate_debcargo_package(
             &config,
             None,
             None,
@@ -235,76 +246,31 @@ pub(crate) fn stage_for_dependency_inspection(
             &debcargo_version,
             false,
         )?;
-        validate_debcargo_output(
-            stage.path(),
-            &source_name,
-            &upstream,
-            &crate_selection.crate_name,
-            &crate_selection.version,
-        )?;
-        return Ok(stage);
+        return Ok(generated.stage);
     }
 
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let root = if let Some(package_dir) = package_dir {
-        let requested = if package_dir.is_absolute() {
-            package_dir.to_path_buf()
-        } else {
-            current.join(package_dir)
-        };
-        let root = requested
-            .canonicalize()
-            .with_context(|| format!("resolve {}", requested.display()))?;
-        if !has_debcargo_config(&root) {
-            bail!(
-                "{} is not a source-package root with debian/debcargo.toml",
-                root.display()
-            );
-        }
-        root
-    } else {
-        find_parent_package(&current)
-            .with_context(|| format!("{} is not inside a source package", current.display()))?
+    let PackageMode::Existing(root) = select_package_mode(&current, package_dir, false)? else {
+        bail!("dependency inspection requires an existing source package");
     };
 
     let debian = root.join("debian");
-    let current_package = read_root_package(&root)?;
-    let current_version = parse_exact_version(&current_package.version)?;
-    let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
-    let top = read_top_changelog(&debian.join("changelog"))?;
-    validate_top_changelog(&top, &current_package.version, &current_upstream)?;
-    let mut config = read_package_config(&debian.join("debcargo.toml"))?;
-    config.preserve_repack_suffix(&current_upstream, &top.upstream);
+    let package = prepare_existing_package(&root, None, None)?;
     check_patch_state(&root)?;
-    let crate_selection = select_existing_release(&root, None, None, &current_package, &config)?;
-    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
-    if source_name != top.source {
-        bail!(
-            "selected crate maps to Debian source {source_name}, not existing source {}",
-            top.source
-        );
-    }
-    let stage = build_debcargo_tree(
-        &config,
+    let generated = generate_debcargo_package(
+        &package.config,
         Some(&debian),
-        Some(&top),
-        &source_name,
-        &upstream,
-        &crate_selection,
+        Some(&package.top),
+        &package.top.source,
+        &package.upstream,
+        &package.crate_selection,
         &debcargo_version,
         false,
     )?;
-    validate_debcargo_output(
-        stage.path(),
-        &source_name,
-        &upstream,
-        &crate_selection.crate_name,
-        &crate_selection.version,
-    )?;
-    Ok(stage)
+    Ok(generated.stage)
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -342,64 +308,37 @@ fn reconcile_existing(
 ) -> Result<bool> {
     let debcargo_version = check_debcargo_version()?;
     let debian = root.join("debian");
-    let current_package = read_root_package(root)?;
-    let top = read_top_changelog(&debian.join("changelog"))?;
-    let current_version = parse_exact_version(&current_package.version)?;
-    let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
-    validate_top_changelog(&top, &current_package.version, &current_upstream)?;
-    let mut config = read_package_config(&debian.join("debcargo.toml"))?;
-    config.preserve_repack_suffix(&current_upstream, &top.upstream);
-    let crate_selection = select_existing_release(
-        root,
-        requested_name,
-        requested_version,
-        &current_package,
-        &config,
-    )?;
-    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
-    if source_name != top.source {
-        bail!(
-            "selected crate maps to Debian source {source_name}, not existing source {}",
-            top.source
-        );
-    }
+    let package = prepare_existing_package(root, requested_name, requested_version)?;
 
-    let old_orig = acquire_old_orig(root, &top)?;
+    let old_orig = acquire_old_orig(root, &package.top)?;
     let base = tempfile::tempdir().context("create old-source extraction directory")?;
     extract_tree(&old_orig.path, base.path())?;
     let patches_applied = check_patch_state(root)?;
 
-    let stage = build_debcargo_tree(
-        &config,
+    let generated = generate_debcargo_package(
+        &package.config,
         Some(&debian),
-        Some(&top),
-        &source_name,
-        &upstream,
-        &crate_selection,
+        Some(&package.top),
+        &package.top.source,
+        &package.upstream,
+        &package.crate_selection,
         &debcargo_version,
         keep_staging,
     )?;
-    let raw_control = read_state(&stage.path().join("output/debian/control"))?;
-    remove_generated_vcs_fields(stage.path())?;
-    update_staged_maintainer(stage.path())?;
-    let output = validate_debcargo_output(
-        stage.path(),
-        &source_name,
-        &upstream,
-        &crate_selection.crate_name,
-        &crate_selection.version,
-    )?;
+    let raw_control = read_state(&generated.stage.path().join("output/debian/control"))?;
+    remove_generated_vcs_fields(generated.stage.path())?;
+    update_staged_maintainer(generated.stage.path())?;
 
     let base_tree = scan_tree(base.path(), true)?;
     let old_tree = scan_tree(root, true)?;
-    let new_tree = scan_tree(&output.source, true)?;
+    let new_tree = scan_tree(&generated.source, true)?;
     if !trees_match(&base_tree, &new_tree) && patches_applied {
         bail!("pop the complete quilt stack before reconciling changed upstream source");
     }
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
 
-    let generated = read_generated_candidates(stage.path())?;
-    let managed = collect_managed_paths(&debian, &generated)?;
+    let generated_candidates = read_generated_candidates(generated.stage.path())?;
+    let managed = collect_managed_paths(&debian, &generated_candidates)?;
     let control = PathBuf::from("debian/control");
     let mut inferred_bases = BTreeMap::new();
     if let Some(raw_control) = raw_control {
@@ -408,14 +347,14 @@ fn reconcile_existing(
     let mut generated_plan = build_plan(
         &debian,
         &managed,
-        &generated,
+        &generated_candidates,
         &inferred_bases,
         keep,
         replace,
     )?;
     generated_plan
         .paths
-        .push(build_patch_series_plan(&debian, stage.path())?);
+        .push(build_patch_series_plan(&debian, generated.stage.path())?);
     let ambiguities = generated_plan.collect_ambiguities();
     if !ambiguities.is_empty() {
         for path in ambiguities {
@@ -424,17 +363,17 @@ fn reconcile_existing(
         bail!("unresolved generated-file ambiguities");
     }
 
-    let prepared_changelog = read_state(&stage.path().join("overlay/changelog"))?
+    let prepared_changelog = read_state(&generated.stage.path().join("overlay/changelog"))?
         .context("staged changelog is missing")?;
     let old_changelog = read_state(&debian.join("changelog"))?;
     let changelog_changed = old_changelog.as_ref() != Some(&prepared_changelog);
     let orig_destination = root.parent().context("package root has no parent")?.join(
-        output
+        generated
             .orig
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    let orig_changed = files_differ(&output.orig, &orig_destination)?;
+    let orig_changed = files_differ(&generated.orig, &orig_destination)?;
 
     if orig_changed {
         println!("create {}", orig_destination.display());
@@ -463,7 +402,7 @@ fn reconcile_existing(
     }
 
     if orig_changed {
-        fs::copy(&output.orig, &orig_destination)
+        fs::copy(&generated.orig, &orig_destination)
             .with_context(|| format!("install {}", orig_destination.display()))?;
     }
     source_plan
@@ -513,7 +452,7 @@ fn create_new(
         (config, crate_selection)
     };
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
-    let stage = build_debcargo_tree(
+    let generated = generate_debcargo_package(
         &config,
         None,
         None,
@@ -523,28 +462,21 @@ fn create_new(
         &debcargo_version,
         keep_staging,
     )?;
-    remove_generated_vcs_fields(stage.path())?;
-    update_staged_maintainer(stage.path())?;
-    let output = validate_debcargo_output(
-        stage.path(),
-        &source_name,
-        &upstream,
-        &crate_selection.crate_name,
-        &crate_selection.version,
-    )?;
-    initialize_package(&output.source, &config)?;
+    remove_generated_vcs_fields(generated.stage.path())?;
+    update_staged_maintainer(generated.stage.path())?;
+    initialize_package(&generated.source, &config)?;
 
     let source = requested_dir
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| parent.join(&output.debian_source));
+        .unwrap_or_else(|| parent.join(&generated.debian_source));
     require_absent(&source)?;
     let orig = parent.join(
-        output
+        generated
             .orig
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    let orig_changed = files_differ(&output.orig, &orig)?;
+    let orig_changed = files_differ(&generated.orig, &orig)?;
     println!("create {}", source.display());
     if orig_changed {
         println!("create {}", orig.display());
@@ -555,9 +487,9 @@ fn create_new(
 
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     if orig_changed {
-        fs::copy(&output.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
+        fs::copy(&generated.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
     }
-    copy_tree(&output.source, &source)?;
+    copy_tree(&generated.source, &source)?;
     Ok(false)
 }
 
@@ -567,6 +499,42 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
         bail!("--local-crate and --package-dir must be separate, non-nested directory trees");
     }
     Ok(())
+}
+
+/// Reads and validates the generation inputs for an existing package.
+fn prepare_existing_package(
+    root: &Path,
+    requested_name: Option<&str>,
+    requested_version: Option<&str>,
+) -> Result<ExistingPackage> {
+    let debian = root.join("debian");
+    let current_package = read_root_package(root)?;
+    let current_version = parse_exact_version(&current_package.version)?;
+    let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
+    let top = read_top_changelog(&debian.join("changelog"))?;
+    validate_top_changelog(&top, &current_package.version, &current_upstream)?;
+    let mut config = read_package_config(&debian.join("debcargo.toml"))?;
+    config.preserve_repack_suffix(&current_upstream, &top.upstream);
+    let crate_selection = select_existing_release(
+        root,
+        requested_name,
+        requested_version,
+        &current_package,
+        &config,
+    )?;
+    let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
+    if source_name != top.source {
+        bail!(
+            "selected crate maps to Debian source {source_name}, not existing source {}",
+            top.source
+        );
+    }
+    Ok(ExistingPackage {
+        top,
+        config,
+        crate_selection,
+        upstream,
+    })
 }
 
 /// Selects registry or configured local input for an existing source package.
