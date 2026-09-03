@@ -540,7 +540,8 @@ fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
 
 /// Runs final debcargo generation for one exact selected release.
 fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
-    let output = Command::new("debcargo")
+    let mut command = Command::new("debcargo");
+    command
         .arg("package")
         .arg("--config")
         .arg(stage.join("debcargo.toml"))
@@ -551,8 +552,10 @@ fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
         .arg(&crate_selection.crate_name)
         .arg(&crate_selection.version)
         .current_dir(stage)
-        .output()
-        .context("run debcargo package")?;
+        // Set CARGO_TARGET_DIR to a unique staging directory, to work around
+        // github.com/rust-lang/cargo/issues/16683:
+        .env("CARGO_TARGET_DIR", stage.join("cargo-target"));
+    let output = command.output().context("run debcargo package")?;
     if !output.status.success() {
         bail!(
             "debcargo package failed:\n{}{}",
