@@ -14,4 +14,5 @@ tempfile = "3"
 toml_edit = "0.25"
 debian-changelog = { version = "0.2", default-features = false }
 debian-control = { version = "0.3", default-features = false, features = ["lossless"] }
+deb822-fast = "0.2"
 debversion = "0.5"

@@ -3,12 +3,13 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
+use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::lossy::apt::Package;
 use debversion::Version;
 use serde::Deserialize;
@@ -377,32 +378,26 @@ fn read_index(
 ) -> Result<()> {
     let file =
         fs::File::open(path).with_context(|| format!("read APT index {}", path.display()))?;
-    let mut paragraph = String::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.is_empty() {
-            add_package(&paragraph, location, candidates, candidate_indexes)?;
-            paragraph.clear();
-        } else {
-            paragraph.push_str(&line);
-            paragraph.push('\n');
+    for paragraph in Deb822::iter_paragraphs_from_reader(BufReader::new(file)) {
+        let paragraph = paragraph?;
+        if paragraph
+            .get("Package")
+            .is_some_and(|name| name.starts_with("librust-"))
+        {
+            let package = Package::from_paragraph(&paragraph).map_err(anyhow::Error::msg)?;
+            add_package(package, location, candidates, candidate_indexes);
         }
     }
-    add_package(&paragraph, location, candidates, candidate_indexes)?;
     Ok(())
 }
 
-/// Adds one Rust binary package paragraph to the candidate set.
+/// Adds one Rust binary package to the candidate set.
 fn add_package(
-    paragraph: &str,
+    package: Package,
     location: &str,
     candidates: &mut Vec<PackageCandidate>,
     candidate_indexes: &mut BTreeMap<(String, Version, String), usize>,
-) -> Result<()> {
-    if paragraph.is_empty() || !paragraph.starts_with("Package: librust-") {
-        return Ok(());
-    }
-    let package: Package = paragraph.parse().map_err(anyhow::Error::msg)?;
+) {
     let (source, source_version) = match package.source {
         Some(source) => (
             source.name,
@@ -436,7 +431,6 @@ fn add_package(
             }
         }
     }
-    Ok(())
 }
 
 /// Formats repository metadata as the documented compact location.
@@ -502,10 +496,17 @@ mod tests {
     fn parses_package_candidates() {
         let base = "Package: librust-serde-dev\nSource: rust-serde\nVersion: 1.0.219-1\nArchitecture: amd64\nProvides: librust-serde-1+derive-dev (= 1.0.219-1)\n";
         let feature = "Package: librust-serde+std-dev\nSource: rust-serde\nVersion: 1.0.219-1\nArchitecture: amd64\nProvides: librust-serde-1+std-dev (= 1.0.219-1)\n";
+        let mut packages = NamedTempFile::new().unwrap();
+        write!(packages, "{base}\n{feature}").unwrap();
         let mut candidates = Vec::new();
         let mut indexes = BTreeMap::new();
-        add_package(base, "noble/universe", &mut candidates, &mut indexes).unwrap();
-        add_package(feature, "noble/universe", &mut candidates, &mut indexes).unwrap();
+        read_index(
+            packages.path(),
+            "noble/universe",
+            &mut candidates,
+            &mut indexes,
+        )
+        .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].source, "rust-serde");
         assert_eq!(
