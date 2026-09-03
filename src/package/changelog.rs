@@ -210,7 +210,9 @@ fn is_provenance(lines: Vec<String>) -> bool {
         return false;
     };
     first.starts_with("* Package ")
-        && lines.iter().any(|line| line.contains("from crates.io"))
+        && lines
+            .iter()
+            .any(|line| line.contains("from crates.io") || line.contains("from local source"))
         && lines.iter().any(|line| line.contains("debcargo"))
 }
 

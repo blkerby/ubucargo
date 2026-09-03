@@ -32,7 +32,7 @@ struct Row {
 pub fn run(
     crate_name: Option<&str>,
     version: Option<&str>,
-    directory: Option<&Path>,
+    package_dir: Option<&Path>,
     series: &str,
     proposed: bool,
     ppas: &[String],
@@ -42,7 +42,7 @@ pub fn run(
         Some(architecture) => architecture.to_owned(),
         None => apt::read_architecture()?,
     };
-    let stage = crate::package::stage_for_dependency_inspection(crate_name, version, directory)?;
+    let stage = crate::package::stage_for_dependency_inspection(crate_name, version, package_dir)?;
     let dependencies =
         control::read_dependencies(&stage.path().join("output/debian/control"), &architecture)?;
     let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;

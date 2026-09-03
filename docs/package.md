@@ -3,7 +3,8 @@
 ## Synopsis
 
 ```console
-ubucargo package [CRATE [VERSION]] [--directory DIR] [--check] [--force] \
+ubucargo package [CRATE [VERSION]] [--local-crate DIR] [--package-dir DIR] \
+  [--check] [--force] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
@@ -13,7 +14,7 @@ ubucargo package [CRATE [VERSION]] [--directory DIR] [--check] [--force] \
 
 ## Target and version selection
 
-`--directory` selects the source-package directory. An existing directory is reconciled as a package; a nonexistent directory always creates a clean package there, even when the current directory is inside another package. Without `--directory`, ubucargo uses the nearest parent containing `debian/debcargo.toml`. If no existing package is found and `CRATE` is supplied, the destination defaults to the generated Debian source name in the current directory.
+`--package-dir` selects the source-package directory. An existing directory is reconciled as a package; a nonexistent directory always creates a clean package there, even when the current directory is inside another package. Without `--package-dir`, ubucargo uses the nearest parent containing `debian/debcargo.toml`. If no existing package is found and `CRATE` is supplied, the destination defaults to the generated Debian source name in the current directory.
 
 For an existing package:
 
@@ -23,7 +24,11 @@ For an existing package:
 
 When running Ubucargo on an existing package, the top `debian/changelog` entry must describe the upstream source currently present in the working tree.
 
-For a new package, `CRATE` is required. `VERSION` requests an exact Cargo version; when omitted, debcargo asks Cargo for the greatest release matching an unconstrained dependency, excluding yanked releases and prereleases. An exact request may select a prerelease or yanked release. This process does not filter releases by MSRV, but if the selected crate's `[package]` table in `Cargo.toml` declares `rust-version`, debcargo includes that minimum version in the generated Debian `rustc` dependencies.
+For a new crates.io package, `CRATE` is required. `VERSION` requests an exact Cargo version; when omitted, debcargo asks Cargo for the greatest release matching an unconstrained dependency, excluding yanked releases and prereleases. An exact request may select a prerelease or yanked release. This process does not filter releases by MSRV, but if the selected crate's `[package]` table in `Cargo.toml` declares `rust-version`, debcargo includes that minimum version in the generated Debian `rustc` dependencies.
+
+`--local-crate DIR` instead creates a source package from a local Cargo crate. It conflicts with `CRATE` and `VERSION` and requires an explicit, nonexistent `--package-dir`. The resolved crate and package directories must be separate directory trees: neither may equal, contain, or be contained by the other. Ubucargo reads the exact crate name and version from the local `Cargo.toml` and writes `crate_src_path` into the new `debian/debcargo.toml` relative to that file. Later `package` and `deps` runs resolve that setting without requiring `--local-crate` again.
+
+Local-source packaging retains debcargo's limitation that dependencies must be resolvable from crates.io during generation. The generated Debian package still builds against dependencies declared from the Ubuntu Archive. A local working tree is suitable for iteration, but an Archive upload should use a fixed upstream release or snapshot and may not reuse one upstream version number for differing orig-tarball contents.
 
 The selected release must keep the existing Debian source identity when updating a package in place. A release with a different source identity must be packaged into a new directory.
 
@@ -34,7 +39,10 @@ These invocations use the same reconciliation pipeline:
 ubucargo package serde
 
 # Create a particular release in a chosen directory.
-ubucargo package serde 1.0.220 --directory ./rust-serde
+ubucargo package serde 1.0.220 --package-dir ./rust-serde
+
+# Create a package from an unpublished local crate.
+ubucargo package --local-crate ../example --package-dir ./rust-example
 
 # Regenerate the current package at its existing version.
 cd rust-serde
@@ -46,7 +54,7 @@ ubucargo package serde 1.0.229
 
 ## Package reconciliation
 
-Ubucargo invokes debcargo's registry-backed `package` command for the selected exact release. Debcargo and Cargo download and verify the crate, apply `debian/debcargo.toml`, derive Debian names and versions, copy or repack the orig tarball, extract the upstream source, apply the retained patch stack temporarily, and generate `debian/`.
+Ubucargo invokes debcargo's `package` command for the selected exact release. Debcargo and Cargo obtain the crate from crates.io or the configured local source, apply `debian/debcargo.toml`, derive Debian names and versions, copy or repack the orig tarball, extract the upstream source, apply the retained patch stack temporarily, and generate `debian/`.
 
 When creating a package, ubucargo installs the complete generated result, adds `debian/debcargo.toml`, and creates matching hints for generated files.
 
@@ -77,6 +85,8 @@ Ubucargo adds a provenance item recording the crate release and both tool versio
   * Package serde 1.0.229 from crates.io.
     Generated with debcargo 2.8.4 and ubucargo 0.1.0.
 ```
+
+Local packages use `from local source` in place of `from crates.io`.
 
 An existing ubucargo provenance item in the current `UNRELEASED` entry is updated in place when the crate or either tool version changes. An unchanged item is not duplicated on later runs.
 

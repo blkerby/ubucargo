@@ -52,13 +52,15 @@ Each source package contains its upstream source, generator input `debcargo.toml
 ### `package`
 
 ```console
-ubucargo package [CRATE [VERSION]] [--directory DIR] [--check] [--force] \
+ubucargo package [CRATE [VERSION]] [--local-crate DIR] [--package-dir DIR] \
+  [--check] [--force] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
 - Run `ubucargo package CRATE [VERSION]` outside a package to create a new source tree and orig tarball.
 - Run `ubucargo package` inside an existing package to regenerate its current release.
 - Run `ubucargo package CRATE VERSION` against an existing package to select another release.
+- Run `ubucargo package --local-crate CRATE-DIR --package-dir PACKAGE-DIR` to create a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
 - After changing `debcargo.toml`, run `ubucargo package` again. Archive settings, source transformations, generated packaging, and hints are reconciled together.
 - `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
 
@@ -67,11 +69,11 @@ See [`docs/package.md`](docs/package.md) for full behavior and options.
 ### `deps`
 
 ```console
-ubucargo deps [CRATE [VERSION]] [--directory DIR] --series SERIES \
+ubucargo deps [CRATE [VERSION]] [--package-dir DIR] --series SERIES \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-- Run `ubucargo deps --series SERIES` inside a source package, or use `--directory DIR` to select one explicitly.
+- Run `ubucargo deps --series SERIES` inside a source package, or use `--package-dir DIR` to select one explicitly.
 - Run `ubucargo deps CRATE [VERSION] --series SERIES` to inspect a crates.io release without creating a source package.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.

@@ -13,8 +13,8 @@ use self::{
     generate::{
         CrateSelection, PackageConfig, build_debcargo_tree, cargo_to_debian_upstream_version,
         check_debcargo_version, get_crate_source_name, parse_exact_version,
-        read_new_package_config, read_package_config, read_root_package,
-        remove_generated_vcs_fields, select_release, update_staged_maintainer,
+        read_new_local_package_config, read_new_package_config, read_package_config,
+        read_root_package, remove_generated_vcs_fields, select_release, update_staged_maintainer,
         validate_debcargo_output,
     },
     managed::{build_plan, install_state, read_state},
@@ -49,21 +49,36 @@ enum PackageMode {
     },
 }
 
+/// Registry or local crate selection supplied to the package command.
+pub struct PackageSource<'a> {
+    /// Crate name from crates.io, or none for the current package.
+    pub crate_name: Option<&'a str>,
+    /// Exact crates.io version paired with an explicit crate name.
+    pub version: Option<&'a str>,
+    /// Local crate used only when creating a package.
+    pub local_crate: Option<&'a Path>,
+}
+
 /// Creates or reconciles one source package, returning true when check mode finds changes.
 pub fn run(
-    crate_name: Option<&str>,
-    version: Option<&str>,
-    directory: Option<&Path>,
+    source: PackageSource<'_>,
+    package_dir: Option<&Path>,
     check: bool,
     force: bool,
     keep_staging: bool,
     keep: &[PathBuf],
     replace: &[PathBuf],
 ) -> Result<bool> {
-    if version.is_some() && crate_name.is_none() {
+    if source.local_crate.is_some() && (source.crate_name.is_some() || source.version.is_some()) {
+        bail!("--local-crate may not be combined with CRATE or VERSION");
+    }
+    if source.local_crate.is_some() && package_dir.is_none() {
+        bail!("--local-crate requires --package-dir");
+    }
+    if source.version.is_some() && source.crate_name.is_none() {
         bail!("VERSION requires CRATE");
     }
-    if let Some(version) = version {
+    if let Some(version) = source.version {
         parse_exact_version(version)?;
     }
 
@@ -71,19 +86,28 @@ pub fn run(
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let mode = select_package_mode(&current, directory, crate_name.is_some())?;
+    let mode = select_package_mode(
+        &current,
+        package_dir,
+        source.crate_name.is_some() || source.local_crate.is_some(),
+    )?;
     let (keep_paths, replace_paths) = collect_decisions(keep, replace)?;
     match mode {
-        PackageMode::Existing(root) => reconcile_existing(
-            &root,
-            crate_name,
-            version,
-            check,
-            force,
-            keep_staging,
-            &keep_paths,
-            &replace_paths,
-        ),
+        PackageMode::Existing(root) => {
+            if source.local_crate.is_some() {
+                bail!("--local-crate applies only when creating a package");
+            }
+            reconcile_existing(
+                &root,
+                source.crate_name,
+                source.version,
+                check,
+                force,
+                keep_staging,
+                &keep_paths,
+                &replace_paths,
+            )
+        }
         PackageMode::New {
             parent,
             requested_dir,
@@ -91,12 +115,10 @@ pub fn run(
             if !keep_paths.is_empty() || !replace_paths.is_empty() {
                 bail!("--keep and --replace apply only to existing packages");
             }
-            let crate_name = crate_name.context("CRATE is required when creating a package")?;
             create_new(
                 &parent,
                 requested_dir.as_deref(),
-                crate_name,
-                version,
+                &source,
                 check,
                 keep_staging,
             )
@@ -107,14 +129,14 @@ pub fn run(
 /// Selects existing-package reconciliation or clean-package creation.
 fn select_package_mode(
     start: &Path,
-    directory: Option<&Path>,
+    package_dir: Option<&Path>,
     has_crate: bool,
 ) -> Result<PackageMode> {
-    if let Some(directory) = directory {
-        let requested_dir = if directory.is_absolute() {
-            directory.to_path_buf()
+    if let Some(package_dir) = package_dir {
+        let requested_dir = if package_dir.is_absolute() {
+            package_dir.to_path_buf()
         } else {
-            start.join(directory)
+            start.join(package_dir)
         };
         match fs::symlink_metadata(&requested_dir) {
             Ok(metadata) if metadata.is_dir() => {
@@ -133,7 +155,7 @@ fn select_package_mode(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if !has_crate {
                     bail!(
-                        "CRATE is required when creating {}",
+                        "CRATE or --local-crate is required when creating {}",
                         requested_dir.display()
                     );
                 }
@@ -186,13 +208,13 @@ fn has_debcargo_config(path: &Path) -> bool {
 pub(crate) fn stage_for_dependency_inspection(
     crate_name: Option<&str>,
     version: Option<&str>,
-    directory: Option<&Path>,
+    package_dir: Option<&Path>,
 ) -> Result<tempfile::TempDir> {
     if version.is_some() && crate_name.is_none() {
         bail!("VERSION requires CRATE");
     }
-    if crate_name.is_some() && directory.is_some() {
-        bail!("CRATE and --directory may not be combined");
+    if crate_name.is_some() && package_dir.is_some() {
+        bail!("CRATE and --package-dir may not be combined");
     }
     if let Some(version) = version {
         parse_exact_version(version)?;
@@ -227,11 +249,11 @@ pub(crate) fn stage_for_dependency_inspection(
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let root = if let Some(directory) = directory {
-        let requested = if directory.is_absolute() {
-            directory.to_path_buf()
+    let root = if let Some(package_dir) = package_dir {
+        let requested = if package_dir.is_absolute() {
+            package_dir.to_path_buf()
         } else {
-            current.join(directory)
+            current.join(package_dir)
         };
         let root = requested
             .canonicalize()
@@ -257,7 +279,7 @@ pub(crate) fn stage_for_dependency_inspection(
     let mut config = read_package_config(&debian.join("debcargo.toml"))?;
     config.preserve_repack_suffix(&current_upstream, &top.upstream);
     check_patch_state(&root)?;
-    let crate_selection = select_release(None, None, Some(&current_package), &config)?;
+    let crate_selection = select_existing_release(&root, None, None, &current_package, &config)?;
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
     if source_name != top.source {
         bail!(
@@ -327,10 +349,11 @@ fn reconcile_existing(
     validate_top_changelog(&top, &current_package.version, &current_upstream)?;
     let mut config = read_package_config(&debian.join("debcargo.toml"))?;
     config.preserve_repack_suffix(&current_upstream, &top.upstream);
-    let crate_selection = select_release(
+    let crate_selection = select_existing_release(
+        root,
         requested_name,
         requested_version,
-        Some(&current_package),
+        &current_package,
         &config,
     )?;
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
@@ -459,14 +482,36 @@ fn reconcile_existing(
 fn create_new(
     parent: &Path,
     requested_dir: Option<&Path>,
-    crate_name: &str,
-    requested_version: Option<&str>,
+    source: &PackageSource<'_>,
     check: bool,
     keep_staging: bool,
 ) -> Result<bool> {
     let debcargo_version = check_debcargo_version()?;
-    let config = read_new_package_config()?;
-    let crate_selection = select_release(Some(crate_name), requested_version, None, &config)?;
+    let (config, crate_selection) = if let Some(local_crate) = source.local_crate {
+        let local_crate = if local_crate.is_absolute() {
+            local_crate.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .context("get current directory")?
+                .join(local_crate)
+        };
+        let package_root = requested_dir.context("--local-crate requires --package-dir")?;
+        validate_separate_trees(&local_crate, package_root)?;
+        let source = local_crate
+            .canonicalize()
+            .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
+        let config = read_new_local_package_config(&source, package_root)?;
+        let package = read_root_package(&source)?;
+        let crate_selection = select_release(None, None, Some(&package), &config)?;
+        (config, crate_selection)
+    } else {
+        let crate_name = source
+            .crate_name
+            .context("CRATE is required when creating a package")?;
+        let config = read_new_package_config()?;
+        let crate_selection = select_release(Some(crate_name), source.version, None, &config)?;
+        (config, crate_selection)
+    };
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
     let stage = build_debcargo_tree(
         &config,
@@ -514,6 +559,38 @@ fn create_new(
     }
     copy_tree(&output.source, &source)?;
     Ok(false)
+}
+
+/// Rejects local crate and source-package trees that overlap or contain one another.
+fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()> {
+    if local_crate.starts_with(package_root) || package_root.starts_with(local_crate) {
+        bail!("--local-crate and --package-dir must be separate, non-nested directory trees");
+    }
+    Ok(())
+}
+
+/// Selects registry or configured local input for an existing source package.
+fn select_existing_release(
+    root: &Path,
+    requested_name: Option<&str>,
+    requested_version: Option<&str>,
+    current_package: &generate::MetadataPackage,
+    config: &PackageConfig,
+) -> Result<CrateSelection> {
+    let Some(local_crate) = &config.crate_src_path else {
+        return select_release(
+            requested_name,
+            requested_version,
+            Some(current_package),
+            config,
+        );
+    };
+    if requested_name.is_some() || requested_version.is_some() {
+        bail!("CRATE and VERSION may not be used with crate_src_path");
+    }
+    validate_separate_trees(local_crate, root)?;
+    let local_package = read_root_package(local_crate)?;
+    select_release(None, None, Some(&local_package), config)
 }
 
 /// Computes the Debian source name and upstream version for a selected release.
@@ -570,6 +647,18 @@ mod tests {
             }
         );
         assert!(select_package_mode(clean.path(), None, false).is_err());
+    }
+
+    #[test]
+    /// Rejects either nesting direction for local crate and package trees.
+    fn rejects_nested_local_package_trees() {
+        let root = tempfile::tempdir().unwrap();
+        let crate_root = root.path().join("crate");
+        let package_root = root.path().join("package");
+        assert!(validate_separate_trees(&crate_root, &package_root).is_ok());
+        assert!(validate_separate_trees(&crate_root, &crate_root).is_err());
+        assert!(validate_separate_trees(&crate_root, &crate_root.join("package")).is_err());
+        assert!(validate_separate_trees(&package_root.join("crate"), &package_root).is_err());
     }
 
     #[test]

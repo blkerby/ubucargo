@@ -3,15 +3,15 @@
 ## Synopsis
 
 ```console
-ubucargo deps [CRATE [VERSION]] [--directory DIR] --series SERIES \
+ubucargo deps [CRATE [VERSION]] [--package-dir DIR] --series SERIES \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-With no `CRATE` or `--directory`, `deps` uses the nearest parent source package.
-`--directory` selects an existing source package explicitly. `CRATE` instead
+With no `CRATE` or `--package-dir`, `deps` uses the nearest parent source package.
+`--package-dir` selects an existing source package explicitly. `CRATE` instead
 selects a crate from crates.io; `VERSION` selects an exact release, while an
 omitted version selects the latest release using the same rules as
-[`package`](package.md#target-and-version-selection). `CRATE` and `--directory`
+[`package`](package.md#target-and-version-selection). `CRATE` and `--package-dir`
 may not be combined.
 
 ```console
@@ -19,7 +19,7 @@ may not be combined.
 ubucargo deps --series noble
 
 # Inspect an explicit source package.
-ubucargo deps --directory ./rust-serde --series noble
+ubucargo deps --package-dir ./rust-serde --series noble
 
 # Inspect the latest serde release from crates.io.
 ubucargo deps serde --series noble
@@ -28,7 +28,9 @@ ubucargo deps serde --series noble
 ubucargo deps serde 1.0.220 --series noble
 ```
 
-Source-package mode uses its `debian/debcargo.toml` and patch stack.
+Source-package mode uses its `debian/debcargo.toml` and patch stack. When that
+configuration contains `crate_src_path`, `deps` reads the local crate selected
+by that path.
 Crates.io mode generates a temporary package with the default debcargo
 configuration and leaves no source package behind. Its results therefore do
 not account for configuration or patches that a maintainer might add later.

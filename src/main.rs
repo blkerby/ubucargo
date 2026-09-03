@@ -21,7 +21,7 @@ struct Cli {
 enum Command {
     /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
     Deps {
-        /// Crate name from crates.io; conflicts with --directory.
+        /// Crate name from crates.io; conflicts with --package-dir.
         #[arg(value_name = "CRATE")]
         crate_name: Option<String>,
 
@@ -30,8 +30,8 @@ enum Command {
         version: Option<String>,
 
         /// Existing source package directory; defaults to the nearest parent package.
-        #[arg(long, value_name = "DIR")]
-        directory: Option<PathBuf>,
+        #[arg(long = "package-dir", value_name = "DIR")]
+        package_dir: Option<PathBuf>,
 
         /// Ubuntu series to query.
         #[arg(long, value_name = "SERIES")]
@@ -60,9 +60,13 @@ enum Command {
         #[arg(value_name = "VERSION")]
         version: Option<String>,
 
-        /// Source package directory; defaults to the nearest parent package.
+        /// Debian source-package directory; defaults to the nearest parent package.
+        #[arg(long = "package-dir", value_name = "DIR")]
+        package_dir: Option<PathBuf>,
+
+        /// Local crate used to create a new source package.
         #[arg(long, value_name = "DIR")]
-        directory: Option<PathBuf>,
+        local_crate: Option<PathBuf>,
 
         /// Report changes without writing them.
         #[arg(long)]
@@ -92,7 +96,7 @@ fn main() -> ExitCode {
         Command::Deps {
             crate_name,
             version,
-            directory,
+            package_dir,
             series,
             proposed,
             ppa,
@@ -100,7 +104,7 @@ fn main() -> ExitCode {
         } => deps::run(
             crate_name.as_deref(),
             version.as_deref(),
-            directory.as_deref(),
+            package_dir.as_deref(),
             &series,
             proposed,
             &ppa,
@@ -109,16 +113,20 @@ fn main() -> ExitCode {
         Command::Package {
             crate_name,
             version,
-            directory,
+            package_dir,
+            local_crate,
             check,
             force,
             keep_staging,
             keep,
             replace,
         } => package::run(
-            crate_name.as_deref(),
-            version.as_deref(),
-            directory.as_deref(),
+            package::PackageSource {
+                crate_name: crate_name.as_deref(),
+                version: version.as_deref(),
+                local_crate: local_crate.as_deref(),
+            },
+            package_dir.as_deref(),
             check,
             force,
             keep_staging,
@@ -151,7 +159,7 @@ mod tests {
             "package",
             "serde",
             "1.0.220",
-            "--directory",
+            "--package-dir",
             "rust-serde",
             "--check",
             "--force",
@@ -162,7 +170,8 @@ mod tests {
         let Command::Package {
             crate_name,
             version,
-            directory,
+            package_dir,
+            local_crate,
             check,
             force,
             keep_staging,
@@ -173,10 +182,44 @@ mod tests {
         };
         assert_eq!(crate_name.as_deref(), Some("serde"));
         assert_eq!(version.as_deref(), Some("1.0.220"));
-        assert_eq!(directory.as_deref(), Some(Path::new("rust-serde")));
+        assert_eq!(package_dir.as_deref(), Some(Path::new("rust-serde")));
+        assert_eq!(local_crate, None);
         assert!(check);
         assert!(force);
         assert!(keep_staging);
+    }
+
+    #[test]
+    /// Verifies local crate and package directory argument parsing.
+    fn parses_local_package_arguments() {
+        let cli = Cli::try_parse_from([
+            "ubucargo",
+            "package",
+            "--local-crate",
+            "../example",
+            "--package-dir",
+            "rust-example",
+        ])
+        .unwrap();
+
+        let Command::Package {
+            crate_name,
+            version,
+            package_dir,
+            local_crate,
+            ..
+        } = cli.command
+        else {
+            panic!("expected package command");
+        };
+        assert_eq!(crate_name, None);
+        assert_eq!(version, None);
+        assert_eq!(package_dir.as_deref(), Some(Path::new("rust-example")));
+        assert_eq!(local_crate.as_deref(), Some(Path::new("../example")));
+        assert!(
+            Cli::try_parse_from(["ubucargo", "package", "serde", "--directory", "rust-serde"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -200,7 +243,7 @@ mod tests {
         let Command::Deps {
             crate_name,
             version,
-            directory,
+            package_dir,
             series,
             proposed,
             ppa,
@@ -211,7 +254,7 @@ mod tests {
         };
         assert_eq!(crate_name.as_deref(), Some("serde"));
         assert_eq!(version.as_deref(), Some("1.0.220"));
-        assert_eq!(directory, None);
+        assert_eq!(package_dir, None);
         assert_eq!(series, "noble");
         assert!(proposed);
         assert_eq!(ppa, ["ppa:example/rust-staging"]);
