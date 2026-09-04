@@ -181,49 +181,105 @@ fn make_requirement(
     dependency: &Dependency,
     candidate: Option<&PackageCandidate>,
 ) -> Vec<RequirementPart> {
+    if dependency.requirement.starts_with("debian:") {
+        let status = match candidate {
+            Some(candidate) if satisfies(dependency, candidate) => RequirementStatus::Satisfied,
+            Some(candidate)
+                if candidate.provides.keys().any(|provided| {
+                    parse_rust_package_name(provided)
+                        .is_some_and(|(name, _, _)| name == dependency.name)
+                }) =>
+            {
+                RequirementStatus::Incompatible
+            }
+            _ => RequirementStatus::Missing,
+        };
+        return vec![RequirementPart {
+            text: dependency.requirement.clone(),
+            status,
+        }];
+    }
+
     let mut parts = dependency.requirement.split_whitespace();
     let mut output = Vec::new();
     if let Some(version) = parts.next() {
-        let mut requirements = Vec::new();
+        let mut has_default = false;
+        let mut has_base = false;
         for alternatives in &dependency.entries {
             for requirement in alternatives {
-                if parse_rust_package_name(&requirement.name)
-                    .is_some_and(|(_, _, feature)| feature.is_none())
-                {
-                    requirements.push(requirement);
+                if let Some((_, _, feature)) = parse_rust_package_name(&requirement.name) {
+                    if feature.as_deref() == Some("default") {
+                        has_default = true;
+                    } else if feature.is_none() {
+                        has_base = true;
+                    }
                 }
             }
         }
-        let featureless = !requirements.is_empty();
-        if !featureless {
+
+        let mut requirements = Vec::new();
+        if has_default || has_base {
             for alternatives in &dependency.entries {
-                requirements.extend(alternatives);
+                let mut matching = Vec::new();
+                for requirement in alternatives {
+                    let Some((_, _, feature)) = parse_rust_package_name(&requirement.name) else {
+                        continue;
+                    };
+                    let selected = if has_default {
+                        feature.as_deref() == Some("default") || feature.is_none()
+                    } else {
+                        feature.is_none()
+                    };
+                    if selected {
+                        matching.push(requirement);
+                    }
+                }
+                if !matching.is_empty() {
+                    requirements.push(matching);
+                }
             }
+        } else {
+            let mut matching = Vec::new();
+            for alternatives in &dependency.entries {
+                matching.extend(alternatives);
+            }
+            requirements.push(matching);
         }
+        let kind = if has_default {
+            RequirementKind::Feature("default")
+        } else if has_base {
+            RequirementKind::Base
+        } else {
+            RequirementKind::Any
+        };
+        let status = classify_requirement(&requirements, candidate, &dependency.name, kind);
         output.push(RequirementPart {
             text: version.to_owned(),
-            status: classify_requirement(
-                &requirements,
-                candidate,
-                &dependency.name,
-                if featureless {
-                    RequirementKind::Base
-                } else {
-                    RequirementKind::Any
-                },
-            ),
+            status,
         });
     }
     for feature in parts {
-        let name = feature.strip_prefix('+').unwrap_or(feature);
+        if feature == "-default" {
+            output.push(RequirementPart {
+                text: feature.to_owned(),
+                status: output[0].status,
+            });
+            continue;
+        }
+        let feature_name = feature.strip_prefix('+').unwrap_or(feature);
+        let name = feature_name;
         let mut requirements = Vec::new();
         for alternatives in &dependency.entries {
+            let mut matching = Vec::new();
             for requirement in alternatives {
                 if parse_rust_package_name(&requirement.name)
                     .is_some_and(|(_, _, candidate)| candidate.as_deref() == Some(name))
                 {
-                    requirements.push(requirement);
+                    matching.push(requirement);
                 }
+            }
+            if !matching.is_empty() {
+                requirements.push(matching);
             }
         }
         output.push(RequirementPart {
@@ -241,7 +297,7 @@ fn make_requirement(
 
 /// Classifies one visible requirement component against a package candidate.
 fn classify_requirement(
-    requirements: &[&PackageRequirement],
+    requirements: &[Vec<&PackageRequirement>],
     candidate: Option<&PackageCandidate>,
     crate_name: &str,
     kind: RequirementKind<'_>,
@@ -249,10 +305,17 @@ fn classify_requirement(
     let Some(candidate) = candidate else {
         return RequirementStatus::Missing;
     };
-    if requirements
-        .iter()
-        .any(|requirement| satisfies_package(requirement, candidate))
-    {
+    let mut satisfied = !requirements.is_empty();
+    for alternatives in requirements {
+        if !alternatives
+            .iter()
+            .any(|requirement| satisfies_package(requirement, candidate))
+        {
+            satisfied = false;
+            break;
+        }
+    }
+    if satisfied {
         return RequirementStatus::Satisfied;
     }
     for provided in candidate.provides.keys() {
@@ -567,6 +630,144 @@ mod tests {
                 "\x1b[33m+derive\x1b[0m \x1b[33m+std\x1b[0m\n",
             )
         );
+    }
+
+    #[test]
+    /// Anchors version coloring to hidden defaults and copies it to `-default`.
+    fn colors_implicit_default_markers() {
+        let default_dependency = Dependency {
+            name: "foo".to_owned(),
+            requirement: "^1 +special".to_owned(),
+            entries: vec![
+                vec![PackageRequirement {
+                    name: "librust-foo-1+default-dev".to_owned(),
+                    version: Some((
+                        VersionConstraint::GreaterThanEqual,
+                        "1.0.0".parse().unwrap(),
+                    )),
+                }],
+                vec![PackageRequirement {
+                    name: "librust-foo-1+default-dev".to_owned(),
+                    version: Some((VersionConstraint::LessThan, "2.0.0".parse().unwrap())),
+                }],
+                vec![PackageRequirement {
+                    name: "librust-foo-1+special-dev".to_owned(),
+                    version: None,
+                }],
+            ],
+        };
+        let default_row = make_row(
+            &default_dependency,
+            &candidate(
+                "2.0.0",
+                "noble/universe",
+                &["librust-foo-1+default-dev", "librust-foo-1+special-dev"],
+            ),
+            "incompatible",
+            true,
+        );
+        assert_eq!(
+            default_row.requirement[0].status,
+            RequirementStatus::Incompatible
+        );
+        assert_eq!(
+            default_row.requirement[1].status,
+            RequirementStatus::Satisfied
+        );
+
+        let no_default_dependency = Dependency {
+            name: "foo".to_owned(),
+            requirement: "^0.3 -default +formatting".to_owned(),
+            entries: vec![vec![PackageRequirement {
+                name: "librust-foo-0.3+formatting-dev".to_owned(),
+                version: None,
+            }]],
+        };
+        let no_default_row = make_row(
+            &no_default_dependency,
+            &candidate(
+                "0.2.0",
+                "noble/universe",
+                &["librust-foo-0.2+formatting-dev"],
+            ),
+            "incompatible",
+            true,
+        );
+        assert_eq!(
+            no_default_row.requirement[0].status,
+            RequirementStatus::Incompatible
+        );
+        assert_eq!(
+            no_default_row.requirement[1].status,
+            no_default_row.requirement[0].status
+        );
+    }
+
+    #[test]
+    /// Requires every bound attached to a displayed feature.
+    fn checks_all_feature_bounds() {
+        let dependency = Dependency {
+            name: "foo".to_owned(),
+            requirement: "^1 +special".to_owned(),
+            entries: vec![
+                vec![PackageRequirement {
+                    name: "librust-foo-1+default-dev".to_owned(),
+                    version: None,
+                }],
+                vec![PackageRequirement {
+                    name: "librust-foo-1+special-dev".to_owned(),
+                    version: Some((
+                        VersionConstraint::GreaterThanEqual,
+                        "1.0.0".parse().unwrap(),
+                    )),
+                }],
+                vec![PackageRequirement {
+                    name: "librust-foo-1+special-dev".to_owned(),
+                    version: Some((VersionConstraint::LessThan, "1.5.0".parse().unwrap())),
+                }],
+            ],
+        };
+        let row = make_row(
+            &dependency,
+            &candidate(
+                "1.5.0",
+                "noble/universe",
+                &["librust-foo-1+default-dev", "librust-foo-1+special-dev"],
+            ),
+            "incompatible",
+            true,
+        );
+
+        assert_eq!(row.requirement[0].status, RequirementStatus::Satisfied);
+        assert_eq!(row.requirement[1].status, RequirementStatus::Incompatible);
+    }
+
+    #[test]
+    /// Colors a raw Debian fallback as one exact dependency expression.
+    fn colors_raw_requirement() {
+        let dependency = Dependency {
+            name: "foo".to_owned(),
+            requirement: "debian:librust-foo-1-dev | librust-foo-dev".to_owned(),
+            entries: vec![vec![
+                PackageRequirement {
+                    name: "librust-foo-1-dev".to_owned(),
+                    version: None,
+                },
+                PackageRequirement {
+                    name: "librust-foo-dev".to_owned(),
+                    version: None,
+                },
+            ]],
+        };
+        let row = make_row(
+            &dependency,
+            &candidate("2.0.0", "noble/universe", &["librust-foo-2-dev"]),
+            "incompatible",
+            true,
+        );
+
+        assert_eq!(row.requirement.len(), 1);
+        assert_eq!(row.requirement[0].status, RequirementStatus::Incompatible);
     }
 
     #[test]

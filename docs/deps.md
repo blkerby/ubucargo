@@ -51,7 +51,7 @@ The report shows each dependency and its candidates:
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
 serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    ^1 +derive
             available     noble-updates/universe              1.0.217-1    ^1 +derive
-syn         incompatible  noble/universe                      1.0.109-2    ^2
+syn         incompatible  noble/universe                      1.0.109-2    debian:librust-syn-2-dev | librust-syn-dev
 foo         missing       -                                   -            ^3
 ```
 
@@ -62,10 +62,31 @@ may extend beyond the nominal column width without disturbing the other columns.
 Requirements are not truncated or wrapped by ubucargo.
 
 The displayed semver requirement is inferred from the Debian virtual-package
-compatibility line and its strongest applicable lower bound. For example,
-`librust-actix-http-3+default-dev (>= 3.13.0)` is shown as `^3.13.0 +default`.
-This describes the effective relation checked by `deps`; it does not attempt to
-reproduce the original spelling from `Cargo.toml`.
+compatibility line and its applicable version bounds. For example,
+`librust-actix-http-3+default-dev (>= 3.13.0)` is shown as `^3.13`, because
+the explicit lower bound can be folded into the caret requirement without
+changing its upper bound. Bounds remain separate when such a simplification
+would change the accepted versions. For example, the intersection of `^0` and
+`>=0.2.3` is shown canonically as `>=0.2.3,<1`, not as `^0.2.3`, because
+the latter would lower the upper bound to `0.3.0`.
+
+Default features are implicit in the report. `-default` means that the
+generated Debian dependency does not require the crate's `+default-dev`
+capability; it does not forbid a candidate from providing that capability.
+Other features remain explicit. The default-feature relation, or the base
+relation when no default is required, supplies the leading version requirement.
+When neither exists, all named features must reduce to the same range. An
+unsuffixed package constrained with `(>= 1.0.0)` and `(<< 3)` is shown as
+`>=1,<3`. These forms describe the effective relations checked by `deps`;
+they do not attempt to reproduce the original spelling from `Cargo.toml`.
+
+When a relation cannot be reduced safely to semantic-version ranges, the
+requirement begins with `debian:` and reproduces the applicable package
+relations directly. This fallback preserves Debian versions and alternatives
+instead of approximating them with Cargo syntax. It is used for such cases as
+Debian-specific version syntax, package alternatives, or different ranges for
+features of the same crate. The complete fallback expression receives one
+status color.
 
 Statuses have the following meanings:
 
@@ -78,9 +99,11 @@ When standard output is a terminal, statuses are colored green for `selected`,
 gray for `available`, yellow for `incompatible`, and red for `missing`. The
 semver expression and each `+feature` in `REQUIREMENT` are colored independently:
 yellow when a corresponding package exists but is incompatible, and red when it
-is missing. Satisfied components remain neutral on every row, reserving green
-for the `selected` status. Set `NO_COLOR` to disable colors; redirected output
-is always plain text.
+is missing. A hidden default-feature requirement is reflected in the version
+color. `-default` has the same color as the version because it is contextual
+information rather than a requirement that candidates must satisfy. Satisfied
+components remain neutral on every row, reserving green for the `selected`
+status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
 
 APT alternatives are satisfied when any alternative resolves. When a dependency
 requires multiple feature packages, all of them must resolve for the dependency
