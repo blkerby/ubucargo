@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
@@ -34,6 +35,8 @@ mod output;
 mod source;
 mod tree;
 
+pub(crate) use generate::MetadataDependency;
+
 /// Existing-package reconciliation or clean-package creation mode.
 #[derive(Debug, Eq, PartialEq)]
 enum PackageMode {
@@ -46,6 +49,14 @@ enum PackageMode {
         /// Explicit source directory, or none when the Debian source name is used.
         requested_dir: Option<PathBuf>,
     },
+}
+
+/// Temporary package and patched Cargo dependencies used by `deps`.
+pub(crate) struct DependencyInspection {
+    /// Complete temporary debcargo staging directory.
+    pub stage: tempfile::TempDir,
+    /// Direct dependencies from the patch-applied Cargo manifest.
+    pub cargo_dependencies: Vec<MetadataDependency>,
 }
 
 /// Registry or local crate selection supplied to the package command.
@@ -220,7 +231,7 @@ pub(crate) fn stage_for_dependency_inspection(
     crate_name: Option<&str>,
     version: Option<&str>,
     package_dir: Option<&Path>,
-) -> Result<tempfile::TempDir> {
+) -> Result<DependencyInspection> {
     if version.is_some() && crate_name.is_none() {
         bail!("VERSION requires CRATE");
     }
@@ -246,7 +257,7 @@ pub(crate) fn stage_for_dependency_inspection(
             &debcargo_version,
             false,
         )?;
-        return Ok(generated.stage);
+        return finish_dependency_inspection(generated.stage);
     }
 
     let current = std::env::current_dir()
@@ -270,7 +281,32 @@ pub(crate) fn stage_for_dependency_inspection(
         &debcargo_version,
         false,
     )?;
-    Ok(generated.stage)
+    finish_dependency_inspection(generated.stage)
+}
+
+/// Applies staged quilt patches and reads direct Cargo dependencies.
+fn finish_dependency_inspection(stage: tempfile::TempDir) -> Result<DependencyInspection> {
+    let source = stage.path().join("output");
+    if source.join("debian/patches/series").is_file() {
+        let output = Command::new("quilt")
+            .args(["push", "-a", "--quiltrc=-"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&source)
+            .output()
+            .context("apply staged quilt patches")?;
+        if !output.status.success() {
+            bail!(
+                "could not apply staged quilt patches:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    let cargo_dependencies = read_root_package(&source)?.dependencies;
+    Ok(DependencyInspection {
+        stage,
+        cargo_dependencies,
+    })
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -636,5 +672,31 @@ mod tests {
             stage_for_dependency_inspection(Some("serde"), None, Some(Path::new("rust-serde")))
                 .is_err()
         );
+    }
+
+    #[test]
+    /// Reads Cargo dependency requirements after applying staged quilt patches.
+    fn reads_patched_dependency_metadata() {
+        let stage = tempfile::tempdir().unwrap();
+        let output = stage.path().join("output");
+        fs::create_dir_all(output.join("src")).unwrap();
+        fs::create_dir_all(output.join("debian/patches")).unwrap();
+        fs::write(
+            output.join("Cargo.toml"),
+            "[package]\nname = \"example\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = \"1\"\n",
+        )
+        .unwrap();
+        fs::write(output.join("src/lib.rs"), "").unwrap();
+        fs::write(output.join("debian/patches/series"), "version.patch\n").unwrap();
+        fs::write(
+            output.join("debian/patches/version.patch"),
+            "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -7 +7 @@\n-serde = \"1\"\n+serde = \"2\"\n",
+        )
+        .unwrap();
+
+        let inspection = finish_dependency_inspection(stage).unwrap();
+
+        assert_eq!(inspection.cargo_dependencies[0].name, "serde");
+        assert_eq!(inspection.cargo_dependencies[0].req, "^2");
     }
 }

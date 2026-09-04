@@ -83,9 +83,13 @@ pub fn run(
         Some(architecture) => architecture.to_owned(),
         None => apt::read_architecture()?,
     };
-    let stage = crate::package::stage_for_dependency_inspection(crate_name, version, package_dir)?;
-    let dependencies =
-        control::read_dependencies(&stage.path().join("output/debian/control"), &architecture)?;
+    let inspection =
+        crate::package::stage_for_dependency_inspection(crate_name, version, package_dir)?;
+    let dependencies = control::read_dependencies(
+        &inspection.stage.path().join("output/debian/control"),
+        &architecture,
+        &inspection.cargo_dependencies,
+    )?;
     let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -181,114 +185,67 @@ fn make_requirement(
     dependency: &Dependency,
     candidate: Option<&PackageCandidate>,
 ) -> Vec<RequirementPart> {
-    if dependency.requirement.starts_with("debian:") {
-        let status = match candidate {
-            Some(candidate) if satisfies(dependency, candidate) => RequirementStatus::Satisfied,
-            Some(candidate)
-                if candidate.provides.keys().any(|provided| {
-                    parse_rust_package_name(provided)
-                        .is_some_and(|(name, _, _)| name == dependency.name)
-                }) =>
-            {
-                RequirementStatus::Incompatible
-            }
-            _ => RequirementStatus::Missing,
-        };
-        return vec![RequirementPart {
-            text: dependency.requirement.clone(),
-            status,
-        }];
-    }
-
-    let mut parts = dependency.requirement.split_whitespace();
     let mut output = Vec::new();
-    if let Some(version) = parts.next() {
-        let mut has_default = false;
-        let mut has_base = false;
-        for alternatives in &dependency.entries {
-            for requirement in alternatives {
-                if let Some((_, _, feature)) = parse_rust_package_name(&requirement.name) {
-                    if feature.as_deref() == Some("default") {
-                        has_default = true;
-                    } else if feature.is_none() {
-                        has_base = true;
-                    }
-                }
+    let default = dependency
+        .debian_requirements
+        .get(&Some("default".to_owned()));
+    let base = dependency.debian_requirements.get(&None);
+    let mut requirements = Vec::new();
+    let kind = if let Some(default) = default {
+        for alternatives in default {
+            requirements.push(alternatives.iter().collect());
+        }
+        if let Some(base) = base {
+            for alternatives in base {
+                requirements.push(alternatives.iter().collect());
             }
         }
+        RequirementKind::Feature("default")
+    } else if let Some(base) = base {
+        for alternatives in base {
+            requirements.push(alternatives.iter().collect());
+        }
+        RequirementKind::Base
+    } else {
+        let mut alternatives = Vec::new();
+        for feature in dependency.debian_requirements.values() {
+            for entry in feature {
+                alternatives.extend(entry);
+            }
+        }
+        requirements.push(alternatives);
+        RequirementKind::Any
+    };
+    let version_status = classify_requirement(&requirements, candidate, &dependency.name, kind);
+    output.push(RequirementPart {
+        text: dependency.cargo_requirement.clone(),
+        status: version_status,
+    });
 
-        let mut requirements = Vec::new();
-        if has_default || has_base {
-            for alternatives in &dependency.entries {
-                let mut matching = Vec::new();
-                for requirement in alternatives {
-                    let Some((_, _, feature)) = parse_rust_package_name(&requirement.name) else {
-                        continue;
-                    };
-                    let selected = if has_default {
-                        feature.as_deref() == Some("default") || feature.is_none()
-                    } else {
-                        feature.is_none()
-                    };
-                    if selected {
-                        matching.push(requirement);
-                    }
-                }
-                if !matching.is_empty() {
-                    requirements.push(matching);
-                }
-            }
-        } else {
-            let mut matching = Vec::new();
-            for alternatives in &dependency.entries {
-                matching.extend(alternatives);
-            }
-            requirements.push(matching);
-        }
-        let kind = if has_default {
-            RequirementKind::Feature("default")
-        } else if has_base {
-            RequirementKind::Base
-        } else {
-            RequirementKind::Any
-        };
-        let status = classify_requirement(&requirements, candidate, &dependency.name, kind);
+    if default.is_none() {
         output.push(RequirementPart {
-            text: version.to_owned(),
-            status,
+            text: "-default".to_owned(),
+            status: version_status,
         });
     }
-    for feature in parts {
-        if feature == "-default" {
-            output.push(RequirementPart {
-                text: feature.to_owned(),
-                status: output[0].status,
-            });
+    for (feature, feature_requirements) in &dependency.debian_requirements {
+        let Some(feature) = feature else {
+            continue;
+        };
+        if feature == "default" {
             continue;
         }
-        let feature_name = feature.strip_prefix('+').unwrap_or(feature);
-        let name = feature_name;
         let mut requirements = Vec::new();
-        for alternatives in &dependency.entries {
-            let mut matching = Vec::new();
-            for requirement in alternatives {
-                if parse_rust_package_name(&requirement.name)
-                    .is_some_and(|(_, _, candidate)| candidate.as_deref() == Some(name))
-                {
-                    matching.push(requirement);
-                }
-            }
-            if !matching.is_empty() {
-                requirements.push(matching);
-            }
+        for alternatives in feature_requirements {
+            requirements.push(alternatives.iter().collect());
         }
         output.push(RequirementPart {
-            text: feature.to_owned(),
+            text: format!("+{feature}"),
             status: classify_requirement(
                 &requirements,
                 candidate,
                 &dependency.name,
-                RequirementKind::Feature(name),
+                RequirementKind::Feature(feature),
             ),
         });
     }
@@ -336,16 +293,18 @@ fn classify_requirement(
 
 /// Reports whether one binary package satisfies every entry for a dependency.
 fn satisfies(dependency: &Dependency, candidate: &PackageCandidate) -> bool {
-    for alternatives in &dependency.entries {
-        let mut entry_satisfied = false;
-        for requirement in alternatives {
-            if satisfies_package(requirement, candidate) {
-                entry_satisfied = true;
-                break;
+    for feature in dependency.debian_requirements.values() {
+        for alternatives in feature {
+            let mut entry_satisfied = false;
+            for requirement in alternatives {
+                if satisfies_package(requirement, candidate) {
+                    entry_satisfied = true;
+                    break;
+                }
             }
-        }
-        if !entry_satisfied {
-            return false;
+            if !entry_satisfied {
+                return false;
+            }
         }
     }
     true
@@ -469,27 +428,36 @@ mod tests {
         let dependencies = [
             Dependency {
                 name: "serde".to_owned(),
-                requirement: "^1 +derive".to_owned(),
-                entries: vec![vec![PackageRequirement {
-                    name: "librust-serde-1+derive-dev".to_owned(),
-                    version: None,
-                }]],
+                cargo_requirement: "^1".to_owned(),
+                debian_requirements: BTreeMap::from([(
+                    Some("derive".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-1+derive-dev".to_owned(),
+                        version: None,
+                    }]],
+                )]),
             },
             Dependency {
                 name: "serde".to_owned(),
-                requirement: "^2".to_owned(),
-                entries: vec![vec![PackageRequirement {
-                    name: "librust-serde-2-dev".to_owned(),
-                    version: None,
-                }]],
+                cargo_requirement: "^2".to_owned(),
+                debian_requirements: BTreeMap::from([(
+                    None,
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-2-dev".to_owned(),
+                        version: None,
+                    }]],
+                )]),
             },
             Dependency {
                 name: "missing".to_owned(),
-                requirement: "^1".to_owned(),
-                entries: vec![vec![PackageRequirement {
-                    name: "librust-missing-1-dev".to_owned(),
-                    version: None,
-                }]],
+                cargo_requirement: "^1".to_owned(),
+                debian_requirements: BTreeMap::from([(
+                    None,
+                    vec![vec![PackageRequirement {
+                        name: "librust-missing-1-dev".to_owned(),
+                        version: None,
+                    }]],
+                )]),
             },
         ];
         let mut duplicate = candidate(
@@ -587,28 +555,40 @@ mod tests {
     fn colors_requirement_components() {
         let dependency = Dependency {
             name: "serde".to_owned(),
-            requirement: "^1 +alloc +derive +std".to_owned(),
-            entries: vec![
-                vec![PackageRequirement {
-                    name: "librust-serde-1-dev".to_owned(),
-                    version: None,
-                }],
-                vec![PackageRequirement {
-                    name: "librust-serde-1+alloc-dev".to_owned(),
-                    version: None,
-                }],
-                vec![PackageRequirement {
-                    name: "librust-serde-1+derive-dev".to_owned(),
-                    version: Some((
-                        VersionConstraint::GreaterThanEqual,
-                        "1.0.200-~~".parse().unwrap(),
-                    )),
-                }],
-                vec![PackageRequirement {
-                    name: "librust-serde-1+std-dev".to_owned(),
-                    version: None,
-                }],
-            ],
+            cargo_requirement: "^1".to_owned(),
+            debian_requirements: BTreeMap::from([
+                (
+                    None,
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-1-dev".to_owned(),
+                        version: None,
+                    }]],
+                ),
+                (
+                    Some("alloc".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-1+alloc-dev".to_owned(),
+                        version: None,
+                    }]],
+                ),
+                (
+                    Some("derive".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-1+derive-dev".to_owned(),
+                        version: Some((
+                            VersionConstraint::GreaterThanEqual,
+                            "1.0.200-~~".parse().unwrap(),
+                        )),
+                    }]],
+                ),
+                (
+                    Some("std".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-serde-1+std-dev".to_owned(),
+                        version: None,
+                    }]],
+                ),
+            ]),
         };
         let mut candidate = candidate(
             "1.0.219-1",
@@ -626,7 +606,7 @@ mod tests {
             concat!(
                 "DEPENDENCY  STATUS        LOCATION        VERSION    REQUIREMENT\n",
                 "serde       \x1b[33mincompatible\x1b[0m  noble/universe  1.0.219-1  ",
-                "^1 \x1b[31m+alloc\x1b[0m ",
+                "^1 -default \x1b[31m+alloc\x1b[0m ",
                 "\x1b[33m+derive\x1b[0m \x1b[33m+std\x1b[0m\n",
             )
         );
@@ -637,24 +617,32 @@ mod tests {
     fn colors_implicit_default_markers() {
         let default_dependency = Dependency {
             name: "foo".to_owned(),
-            requirement: "^1 +special".to_owned(),
-            entries: vec![
-                vec![PackageRequirement {
-                    name: "librust-foo-1+default-dev".to_owned(),
-                    version: Some((
-                        VersionConstraint::GreaterThanEqual,
-                        "1.0.0".parse().unwrap(),
-                    )),
-                }],
-                vec![PackageRequirement {
-                    name: "librust-foo-1+default-dev".to_owned(),
-                    version: Some((VersionConstraint::LessThan, "2.0.0".parse().unwrap())),
-                }],
-                vec![PackageRequirement {
-                    name: "librust-foo-1+special-dev".to_owned(),
-                    version: None,
-                }],
-            ],
+            cargo_requirement: "^1".to_owned(),
+            debian_requirements: BTreeMap::from([
+                (
+                    Some("default".to_owned()),
+                    vec![
+                        vec![PackageRequirement {
+                            name: "librust-foo-1+default-dev".to_owned(),
+                            version: Some((
+                                VersionConstraint::GreaterThanEqual,
+                                "1.0.0".parse().unwrap(),
+                            )),
+                        }],
+                        vec![PackageRequirement {
+                            name: "librust-foo-1+default-dev".to_owned(),
+                            version: Some((VersionConstraint::LessThan, "2.0.0".parse().unwrap())),
+                        }],
+                    ],
+                ),
+                (
+                    Some("special".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-foo-1+special-dev".to_owned(),
+                        version: None,
+                    }]],
+                ),
+            ]),
         };
         let default_row = make_row(
             &default_dependency,
@@ -677,11 +665,14 @@ mod tests {
 
         let no_default_dependency = Dependency {
             name: "foo".to_owned(),
-            requirement: "^0.3 -default +formatting".to_owned(),
-            entries: vec![vec![PackageRequirement {
-                name: "librust-foo-0.3+formatting-dev".to_owned(),
-                version: None,
-            }]],
+            cargo_requirement: "^0.3".to_owned(),
+            debian_requirements: BTreeMap::from([(
+                Some("formatting".to_owned()),
+                vec![vec![PackageRequirement {
+                    name: "librust-foo-0.3+formatting-dev".to_owned(),
+                    version: None,
+                }]],
+            )]),
         };
         let no_default_row = make_row(
             &no_default_dependency,
@@ -708,24 +699,32 @@ mod tests {
     fn checks_all_feature_bounds() {
         let dependency = Dependency {
             name: "foo".to_owned(),
-            requirement: "^1 +special".to_owned(),
-            entries: vec![
-                vec![PackageRequirement {
-                    name: "librust-foo-1+default-dev".to_owned(),
-                    version: None,
-                }],
-                vec![PackageRequirement {
-                    name: "librust-foo-1+special-dev".to_owned(),
-                    version: Some((
-                        VersionConstraint::GreaterThanEqual,
-                        "1.0.0".parse().unwrap(),
-                    )),
-                }],
-                vec![PackageRequirement {
-                    name: "librust-foo-1+special-dev".to_owned(),
-                    version: Some((VersionConstraint::LessThan, "1.5.0".parse().unwrap())),
-                }],
-            ],
+            cargo_requirement: "^1".to_owned(),
+            debian_requirements: BTreeMap::from([
+                (
+                    Some("default".to_owned()),
+                    vec![vec![PackageRequirement {
+                        name: "librust-foo-1+default-dev".to_owned(),
+                        version: None,
+                    }]],
+                ),
+                (
+                    Some("special".to_owned()),
+                    vec![
+                        vec![PackageRequirement {
+                            name: "librust-foo-1+special-dev".to_owned(),
+                            version: Some((
+                                VersionConstraint::GreaterThanEqual,
+                                "1.0.0".parse().unwrap(),
+                            )),
+                        }],
+                        vec![PackageRequirement {
+                            name: "librust-foo-1+special-dev".to_owned(),
+                            version: Some((VersionConstraint::LessThan, "1.5.0".parse().unwrap())),
+                        }],
+                    ],
+                ),
+            ]),
         };
         let row = make_row(
             &dependency,
@@ -740,34 +739,6 @@ mod tests {
 
         assert_eq!(row.requirement[0].status, RequirementStatus::Satisfied);
         assert_eq!(row.requirement[1].status, RequirementStatus::Incompatible);
-    }
-
-    #[test]
-    /// Colors a raw Debian fallback as one exact dependency expression.
-    fn colors_raw_requirement() {
-        let dependency = Dependency {
-            name: "foo".to_owned(),
-            requirement: "debian:librust-foo-1-dev | librust-foo-dev".to_owned(),
-            entries: vec![vec![
-                PackageRequirement {
-                    name: "librust-foo-1-dev".to_owned(),
-                    version: None,
-                },
-                PackageRequirement {
-                    name: "librust-foo-dev".to_owned(),
-                    version: None,
-                },
-            ]],
-        };
-        let row = make_row(
-            &dependency,
-            &candidate("2.0.0", "noble/universe", &["librust-foo-2-dev"]),
-            "incompatible",
-            true,
-        );
-
-        assert_eq!(row.requirement.len(), 1);
-        assert_eq!(row.requirement[0].status, RequirementStatus::Incompatible);
     }
 
     #[test]

@@ -34,8 +34,20 @@ pub struct MetadataPackage {
     pub name: String,
     /// Exact Cargo package version passed to debcargo.
     pub version: String,
+    /// Direct Cargo dependencies declared by the package.
+    #[serde(default)]
+    pub dependencies: Vec<MetadataDependency>,
     /// Manifest used to distinguish the root package from workspace members.
     manifest_path: PathBuf,
+}
+
+/// Direct dependency fields used by dependency inspection.
+#[derive(Clone, Debug, Deserialize)]
+pub struct MetadataDependency {
+    /// Canonical package name, independent of any local rename.
+    pub name: String,
+    /// Cargo semantic-version requirement.
+    pub req: String,
 }
 
 /// Debcargo configuration values that affect package identity.
