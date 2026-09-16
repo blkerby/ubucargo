@@ -164,6 +164,11 @@ Generated files may include:
 
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output and is used to detect maintainer overrides to the primary `<file>`.
 
+Two generated files are fully generator-owned and have no hint:
+`debian/cargo-checksum.json` and `debian/patches/series`. Ubucargo writes
+fresh output to these files directly and removes leftover
+`debian/cargo-checksum.json.debcargo.hint` files from earlier versions.
+
 If debcargo emits an unrecognized path, `package` warns and ignores it. The changelog, configuration, and non-automatic patch files remain maintainer-owned.
 
 For a new package, ubucargo retains debcargo's `debian/source/format`. On

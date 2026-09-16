@@ -7,11 +7,11 @@ use std::{
     process::Command,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::{
     generate::PackageConfig,
-    managed::{make_hint_path, read_state, FileState, PathPlan},
+    managed::{FileState, PathPlan, is_generator_owned, make_hint_path, read_state},
 };
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
@@ -155,7 +155,7 @@ pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let mut paths = BTreeSet::new();
     collect_output_paths(&debian, &debian, &mut paths)?;
     for path in paths {
-        if !is_package_managed(&path) {
+        if !is_package_managed(&path) || is_generator_owned(&path) {
             continue;
         }
         let primary = debian.join(path.strip_prefix("debian")?);
@@ -244,9 +244,11 @@ mod tests {
         assert!(root.path().join("debian/control.debcargo.hint").is_file());
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());
         assert!(root.path().join("debian/source/format").is_file());
-        assert!(!root
-            .path()
-            .join("debian/source/format.debcargo.hint")
-            .exists());
+        assert!(
+            !root
+                .path()
+                .join("debian/source/format.debcargo.hint")
+                .exists()
+        );
     }
 }

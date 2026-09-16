@@ -62,6 +62,19 @@ pub struct Plan {
     pub paths: Vec<PathPlan>,
 }
 
+/// Managed paths that are fully generator-owned and never use a hint.
+///
+/// Fresh generator output always replaces these primaries, so no hint is
+/// written and leftover hints from earlier versions are removed.
+pub(crate) const GENERATOR_OWNED_PATHS: &[&str] = &["debian/cargo-checksum.json"];
+
+/// Reports whether a managed path is fully generator-owned.
+pub(crate) fn is_generator_owned(path: &Path) -> bool {
+    GENERATOR_OWNED_PATHS
+        .iter()
+        .any(|owned| path == Path::new(owned))
+}
+
 impl Plan {
     /// Reports whether applying the plan performs any filesystem changes.
     pub fn has_changes(&self) -> bool {
@@ -157,6 +170,35 @@ pub fn build_plan(
     let mut used_decisions = BTreeSet::new();
 
     for path in managed {
+        // Fully generator-owned paths take fresh output without a hint,
+        // like the patch series.
+        if is_generator_owned(path) {
+            let old = read_state(&resolve_managed_path(debian, path)?)?;
+            let stale_hint = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
+            paths.push(PathPlan {
+                path: path.clone(),
+                old,
+                base: None,
+                primary_after: generated.get(path).cloned(),
+                hint_after: None,
+                tracks_hint: false,
+                overridden: false,
+                ambiguous: false,
+            });
+            if let Some(stale_hint) = stale_hint {
+                paths.push(PathPlan {
+                    path: make_hint_path(path),
+                    old: Some(stale_hint),
+                    base: None,
+                    primary_after: None,
+                    hint_after: None,
+                    tracks_hint: false,
+                    overridden: false,
+                    ambiguous: false,
+                });
+            }
+            continue;
+        }
         let old = read_state(&resolve_managed_path(debian, path)?)?;
         let base = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
         let new = generated.get(path).cloned();
