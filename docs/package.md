@@ -58,6 +58,14 @@ Ubucargo invokes debcargo's `package` command for the selected exact release. De
 
 When creating a package, ubucargo installs the complete generated result, adds `debian/debcargo.toml`, and creates matching hints for generated files.
 
+For both crates.io and local crates, the initial configuration includes:
+
+```toml
+maintainer = "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>"
+```
+
+This setting gives debcargo the same maintainer for the first generation and subsequent runs, including the generated `debian/*` copyright attribution. Existing configurations are not rewritten.
+
 When reconciling an existing package, ubucargo preserves durable maintainer-owned state:
 
 - `debian/changelog`;
@@ -92,7 +100,9 @@ An existing ubucargo provenance item in the current `UNRELEASED` entry is update
 
 Ubucargo prepares the staged changelog before final generation and always passes `--changelog-ready` to debcargo. Debcargo therefore reads the prepared changelog for generation but does not modify it.
 
-After generation, ubucargo runs `update-maintainer` on the staged package so Ubuntu revisions use the Ubuntu Developers maintainer and retain Debian's maintainer in `XSBC-Original-Maintainer`. For an existing package without a control hint, an exact match with debcargo's raw control output establishes generator ownership before this Ubuntu adjustment; other differing controls remain ambiguous.
+After every package generation, ubucargo runs `update-maintainer` on the staged package. It preserves current Ubuntu maintainer addresses; otherwise it sets Ubuntu Developers and records the previous maintainer in `XSBC-Original-Maintainer`. Debian-derived packages therefore keep their existing configuration while receiving the Ubuntu control adjustment. Packages created directly by ubucargo already use Ubuntu Developers and do not acquire an original-maintainer field. Copyright overrides remain subject to the normal generated-file reconciliation rules.
+
+For an existing package without a control hint, an exact match with debcargo's raw control output establishes generator ownership before this Ubuntu adjustment; other differing controls remain ambiguous.
 
 Ubucargo removes debcargo's Debian-specific `Vcs-Git` and `Vcs-Browser` fields from generated control files. A maintainer-overridden `debian/control` remains unchanged under the normal generated-file reconciliation rules.
 
@@ -126,12 +136,12 @@ Ubucargo compares three trees outside `debian/`:
 
 Paths are reconciled conservatively:
 
-| Condition | Behavior |
-| --- | --- |
-| `old == base` | Accept `new`, including upstream additions and removals |
-| `old == new` | Keep the common result |
-| Path absent from both `base` and `new` | Preserve the local-only path |
-| Any other difference | Report a conflict and make no changes |
+| Condition                              | Behavior                                                |
+| -------------------------------------- | ------------------------------------------------------- |
+| `old == base`                          | Accept `new`, including upstream additions and removals |
+| `old == new`                           | Keep the common result                                  |
+| Path absent from both `base` and `new` | Preserve the local-only path                            |
+| Any other difference                   | Report a conflict and make no changes                   |
 
 This preserves VCS administration directories, local CI files, and build artifacts when they are absent from both upstream trees, without inspecting a particular VCS. A newly introduced upstream path that conflicts with a local-only path is reported rather than overwritten.
 
@@ -164,16 +174,11 @@ Generated files may include:
 
 For every generated `<file>`, ubucargo stores `<file>.debcargo.hint`. The hint records the latest generator output and is used to detect maintainer overrides to the primary `<file>`.
 
-Two generated files are fully generator-owned and have no hint:
-`debian/cargo-checksum.json` and `debian/patches/series`. Ubucargo writes
-fresh output to these files directly and removes leftover
-`debian/cargo-checksum.json.debcargo.hint` files from earlier versions.
+Two generated files are fully generator-owned and have no hint: `debian/cargo-checksum.json` and `debian/patches/series`. Ubucargo writes fresh output to these files directly and removes leftover `debian/cargo-checksum.json.debcargo.hint` files from earlier versions.
 
 If debcargo emits an unrecognized path, `package` warns and ignores it. The changelog, configuration, and non-automatic patch files remain maintainer-owned.
 
-For a new package, ubucargo retains debcargo's `debian/source/format`. On
-subsequent regenerations it leaves that file unchanged and does not create a
-`.debcargo.hint` for it.
+For a new package, ubucargo retains debcargo's `debian/source/format`. On subsequent regenerations it leaves that file unchanged and does not create a `.debcargo.hint` for it.
 
 ### Generated patches
 
@@ -193,10 +198,10 @@ Each value includes whether the path exists, its contents, and its Unix permissi
 
 When `base` is present, an override exists when `old != base`.
 
-| Condition | Meaning | Behavior |
-| --- | --- | --- |
-| `old == base` | Unmodified generated file | Replace both primary and hint with `new` |
-| `old != base` | Maintainer override | Preserve `old`; replace the hint with `new` |
+| Condition     | Meaning                   | Behavior                                    |
+| ------------- | ------------------------- | ------------------------------------------- |
+| `old == base` | Unmodified generated file | Replace both primary and hint with `new`    |
+| `old != base` | Maintainer override       | Preserve `old`; replace the hint with `new` |
 
 This comparison is deliberately conservative. Any content or permission-mode change preserves the primary as an override rather than risking data loss.
 
@@ -204,13 +209,13 @@ This comparison is deliberately conservative. Any content or permission-mode cha
 
 Existing source trees may not contain a hint for every generated file. `package` initializes only cases that cannot overwrite existing content:
 
-| `old` | `new` | Behavior when `base` is absent |
-| --- | --- | --- |
-| absent | absent | No change |
-| absent | present | Write `new` to both primary and hint |
-| present | equal to `old` | Keep the primary and write the matching hint |
+| `old`   | `new`                | Behavior when `base` is absent                        |
+| ------- | -------------------- | ----------------------------------------------------- |
+| absent  | absent               | No change                                             |
+| absent  | present              | Write `new` to both primary and hint                  |
+| present | equal to `old`       | Keep the primary and write the matching hint          |
 | present | different from `old` | Stop without writing; require `--keep` or `--replace` |
-| present | absent | Preserve the primary; no generated base exists |
+| present | absent               | Preserve the primary; no generated base exists        |
 
 For an ambiguous path, the user may disambiguate by supplying a `--keep` or `--replace` option using a package-relative path:
 
@@ -255,5 +260,4 @@ Ubucargo validates the selected crate identity, Debian source identity, source t
 
 Installation changes files only. It does not create commits, branches, tags, pristine-tar data, `.dsc` files, source `.changes`, or `.buildinfo` files. Standard Debian and VCS tools remain responsible for those artifacts.
 
-Ubucargo requires debcargo 2.8.4 or a later compatible 2.x release and checks
-the installed version before running it.
+Ubucargo requires debcargo 2.8.4 or a later compatible 2.x release and checks the installed version before running it.

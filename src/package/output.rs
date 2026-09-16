@@ -231,10 +231,11 @@ mod tests {
             "patch",
         )
         .unwrap();
-        initialize_package(root.path(), &read_new_package_config().unwrap()).unwrap();
+        let config = read_new_package_config().unwrap();
+        initialize_package(root.path(), &config).unwrap();
         assert_eq!(
             fs::read_to_string(root.path().join("debian/debcargo.toml")).unwrap(),
-            ""
+            config.contents
         );
         assert!(root.path().join("debian/control.debcargo.hint").is_file());
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());

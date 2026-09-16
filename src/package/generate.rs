@@ -231,9 +231,11 @@ pub fn read_package_config(path: &Path) -> Result<PackageConfig> {
     Ok(config)
 }
 
-/// Reads the default configuration used for a new package.
+/// Creates the persisted Ubuntu configuration used for a new package.
 pub fn read_new_package_config() -> Result<PackageConfig> {
-    read_package_config_text("")
+    let mut document = DocumentMut::new();
+    document["maintainer"] = value(UBUNTU_MAINTAINER);
+    read_package_config_text(&document.to_string())
 }
 
 /// Creates the persisted configuration for a new package built from a local crate.
@@ -242,9 +244,10 @@ pub fn read_new_local_package_config(
     package_root: &Path,
 ) -> Result<PackageConfig> {
     let relative = make_relative_path(crate_root, &package_root.join("debian"))?;
-    let mut document = DocumentMut::new();
+    let mut config = read_new_package_config()?;
+    let mut document: DocumentMut = config.contents.parse()?;
     document["crate_src_path"] = value(require_utf8_path(&relative)?);
-    let mut config = read_package_config_text(&document.to_string())?;
+    config.contents = document.to_string();
     config.crate_src_path = Some(crate_root.to_path_buf());
     Ok(config)
 }
@@ -272,7 +275,7 @@ pub fn generate_debcargo_package(
     if let Some(debian) = existing_debian {
         prepare_patch_overlay(debian, &overlay)?;
     }
-    write_staged_config(config, stage.path(), existing_debian.is_none())?;
+    write_staged_config(config, stage.path())?;
     let source = if config.crate_src_path.is_some() {
         "local source"
     } else {
@@ -416,7 +419,7 @@ fn validate_debcargo_output(
 fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelection> {
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
     fs::create_dir(stage.path().join("overlay"))?;
-    write_staged_config(config, stage.path(), false)?;
+    write_staged_config(config, stage.path())?;
     run_command(
         Command::new("debcargo")
             .arg("extract")
@@ -483,15 +486,8 @@ fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
 }
 
 /// Writes staged configuration with resolved local source and temporary overlay paths.
-fn write_staged_config(
-    config: &PackageConfig,
-    stage: &Path,
-    use_ubuntu_maintainer: bool,
-) -> Result<()> {
+fn write_staged_config(config: &PackageConfig, stage: &Path) -> Result<()> {
     let mut document: DocumentMut = config.contents.parse()?;
-    if use_ubuntu_maintainer {
-        document["maintainer"] = value(UBUNTU_MAINTAINER);
-    }
     if let Some(repack_suffix) = &config.repack_suffix {
         document["repack_suffix"] = value(repack_suffix);
     }
@@ -597,18 +593,54 @@ mod tests {
     }
 
     #[test]
-    /// Sets the Ubuntu maintainer only when generating a fresh package.
-    fn writes_fresh_package_maintainer() {
+    /// Preserves the new-package maintainer through initialization, reload, and staging.
+    fn preserves_new_package_maintainer() {
         let stage = tempfile::tempdir().unwrap();
-        let config = read_new_package_config().unwrap();
+        let crate_root = stage.path().join("crate");
+        let package_root = stage.path().join("output");
+        fs::create_dir(&crate_root).unwrap();
+        fs::create_dir_all(package_root.join("debian")).unwrap();
+        for config in [
+            read_new_package_config().unwrap(),
+            read_new_local_package_config(&crate_root, &package_root).unwrap(),
+        ] {
+            write_staged_config(&config, stage.path()).unwrap();
+            let initial = fs::read_to_string(stage.path().join("debcargo.toml")).unwrap();
+            super::super::output::initialize_package(&package_root, &config).unwrap();
+            let reloaded = read_package_config(&package_root.join("debian/debcargo.toml")).unwrap();
+            let document: DocumentMut = reloaded.contents.parse().unwrap();
+            assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
+            assert!(!document.contains_key("overlay"));
 
-        write_staged_config(&config, stage.path(), true).unwrap();
-        let document: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
+            write_staged_config(&reloaded, stage.path()).unwrap();
+            assert_eq!(
+                fs::read_to_string(stage.path().join("debcargo.toml")).unwrap(),
+                initial
+            );
+        }
+    }
 
-        assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
+    #[test]
+    /// Leaves existing maintainer settings and debcargo's implicit default unchanged.
+    fn preserves_existing_maintainer_config() {
+        let stage = tempfile::tempdir().unwrap();
+        let path = stage.path().join("existing.toml");
+        for contents in [
+            "# Use debcargo's default maintainer.\n",
+            "maintainer = \"Debian Rust Maintainers <pkg-rust-maintainers@alioth-lists.debian.net>\"\n",
+            "maintainer = \"Example Developer <example@ubuntu.com>\"\n",
+        ] {
+            fs::write(&path, contents).unwrap();
+            let config = read_package_config(&path).unwrap();
+            write_staged_config(&config, stage.path()).unwrap();
+            let mut staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            staged.remove("overlay");
+            assert_eq!(staged.to_string(), contents);
+            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        }
     }
 
     #[test]
@@ -636,7 +668,7 @@ mod tests {
         );
 
         let stage = tempfile::tempdir().unwrap();
-        write_staged_config(&config, stage.path(), false).unwrap();
+        write_staged_config(&config, stage.path()).unwrap();
         let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
             .unwrap()
             .parse()
@@ -678,7 +710,7 @@ mod tests {
         assert_eq!(inferred.repack_suffix.as_deref(), Some("dfsg"));
 
         let stage = tempfile::tempdir().unwrap();
-        write_staged_config(&inferred, stage.path(), false).unwrap();
+        write_staged_config(&inferred, stage.path()).unwrap();
         let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
             .unwrap()
             .parse()
