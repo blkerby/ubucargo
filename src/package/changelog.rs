@@ -3,6 +3,8 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use anyhow::{Context, Result, bail};
+
+use crate::command::run_command;
 use debian_changelog::ChangeLog;
 
 /// Parsed fields from the first Debian changelog entry.
@@ -105,21 +107,14 @@ pub fn prepare_changelog(
             command.arg("--append");
         }
     }
-    let output = command.arg(provenance).output().context("run dch")?;
-    if !output.status.success() {
-        bail!(
-            "dch failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(command.arg(provenance), "dch")?;
 
     let mut changelog = ChangeLog::read_path(staged_path).context("read prepared changelog")?;
     normalize_top_entry(&mut changelog, provenance)?;
     changelog
         .write_to_path(staged_path)
         .context("write prepared changelog")?;
-    let top = read_top_changelog(staged_path)?;
+    let top = parse_top_changelog(&changelog)?;
     if top.source != source_name || top.upstream != upstream {
         bail!(
             "prepared changelog identifies {} {}, expected {source_name} {upstream}",

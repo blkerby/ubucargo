@@ -101,11 +101,11 @@ pub fn run(
 
 /// Classifies all candidates for each dependency in deterministic order.
 fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec<Row> {
-    let mut candidates_by_crate: BTreeMap<String, Vec<&PackageCandidate>> = BTreeMap::new();
+    let mut candidates_by_crate: BTreeMap<&str, Vec<&PackageCandidate>> = BTreeMap::new();
     for candidate in candidates {
         let mut crate_names = BTreeSet::new();
         for provided in candidate.provides.keys() {
-            if let Some((name, _, _)) = parse_rust_package_name(provided) {
+            if let Some((name, _)) = parse_rust_package_name(provided) {
                 crate_names.insert(name);
             }
         }
@@ -117,37 +117,11 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
     let mut rows = Vec::new();
     for dependency in dependencies {
         let mut matching = candidates_by_crate
-            .get(&dependency.name)
+            .get(dependency.name.as_str())
             .cloned()
             .unwrap_or_default();
         matching.sort_by(|first, second| second.version.cmp(&first.version));
-        let mut satisfying: Vec<_> = matching
-            .iter()
-            .copied()
-            .filter(|candidate| satisfies(dependency, candidate))
-            .collect();
-        let mut displayed = BTreeSet::new();
-        satisfying.retain(|candidate| {
-            displayed.insert((candidate.version.clone(), candidate.location.clone()))
-        });
-        if !satisfying.is_empty() {
-            for (index, candidate) in satisfying.into_iter().enumerate() {
-                rows.push(make_row(
-                    dependency,
-                    candidate,
-                    if index == 0 { "selected" } else { "available" },
-                    index == 0,
-                ));
-            }
-        } else if !matching.is_empty() {
-            let mut displayed = BTreeSet::new();
-            matching.retain(|candidate| {
-                displayed.insert((candidate.version.clone(), candidate.location.clone()))
-            });
-            for (index, candidate) in matching.into_iter().enumerate() {
-                rows.push(make_row(dependency, candidate, "incompatible", index == 0));
-            }
-        } else {
+        if matching.is_empty() {
             rows.push(Row {
                 dependency: dependency.name.clone(),
                 status: "missing",
@@ -155,6 +129,27 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
                 version: "-".to_owned(),
                 requirement: make_requirement(dependency, None),
             });
+            continue;
+        }
+        let mut satisfying = Vec::new();
+        for candidate in &matching {
+            if satisfies(dependency, candidate) {
+                satisfying.push(*candidate);
+            }
+        }
+        let compatible = !satisfying.is_empty();
+        let mut candidates = if compatible { satisfying } else { matching };
+        let mut displayed = BTreeSet::new();
+        candidates.retain(|candidate| displayed.insert((&candidate.version, &candidate.location)));
+        for (index, candidate) in candidates.into_iter().enumerate() {
+            let status = if !compatible {
+                "incompatible"
+            } else if index == 0 {
+                "selected"
+            } else {
+                "available"
+            };
+            rows.push(make_row(dependency, candidate, status, index == 0));
         }
     }
     rows
@@ -276,13 +271,13 @@ fn classify_requirement(
         return RequirementStatus::Satisfied;
     }
     for provided in candidate.provides.keys() {
-        let Some((name, _, provided_feature)) = parse_rust_package_name(provided) else {
+        let Some((name, provided_feature)) = parse_rust_package_name(provided) else {
             continue;
         };
         let related = match kind {
             RequirementKind::Any => true,
             RequirementKind::Base => provided_feature.is_none(),
-            RequirementKind::Feature(feature) => provided_feature.as_deref() == Some(feature),
+            RequirementKind::Feature(feature) => provided_feature == Some(feature),
         };
         if name == crate_name && related {
             return RequirementStatus::Incompatible;
@@ -415,7 +410,6 @@ mod tests {
             provided.insert((*name).to_owned(), Some(version.clone()));
         }
         PackageCandidate {
-            source: "rust-serde".to_owned(),
             version,
             provides: provided,
             location: location.to_owned(),
@@ -460,13 +454,18 @@ mod tests {
                 )]),
             },
         ];
-        let mut duplicate = candidate(
+        let duplicate = candidate(
             "1.0.219-1",
             "ppa:example/rust-staging (noble)",
             &["librust-serde-1+derive-dev"],
         );
-        duplicate.source = "rust-serde-1".to_owned();
         let candidates = [
+            // A duplicate display identity must not hide a satisfying candidate.
+            candidate(
+                "1.0.219-1",
+                "ppa:example/rust-staging (noble)",
+                &["librust-serde-1-dev"],
+            ),
             candidate(
                 "1.0.219-1",
                 "ppa:example/rust-staging (noble)",
@@ -757,7 +756,6 @@ mod tests {
         ));
 
         let unversioned = PackageCandidate {
-            source: "rust-serde".to_owned(),
             version: "1.0.219-1".parse().unwrap(),
             provides: BTreeMap::from([("librust-serde-1-dev".to_owned(), None)]),
             location: "noble/universe".to_owned(),

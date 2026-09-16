@@ -9,6 +9,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+use crate::command::run_command;
+
 use self::{
     changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
     generate::{
@@ -91,15 +93,6 @@ pub fn run(
     keep: &[PathBuf],
     replace: &[PathBuf],
 ) -> Result<bool> {
-    if source.local_crate.is_some() && (source.crate_name.is_some() || source.version.is_some()) {
-        bail!("--local-crate may not be combined with CRATE or VERSION");
-    }
-    if source.local_crate.is_some() && package_dir.is_none() {
-        bail!("--local-crate requires --package-dir");
-    }
-    if source.version.is_some() && source.crate_name.is_none() {
-        bail!("VERSION requires CRATE");
-    }
     if let Some(version) = source.version {
         parse_exact_version(version)?;
     }
@@ -155,11 +148,7 @@ fn select_package_mode(
     has_crate: bool,
 ) -> Result<PackageMode> {
     if let Some(package_dir) = package_dir {
-        let requested_dir = if package_dir.is_absolute() {
-            package_dir.to_path_buf()
-        } else {
-            start.join(package_dir)
-        };
+        let requested_dir = start.join(package_dir);
         match fs::symlink_metadata(&requested_dir) {
             Ok(metadata) if metadata.is_dir() => {
                 let root = requested_dir
@@ -232,12 +221,6 @@ pub(crate) fn stage_for_dependency_inspection(
     version: Option<&str>,
     package_dir: Option<&Path>,
 ) -> Result<DependencyInspection> {
-    if version.is_some() && crate_name.is_none() {
-        bail!("VERSION requires CRATE");
-    }
-    if crate_name.is_some() && package_dir.is_some() {
-        bail!("CRATE and --package-dir may not be combined");
-    }
     if let Some(version) = version {
         parse_exact_version(version)?;
     }
@@ -288,19 +271,13 @@ pub(crate) fn stage_for_dependency_inspection(
 fn finish_dependency_inspection(stage: tempfile::TempDir) -> Result<DependencyInspection> {
     let source = stage.path().join("output");
     if source.join("debian/patches/series").is_file() {
-        let output = Command::new("quilt")
-            .args(["push", "-a", "--quiltrc=-"])
-            .env("QUILT_PATCHES", "debian/patches")
-            .current_dir(&source)
-            .output()
-            .context("apply staged quilt patches")?;
-        if !output.status.success() {
-            bail!(
-                "could not apply staged quilt patches:\n{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        run_command(
+            Command::new("quilt")
+                .args(["push", "-a", "--quiltrc=-"])
+                .env("QUILT_PATCHES", "debian/patches")
+                .current_dir(&source),
+            "apply staged quilt patches",
+        )?;
     }
     let cargo_dependencies = read_root_package(&source)?.dependencies;
     Ok(DependencyInspection {
@@ -365,9 +342,9 @@ fn reconcile_existing(
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
 
-    let base_tree = scan_tree(base.path(), true)?;
-    let old_tree = scan_tree(root, true)?;
-    let new_tree = scan_tree(&generated.source, true)?;
+    let base_tree = scan_tree(base.path())?;
+    let old_tree = scan_tree(root)?;
+    let new_tree = scan_tree(&generated.source)?;
     if !trees_match(&base_tree, &new_tree) && patches_applied {
         bail!("pop the complete quilt stack before reconciling changed upstream source");
     }
@@ -609,6 +586,11 @@ fn selected_debian_identity(
     ))
 }
 
+/// Normalizes Cargo crate spelling to Debian's dashed lowercase form.
+pub(crate) fn normalize_crate_name(name: &str) -> String {
+    name.replace('_', "-").to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,15 +645,6 @@ mod tests {
         assert!(validate_separate_trees(&crate_root, &crate_root).is_err());
         assert!(validate_separate_trees(&crate_root, &crate_root.join("package")).is_err());
         assert!(validate_separate_trees(&package_root.join("crate"), &package_root).is_err());
-    }
-
-    #[test]
-    /// Rejects mixing explicit registry and source-package dependency targets.
-    fn rejects_ambiguous_dependency_target() {
-        assert!(
-            stage_for_dependency_inspection(Some("serde"), None, Some(Path::new("rust-serde")))
-                .is_err()
-        );
     }
 
     #[test]

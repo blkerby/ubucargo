@@ -34,8 +34,6 @@ pub struct PathPlan {
     pub primary_after: Option<FileState>,
     /// Hint state to leave after applying the plan.
     pub hint_after: Option<FileState>,
-    /// Whether this path uses a companion hint; false only for the patch series.
-    pub tracks_hint: bool,
     /// Whether the working primary differs from its previous generated state.
     pub overridden: bool,
     /// Whether a missing hint requires an explicit keep-or-replace decision.
@@ -50,7 +48,7 @@ impl PathPlan {
 
     /// Reports whether applying this path changes its generated baseline.
     fn has_hint_changed(&self) -> bool {
-        self.tracks_hint && self.base != self.hint_after
+        self.base != self.hint_after
     }
 }
 
@@ -97,14 +95,6 @@ impl Plan {
     /// Prints the deterministic, path-oriented summary of the plan.
     pub fn print_report(&self) {
         for path in &self.paths {
-            if path.ambiguous {
-                println!(
-                    "ambiguous {} (use --keep or --replace)",
-                    path.path.display()
-                );
-                continue;
-            }
-
             if path.has_primary_changed() {
                 println!(
                     "{} {}",
@@ -181,7 +171,6 @@ pub fn build_plan(
                 base: None,
                 primary_after: generated.get(path).cloned(),
                 hint_after: None,
-                tracks_hint: false,
                 overridden: false,
                 ambiguous: false,
             });
@@ -192,7 +181,6 @@ pub fn build_plan(
                     base: None,
                     primary_after: None,
                     hint_after: None,
-                    tracks_hint: false,
                     overridden: false,
                     ambiguous: false,
                 });
@@ -238,30 +226,14 @@ pub fn build_plan(
             // The primary no longer matches the last generated state, so it is
             // a maintainer override: preserve it while tracking the new state.
             Some(_) => (old.clone(), new.clone(), true, false),
-            None => match (&old, &new) {
-                // Neither the working tree nor the generator owns this path.
-                (None, None) => (None, None, false, false),
-                // The generator introduced this path, so install it with a hint.
-                (None, Some(_)) => (new.clone(), new.clone(), false, false),
-                // Without a hint, an unchanged primary is already correct.
-                (Some(old), Some(new)) if old == new => {
-                    (old.clone().into(), new.clone().into(), false, false)
-                }
-                // Without a hint, a differing primary could be either an
-                // override or stale generated output; ask the maintainer.
-                (Some(_), Some(_)) => match decision_replace {
-                    // Keep the current primary as an override while recording
-                    // the new generated state in its hint.
-                    Some(false) => (old.clone(), new.clone(), true, false),
-                    // Replace the primary with the new generated state.
-                    Some(true) => (new.clone(), new.clone(), false, false),
-                    // Leave the ambiguity unresolved for the caller to report.
-                    None => (old.clone(), None, false, true),
-                },
-                // The primary has no hint, so it predates hint tracking;
-                // retain it because there is no generated replacement.
-                (Some(_), None) => (old.clone(), None, false, false),
+            None if ambiguous => match decision_replace {
+                Some(false) => (old.clone(), new.clone(), true, false),
+                Some(true) => (new.clone(), new.clone(), false, false),
+                None => (old.clone(), None, false, true),
             },
+            // Unambiguous paths without a baseline retain an existing primary
+            // or install a new one, and record the current generator output.
+            None => (old.clone().or(new.clone()), new.clone(), false, false),
         };
 
         paths.push(PathPlan {
@@ -270,7 +242,6 @@ pub fn build_plan(
             base,
             primary_after,
             hint_after,
-            tracks_hint: true,
             overridden,
             ambiguous: unresolved,
         });
@@ -512,6 +483,59 @@ mod tests {
         assert_eq!(plan.paths[0].primary_after, None);
         assert_eq!(plan.paths[0].hint_after, None);
         assert!(plan.paths[0].overridden);
+    }
+
+    #[test]
+    /// Preserves every unambiguous missing-baseline case and removes obsolete checksum hints.
+    fn handles_missing_baselines_and_generator_owned_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let debian = directory.path().join("debian");
+        fs::create_dir(&debian).unwrap();
+        let managed = BTreeSet::from([PathBuf::from("debian/control")]);
+        for (old, new) in [
+            (None, None),
+            (None, Some("new")),
+            (Some("same"), Some("same")),
+            (Some("local"), None),
+        ] {
+            install_state(&debian.join("control"), old.map(make_state).as_ref()).unwrap();
+            let mut generated = BTreeMap::new();
+            if let Some(new) = new {
+                generated.insert(PathBuf::from("debian/control"), make_state(new));
+            }
+            let plan = build_plan(
+                &debian,
+                &managed,
+                &generated,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+            )
+            .unwrap();
+            assert_eq!(plan.paths[0].primary_after, old.or(new).map(make_state));
+            assert_eq!(plan.paths[0].hint_after, new.map(make_state));
+            assert!(!plan.paths[0].ambiguous);
+            assert!(!plan.paths[0].overridden);
+        }
+
+        let checksum = PathBuf::from("debian/cargo-checksum.json");
+        let hint = directory.path().join(make_hint_path(&checksum));
+        install_state(&hint, Some(&make_state("stale"))).unwrap();
+        let plan = build_plan(
+            &debian,
+            &BTreeSet::from([checksum.clone()]),
+            &BTreeMap::from([(checksum.clone(), make_state("new"))]),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        plan.apply().unwrap();
+        assert!(!hint.exists());
+        assert_eq!(
+            read_state(&directory.path().join(checksum)).unwrap(),
+            Some(make_state("new"))
+        );
     }
 
     #[test]

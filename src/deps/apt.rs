@@ -9,6 +9,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+
+use crate::command::run_command;
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::lossy::apt::Package;
 use debversion::Version;
@@ -20,8 +22,6 @@ const UBUNTU_KEYRING: &str = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
 /// One binary package version from one configured repository location.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageCandidate {
-    /// Debian source package that produced the candidate binaries.
-    pub source: String,
     /// Debian binary package version.
     pub version: Version,
     /// Virtual package names and versions supplied by this binary package.
@@ -117,35 +117,18 @@ pub fn load_candidates(
     eprintln!("updating APT metadata for {series}/{architecture}");
     let mut update = Command::new("apt-get");
     view.configure(&mut update);
-    let output = update
-        .arg("update")
-        .output()
-        .context("run apt-get update")?;
-    if !output.status.success() {
-        bail!(
-            "apt-get update failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(update.arg("update"), "apt-get update")?;
 
     let mut indexes = Command::new("apt-get");
     view.configure(&mut indexes);
-    let output = indexes
-        .args([
+    let output = run_command(
+        indexes.args([
             "indextargets",
             "--format",
             "$(FILENAME)|$(SITE)|$(RELEASE)|$(COMPONENT)|$(ARCHITECTURE)|$(IDENTIFIER)",
-        ])
-        .output()
-        .context("run apt-get indextargets")?;
-    if !output.status.success() {
-        bail!(
-            "apt-get indextargets failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+        ]),
+        "apt-get indextargets",
+    )?;
 
     let mut candidates = Vec::new();
     let mut candidate_indexes = BTreeMap::new();
@@ -229,13 +212,10 @@ fn cache_root() -> Result<PathBuf> {
 
 /// Reads the host's native Debian architecture.
 pub fn read_architecture() -> Result<String> {
-    let output = Command::new("dpkg")
-        .arg("--print-architecture")
-        .output()
-        .context("run dpkg --print-architecture")?;
-    if !output.status.success() {
-        bail!("dpkg --print-architecture failed");
-    }
+    let output = run_command(
+        Command::new("dpkg").arg("--print-architecture"),
+        "dpkg --print-architecture",
+    )?;
     let architecture = String::from_utf8(output.stdout)?.trim().to_owned();
     if architecture.is_empty() {
         bail!("dpkg --print-architecture returned no architecture");
@@ -274,16 +254,10 @@ fn parse_ppa(ppa: &str) -> Result<(&str, &str)> {
 /// Retrieves, validates, and caches the signing key for one public PPA.
 fn get_ppa_key(owner: &str, name: &str, key_directory: &Path) -> Result<PathBuf> {
     let api = format!("https://api.launchpad.net/1.0/~{owner}/+archive/ubuntu/{name}");
-    let output = Command::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", &api])
-        .output()
-        .with_context(|| format!("query Launchpad for ppa:{owner}/{name}"))?;
-    if !output.status.success() {
-        bail!(
-            "could not query ppa:{owner}/{name}:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let output = run_command(
+        Command::new("curl").args(["--fail", "--silent", "--show-error", "--location", &api]),
+        &format!("query Launchpad for ppa:{owner}/{name}"),
+    )?;
     let archive: LaunchpadArchive = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("parse Launchpad metadata for ppa:{owner}/{name}"))?;
     if archive.private {
@@ -303,16 +277,10 @@ fn get_ppa_key(owner: &str, name: &str, key_directory: &Path) -> Result<PathBuf>
     }
 
     let url = format!("https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x{fingerprint}");
-    let output = Command::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", &url])
-        .output()
-        .with_context(|| format!("download PPA signing key {fingerprint}"))?;
-    if !output.status.success() {
-        bail!(
-            "could not download PPA signing key {fingerprint}:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let output = run_command(
+        Command::new("curl").args(["--fail", "--silent", "--show-error", "--location", &url]),
+        &format!("download PPA signing key {fingerprint}"),
+    )?;
     verify_key(&output.stdout, &fingerprint)?;
     let mut temporary = NamedTempFile::new_in(key_directory)?;
     temporary.write_all(&output.stdout)?;
@@ -396,13 +364,12 @@ fn add_package(
         ),
         None => (package.name.clone(), package.version.clone()),
     };
-    let key = (source.clone(), source_version.clone(), location.to_owned());
+    let key = (source, source_version.clone(), location.to_owned());
     let index = if let Some(index) = candidate_indexes.get(&key) {
         *index
     } else {
         let index = candidates.len();
         candidates.push(PackageCandidate {
-            source,
             version: source_version,
             provides: BTreeMap::new(),
             location: location.to_owned(),
@@ -499,7 +466,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].source, "rust-serde");
         assert_eq!(
             candidates[0]
                 .provided_version("librust-serde-1+derive-dev")

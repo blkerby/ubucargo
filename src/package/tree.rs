@@ -4,6 +4,8 @@ use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 
+use crate::command::run_command;
+
 /// Rejects a path that already exists.
 pub fn require_absent(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
@@ -15,42 +17,29 @@ pub fn require_absent(path: &Path) -> Result<()> {
 
 /// Copies a directory tree, preserving file attributes and metadata.
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
-    let output = Command::new("cp")
-        .arg("-a")
-        .arg("--reflink=auto")
-        .arg(source)
-        .arg(destination)
-        .output()
-        .context("run cp -a --reflink=auto")?;
-    if !output.status.success() {
-        bail!(
-            "cp -a --reflink=auto failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(
+        Command::new("cp")
+            .arg("-a")
+            .arg("--reflink=auto")
+            .arg(source)
+            .arg(destination),
+        "cp -a --reflink=auto",
+    )?;
     Ok(())
 }
 
 /// Extracts a tarball, removing its top-level directory component.
 pub fn extract_tree(archive: &Path, destination: &Path) -> Result<()> {
-    let output = Command::new("tar")
-        .arg("--extract")
-        .arg("--file")
-        .arg(archive)
-        .arg("--directory")
-        .arg(destination)
-        .arg("--strip-components=1")
-        .output()
-        .context("run tar")?;
-    if !output.status.success() {
-        bail!(
-            "could not extract {}:\n{}{}",
-            archive.display(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(
+        Command::new("tar")
+            .arg("--extract")
+            .arg("--file")
+            .arg(archive)
+            .arg("--directory")
+            .arg(destination)
+            .arg("--strip-components=1"),
+        &format!("extract {}", archive.display()),
+    )?;
     Ok(())
 }
 

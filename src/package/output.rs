@@ -9,6 +9,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+use crate::command::run_command;
+
 use super::{
     generate::PackageConfig,
     managed::{FileState, PathPlan, is_generator_owned, make_hint_path, read_state},
@@ -36,19 +38,13 @@ pub fn check_patch_state(source: &Path) -> Result<bool> {
     if !contents.lines().any(|line| !line.trim().is_empty()) {
         return Ok(false);
     }
-    let output = Command::new("quilt")
-        .args(["diff", "--quiltrc=-", "-z", "--no-timestamps", "--no-index"])
-        .env("QUILT_PATCHES", "debian/patches")
-        .current_dir(source)
-        .output()
-        .context("run quilt diff -z")?;
-    if !output.status.success() {
-        bail!(
-            "could not inspect the current quilt patch:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let output = run_command(
+        Command::new("quilt")
+            .args(["diff", "--quiltrc=-", "-z", "--no-timestamps", "--no-index"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(source),
+        "quilt diff -z",
+    )?;
     if !output.stdout.is_empty() {
         bail!("the current quilt patch has unrefreshed changes; run `quilt refresh`");
     }
@@ -142,7 +138,6 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
         base: None,
         primary_after: read_state(&stage.join("output/debian/patches/series"))?,
         hint_after: None,
-        tracks_hint: false,
         overridden: false,
         ambiguous: false,
     })

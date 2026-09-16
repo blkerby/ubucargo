@@ -1,5 +1,6 @@
 //! Command-line interface for creating and updating Ubuntu Rust source packages.
 
+mod command;
 mod deps;
 mod package;
 
@@ -22,11 +23,11 @@ enum Command {
     /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
     Deps {
         /// Crate name from crates.io; conflicts with --package-dir.
-        #[arg(value_name = "CRATE")]
+        #[arg(value_name = "CRATE", conflicts_with = "package_dir")]
         crate_name: Option<String>,
 
         /// Exact crate version; defaults to the latest release when a crate is named.
-        #[arg(value_name = "VERSION")]
+        #[arg(value_name = "VERSION", requires = "crate_name")]
         version: Option<String>,
 
         /// Existing source package directory; defaults to the nearest parent package.
@@ -57,7 +58,7 @@ enum Command {
         crate_name: Option<String>,
 
         /// Exact crate version; defaults to the latest release when a crate is named.
-        #[arg(value_name = "VERSION")]
+        #[arg(value_name = "VERSION", requires = "crate_name")]
         version: Option<String>,
 
         /// Debian source-package directory; defaults to the nearest parent package.
@@ -65,7 +66,7 @@ enum Command {
         package_dir: Option<PathBuf>,
 
         /// Local crate used to create a new source package.
-        #[arg(long, value_name = "DIR")]
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version"], requires = "package_dir")]
         local_crate: Option<PathBuf>,
 
         /// Report changes without writing them.
@@ -259,6 +260,49 @@ mod tests {
         assert!(proposed);
         assert_eq!(ppa, ["ppa:example/rust-staging"]);
         assert_eq!(architecture.as_deref(), Some("arm64"));
+    }
+
+    #[test]
+    /// Rejects argument combinations before attempting filesystem or network work.
+    fn rejects_conflicting_targets() {
+        for arguments in [
+            vec!["package", "--local-crate", "../example"],
+            vec![
+                "package",
+                "serde",
+                "--local-crate",
+                "../example",
+                "--package-dir",
+                "rust-example",
+            ],
+            vec![
+                "package",
+                "serde",
+                "1.0.0",
+                "--local-crate",
+                "../example",
+                "--package-dir",
+                "rust-example",
+            ],
+            vec![
+                "deps",
+                "serde",
+                "--package-dir",
+                "rust-serde",
+                "--series",
+                "noble",
+            ],
+        ] {
+            let error = Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments))
+                .err()
+                .unwrap();
+            assert!(matches!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict
+                    | clap::error::ErrorKind::MissingRequiredArgument
+            ));
+            assert_eq!(error.exit_code(), 2);
+        }
     }
 
     #[test]

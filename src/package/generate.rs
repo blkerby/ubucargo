@@ -8,6 +8,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+
+use crate::command::run_command;
 use debian_control::lossless::control::Control;
 use semver::{Version, VersionReq};
 use serde::Deserialize;
@@ -15,6 +17,7 @@ use tempfile::TempDir;
 use toml_edit::{DocumentMut, value};
 
 use super::changelog::{TopChangelog, prepare_changelog};
+use super::normalize_crate_name;
 use super::tree::copy_tree;
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
@@ -102,13 +105,10 @@ pub struct GeneratedPackage {
 
 /// Returns the installed debcargo version when it is compatible.
 pub fn check_debcargo_version() -> Result<Version> {
-    let output = Command::new("debcargo")
-        .arg("--version")
-        .output()
-        .context("run debcargo --version")?;
-    if !output.status.success() {
-        bail!("debcargo --version failed");
-    }
+    let output = run_command(
+        Command::new("debcargo").arg("--version"),
+        "debcargo --version",
+    )?;
     parse_debcargo_version(String::from_utf8_lossy(&output.stdout).trim())
 }
 
@@ -129,24 +129,19 @@ fn parse_debcargo_version(output: &str) -> Result<Version> {
 /// Uses Cargo to identify the package defined by the root manifest.
 pub fn read_root_package(root: &Path) -> Result<MetadataPackage> {
     let manifest = root.join("Cargo.toml").canonicalize()?;
-    let output = Command::new("cargo")
-        .args([
-            "metadata",
-            "--offline",
-            "--no-deps",
-            "--format-version",
-            "1",
-            "--manifest-path",
-        ])
-        .arg(&manifest)
-        .output()
-        .context("run cargo metadata")?;
-    if !output.status.success() {
-        bail!(
-            "cargo metadata failed:\n{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    let output = run_command(
+        Command::new("cargo")
+            .args([
+                "metadata",
+                "--offline",
+                "--no-deps",
+                "--format-version",
+                "1",
+                "--manifest-path",
+            ])
+            .arg(&manifest),
+        "cargo metadata",
+    )?;
     let metadata: Metadata = serde_json::from_slice(&output.stdout)?;
     metadata
         .packages
@@ -310,19 +305,13 @@ pub fn generate_debcargo_package(
 
 /// Applies Ubuntu maintainer fields to staged debcargo output.
 pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
-    let output = Command::new("update-maintainer")
-        .arg("--quiet")
-        .arg("--debian-directory")
-        .arg(stage.join("output/debian"))
-        .output()
-        .context("run update-maintainer")?;
-    if !output.status.success() {
-        bail!(
-            "update-maintainer failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(
+        Command::new("update-maintainer")
+            .arg("--quiet")
+            .arg("--debian-directory")
+            .arg(stage.join("output/debian")),
+        "update-maintainer",
+    )?;
     Ok(())
 }
 
@@ -428,23 +417,17 @@ fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelec
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
     fs::create_dir(stage.path().join("overlay"))?;
     write_staged_config(config, stage.path(), false)?;
-    let output = Command::new("debcargo")
-        .arg("extract")
-        .arg("--config")
-        .arg(stage.path().join("debcargo.toml"))
-        .arg("--directory")
-        .arg(stage.path().join("output"))
-        .arg(crate_name)
-        .current_dir(stage.path())
-        .output()
-        .context("run debcargo extract")?;
-    if !output.status.success() {
-        bail!(
-            "debcargo extract failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(
+        Command::new("debcargo")
+            .arg("extract")
+            .arg("--config")
+            .arg(stage.path().join("debcargo.toml"))
+            .arg("--directory")
+            .arg(stage.path().join("output"))
+            .arg(crate_name)
+            .current_dir(stage.path()),
+        "debcargo extract",
+    )?;
     let package = read_root_package(&stage.path().join("output"))?;
     if normalize_crate_name(crate_name) != normalize_crate_name(&package.name) {
         bail!(
@@ -578,20 +561,8 @@ fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
         // Set CARGO_TARGET_DIR to a unique staging directory, to work around
         // github.com/rust-lang/cargo/issues/16683:
         .env("CARGO_TARGET_DIR", stage.join("cargo-target"));
-    let output = command.output().context("run debcargo package")?;
-    if !output.status.success() {
-        bail!(
-            "debcargo package failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(&mut command, "debcargo package")?;
     Ok(())
-}
-
-/// Normalizes Cargo crate spelling to debcargo's dashed lowercase form.
-fn normalize_crate_name(name: &str) -> String {
-    name.replace('_', "-").to_lowercase()
 }
 
 #[cfg(test)]

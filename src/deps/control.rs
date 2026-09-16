@@ -9,7 +9,7 @@ use debian_control::{
 };
 use debversion::Version;
 
-use crate::package::MetadataDependency;
+use crate::package::{MetadataDependency, normalize_crate_name};
 
 /// One Debian package alternative in a dependency expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,12 +103,12 @@ fn collect_dependencies(
             if !relation_applies(relation, architecture)? {
                 continue;
             }
-            let Some((name, _, feature)) = parse_rust_package_name(&relation.name) else {
+            let Some((name, feature)) = parse_rust_package_name(&relation.name) else {
                 continue;
             };
             if identity
                 .as_ref()
-                .is_some_and(|existing| existing != &(name.clone(), feature.clone()))
+                .is_some_and(|existing| existing != &(name, feature))
             {
                 bail!("Rust dependency alternatives refer to different features: {entry:?}");
             }
@@ -120,9 +120,9 @@ fn collect_dependencies(
         }
         if let Some((name, feature)) = identity {
             grouped
-                .entry(name)
+                .entry(name.to_owned())
                 .or_default()
-                .entry(feature)
+                .entry(feature.map(str::to_owned))
                 .or_default()
                 .push(alternatives);
         }
@@ -183,38 +183,22 @@ fn matches_architecture(architecture: &str, restriction: &str) -> Result<bool> {
     }
 }
 
-/// Splits a Debian Rust development package into crate, semver line, and feature.
-pub(crate) fn parse_rust_package_name(
-    package: &str,
-) -> Option<(String, Option<String>, Option<String>)> {
+/// Extracts a crate and feature from a Debian Rust package, stripping its semver suffix.
+pub(crate) fn parse_rust_package_name(package: &str) -> Option<(&str, Option<&str>)> {
     let body = package.strip_prefix("librust-")?.strip_suffix("-dev")?;
     let (base, feature) = match body.split_once('+') {
-        Some((base, feature)) => (base, Some(feature.to_owned())),
+        Some((base, feature)) => (base, Some(feature)),
         None => (body, None),
     };
     let mut name = base;
-    let mut version = None;
-    for (index, character) in base.char_indices().rev() {
-        if character != '-' {
-            continue;
-        }
-        let suffix = &base[index + 1..];
-        if !suffix.is_empty()
-            && suffix
-                .split('.')
-                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-        {
-            name = &base[..index];
-            version = Some(suffix.to_owned());
-            break;
-        }
+    if let Some((prefix, suffix)) = base.rsplit_once('-')
+        && suffix
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        name = prefix;
     }
-    Some((name.to_owned(), version, feature))
-}
-
-/// Normalizes Cargo crate spelling to Debian's dashed lowercase form.
-fn normalize_crate_name(name: &str) -> String {
-    name.replace('_', "-").to_lowercase()
+    Some((name, feature))
 }
 
 #[cfg(test)]
@@ -278,15 +262,22 @@ Description: example
     fn parses_rust_package_names() {
         assert_eq!(
             parse_rust_package_name("librust-sha2-0.10+default-dev"),
-            Some((
-                "sha2".to_owned(),
-                Some("0.10".to_owned()),
-                Some("default".to_owned())
-            ))
+            Some(("sha2", Some("default")))
         );
         assert_eq!(
             parse_rust_package_name("librust-serde-dev"),
-            Some(("serde".to_owned(), None, None))
+            Some(("serde", None))
         );
+        for (package, name) in [
+            ("librust-sha2-dev", "sha2"),
+            ("librust-some-crate-1.2-dev", "some-crate"),
+            ("librust-some-1-crate-dev", "some-1-crate"),
+            ("librust-some-1..2-dev", "some-1..2"),
+            ("librust-some--dev", "some-"),
+        ] {
+            assert_eq!(parse_rust_package_name(package), Some((name, None)));
+        }
+        assert_eq!(parse_rust_package_name("serde-dev"), None);
+        assert_eq!(parse_rust_package_name("librust-serde"), None);
     }
 }

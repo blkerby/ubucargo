@@ -6,6 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+
+use crate::command::run_command;
 use tempfile::TempDir;
 
 use super::changelog::TopChangelog;
@@ -31,20 +33,14 @@ pub fn acquire_old_orig(root: &Path, top: &TopChangelog) -> Result<OrigBaseline>
     }
 
     let download = tempfile::tempdir().context("create orig download directory")?;
-    let output = Command::new("pull-lp-source")
-        .arg("--download-only")
-        .arg(&top.source)
-        .arg(&top.version)
-        .current_dir(download.path())
-        .output()
-        .context("run pull-lp-source")?;
-    if !output.status.success() {
-        bail!(
-            "pull-lp-source failed:\n{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    run_command(
+        Command::new("pull-lp-source")
+            .arg("--download-only")
+            .arg(&top.source)
+            .arg(&top.version)
+            .current_dir(download.path()),
+        "pull-lp-source",
+    )?;
 
     // pull-lp-source already verifies downloaded source files against their `.dsc`.
     // So here we only check that the downloaded tarball exists.
