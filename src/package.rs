@@ -37,12 +37,12 @@ mod output;
 mod source;
 mod tree;
 
-pub(crate) use generate::MetadataDependency;
+pub use generate::MetadataDependency;
 
 /// Existing-package reconciliation or clean-package creation mode.
 #[derive(Debug, Eq, PartialEq)]
 enum PackageMode {
-    /// An existing Ubucargo source package.
+    /// An existing Debian source package.
     Existing(PathBuf),
     /// A clean destination that does not yet exist.
     New {
@@ -54,7 +54,7 @@ enum PackageMode {
 }
 
 /// Temporary package and patched Cargo dependencies used by `deps`.
-pub(crate) struct DependencyInspection {
+pub struct DependencyInspection {
     /// Complete temporary debcargo staging directory.
     pub stage: tempfile::TempDir,
     /// Direct dependencies from the patch-applied Cargo manifest.
@@ -216,7 +216,7 @@ fn has_debcargo_config(path: &Path) -> bool {
 }
 
 /// Stages one crate package for read-only dependency inspection.
-pub(crate) fn stage_for_dependency_inspection(
+pub fn stage_for_dependency_inspection(
     crate_name: Option<&str>,
     version: Option<&str>,
     package_dir: Option<&Path>,
@@ -587,7 +587,7 @@ fn selected_debian_identity(
 }
 
 /// Normalizes Cargo crate spelling to Debian's dashed lowercase form.
-pub(crate) fn normalize_crate_name(name: &str) -> String {
+pub fn normalize_crate_name(name: &str) -> String {
     name.replace('_', "-").to_lowercase()
 }
 

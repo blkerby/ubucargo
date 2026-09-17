@@ -184,7 +184,7 @@ fn matches_architecture(architecture: &str, restriction: &str) -> Result<bool> {
 }
 
 /// Extracts a crate and feature from a Debian Rust package, stripping its semver suffix.
-pub(crate) fn parse_rust_package_name(package: &str) -> Option<(&str, Option<&str>)> {
+pub fn parse_rust_package_name(package: &str) -> Option<(&str, Option<&str>)> {
     let body = package.strip_prefix("librust-")?.strip_suffix("-dev")?;
     let (base, feature) = match body.split_once('+') {
         Some((base, feature)) => (base, Some(feature)),

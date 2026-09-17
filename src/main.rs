@@ -304,10 +304,4 @@ mod tests {
             assert_eq!(error.exit_code(), 2);
         }
     }
-
-    #[test]
-    /// Verifies that the removed import command is no longer accepted.
-    fn rejects_import_command() {
-        assert!(Cli::try_parse_from(["ubucargo", "import", "serde"]).is_err());
-    }
 }

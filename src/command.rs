@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 use anyhow::{Context, Result, bail};
 
 /// Captures command output, retaining both output streams in failure diagnostics.
-pub(crate) fn run_command(command: &mut Command, operation: &str) -> Result<Output> {
+pub fn run_command(command: &mut Command, operation: &str) -> Result<Output> {
     let output = command
         .output()
         .with_context(|| format!("run {operation}"))?;

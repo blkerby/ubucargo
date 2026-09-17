@@ -8,3 +8,4 @@
 - Function names should start with a verb.
 - Include a doc comment for each function and type definition.
 - Where useful, include additional comments, e.g. to clarify the meaning of struct fields and enum variants, and to explain non-obvious logic in functions.
+- Use simple `pub` rather than `pub(crate)` or `pub(super)`.
