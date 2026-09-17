@@ -110,8 +110,8 @@ there and generates the control file used for the report. Refreshed patches may
 remain applied in the working tree because `deps` does not modify it.
 
 Unlike `package`, `deps` does not acquire an old orig tarball, reconcile source
-trees, require the working quilt stack to be popped, or plan or install source,
-changelog, generated-file, or hint changes. In both modes, it orders candidates
+trees, require the working quilt stack to be popped, or plan or apply source,
+changelog, generated-file, manifest, or hint changes. In both modes, it orders candidates
 deterministically from the local APT indexes.
 
 Staged dependency packages must be published in a PPA supplied with `--ppa`. `deps` does not scan source trees or artifact directories for candidates; PPA publication and build infrastructure remain outside ubucargo.

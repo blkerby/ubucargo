@@ -10,13 +10,13 @@ Ubucargo is designed to operate directly on a Debian source package, with its `d
 
 Key benefits of Ubucargo include the following:
 
-- Maintainers can override Debian packaging in place (such as `debian/control`) without risk of them being overwritten by `ubucargo`, and without needing to manage a separate overlay directory. Regardless of overrides, the generated output of `ubucargo` is available as corresponding `.debcargo.hint` files.
+- Maintainers can override Debian packaging in place (such as `debian/control`) without risk of them being overwritten by `ubucargo`, and without needing to manage a separate overlay directory. When `ubucargo package` runs, it writes the generated alternative to a corresponding `.debcargo.hint` file wherever it differs from the primary file. 
 - Regenerating source packaging can be done without interfering with local files such as a `.git` directory. This way `ubucargo` can be conveniently used in conjunction with tools such as `git-ubuntu` and `gbp`.
 - Ubucargo invokes `debcargo` internally, to ensure good alignment with Debian Rust packaging policy.
 
 ## Drawbacks
 
-The main complication of this approach is that `ubucargo` must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides. The basic rule is that a packaging file matching its `.debcargo.hint` byte-for-byte is generator-owned, while one deviating from its `.debcargo.hint` is a maintainer override. If a `.debcargo.hint` file is missing and the new generated output would deviate from the existing file, it is treated as ambiguous and `ubucargo` will prompt the maintainer to disambiguate it. To minimize such ambiguity, `ubucargo` writes `.debcargo.hint` files unconditionally; this deviates from the `debcargo` behavior which only writes hint files if a maintainer override exists for it.
+The main complication of this approach is that when running `ubucargo package` on an existing package, it must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides that should be preserved. The way that `ubucargo` handles this is to keep track of content hashes for latest generated content in a manifest at `debian/ubucargo-state.json`. Files matching that record are considered generator-owned and can be updated automatically; changed or deleted files are preserved as maintainer overrides. Existing Debian `.debcargo.hint` files establish the initial baseline when no manifest entry exists (e.g. when running `ubucargo package` for the first time on a package synced from Debian). When the manifest record and hint are both missing or conflicting, a one-time explicit `--keep` or `--replace` decision is required from the maintainer.
 
 Similarly, when an operation affects the upstream source tree, `ubucargo` must infer which files were part of the old upstream and should be replaced, and which files are local and should be retained. This applies, for example, when upgrading a package to a new upstream version, or when repackaging after changing the `excludes` filter in `debcargo.toml`. To resolve this in a general way, `ubucargo` compares the current source tree with the orig tarball referenced in the top-most `changelog` entry: files in the source tree that are not present in the orig tarball are treated as local additions to be retained, while missing or modified files are treated as inconsistencies resulting in an error.
 
@@ -32,14 +32,13 @@ Each source package contains its upstream source, generator input `debcargo.toml
     src/
     debian/
       debcargo.toml               # generator input
-      control                     # generated or overridden
-      control.debcargo.hint       # latest generated state
-      rules                       # generated or overridden
-      rules.debcargo.hint         # latest generated state
+      ubucargo-state.json         # latest generated fingerprints
+      control                     # generated
+      rules                       # generated
       patches/                    # maintainer-owned except generated auto/
-      changelog                   # maintainer-owned
-      copyright                   # generated or overridden
-      copyright.debcargo.hint     # latest generated state
+      changelog                   # maintainer-owned, but generator can initialize/update it.
+      copyright                   # maintainer override in this example
+      copyright.debcargo.hint     # latest generated alternative
 ```
 
 ## Commands
@@ -61,7 +60,7 @@ ubucargo package [CRATE [VERSION]] [--local-crate DIR] [--package-dir DIR] \
 - Run `ubucargo package` inside an existing package to regenerate its current release.
 - Run `ubucargo package CRATE VERSION` against an existing package to select another release.
 - Run `ubucargo package --local-crate CRATE-DIR --package-dir PACKAGE-DIR` to create a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
-- After changing `debcargo.toml`, run `ubucargo package` again. Archive settings, source transformations, generated packaging, and hints are reconciled together.
+- After changing `debcargo.toml`, run `ubucargo package` again.
 - `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
 
 See [`docs/package.md`](docs/package.md) for full behavior and options.
@@ -83,5 +82,5 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 ## Requirements
 
-It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts,
+It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, GNU coreutils (including `sha256sum`),
 ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.

@@ -81,11 +81,11 @@ enum Command {
         #[arg(long)]
         keep_staging: bool,
 
-        /// Preserve an ambiguous existing file and establish it as an override.
+        /// Keep an ambiguous primary when baselines are missing or conflict.
         #[arg(long, value_name = "PATH")]
         keep: Vec<PathBuf>,
 
-        /// Replace an ambiguous existing file with generated output.
+        /// Resolve an ambiguous primary by taking the generated state.
         #[arg(long, value_name = "PATH")]
         replace: Vec<PathBuf>,
     },

@@ -13,7 +13,7 @@ use crate::command::run_command;
 
 use super::{
     generate::PackageConfig,
-    managed::{FileState, PathPlan, is_generator_owned, make_hint_path, read_state},
+    managed::{FileState, PathPlan, build_plan, read_state},
 };
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
@@ -87,7 +87,7 @@ pub fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileS
     Ok(generated)
 }
 
-/// Collects paths reconciled by generated-file hint rules.
+/// Collects current managed paths; planning also includes paths retained in the manifest.
 pub fn collect_managed_paths(
     debian: &Path,
     generated: &BTreeMap<PathBuf, FileState>,
@@ -135,7 +135,7 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
     Ok(PathPlan {
         path: PathBuf::from("debian/patches/series"),
         old: read_state(&debian.join("patches/series"))?,
-        base: None,
+        hint_before: None,
         primary_after: read_state(&stage.join("output/debian/patches/series"))?,
         hint_after: None,
         overridden: false,
@@ -149,15 +149,25 @@ pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     fs::write(debian.join("debcargo.toml"), &config.contents)?;
     let mut paths = BTreeSet::new();
     collect_output_paths(&debian, &debian, &mut paths)?;
+    let mut generated = BTreeMap::new();
     for path in paths {
-        if !is_package_managed(&path) || is_generator_owned(&path) {
-            continue;
+        if is_package_managed(&path) {
+            let primary = source.join(&path);
+            generated.insert(
+                path,
+                read_state(&primary)?.context("generated file disappeared")?,
+            );
         }
-        let primary = debian.join(path.strip_prefix("debian")?);
-        let hint = make_hint_path(&primary);
-        fs::copy(&primary, &hint)?;
     }
-    Ok(())
+    build_plan(
+        &debian,
+        &collect_managed_paths(&debian, &generated)?,
+        &generated,
+        &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )?
+    .apply()
 }
 
 /// Adds file-like debcargo output paths to a package-relative result set.
@@ -179,7 +189,7 @@ fn collect_output_paths(
 }
 
 /// Reports whether the package command recognizes a staged path as managed output.
-fn is_package_managed(path: &Path) -> bool {
+pub fn is_package_managed(path: &Path) -> bool {
     PACKAGE_MANAGED_PATHS
         .iter()
         .any(|managed| path == Path::new(managed))
@@ -199,6 +209,7 @@ fn is_feature_override(path: &Path) -> bool {
 /// Reports whether a path belongs to debcargo's generated auto-patch namespace.
 fn is_auto_patch(path: &Path) -> bool {
     path.starts_with("debian/patches/auto")
+        && path != Path::new("debian/patches/auto")
         && !path
             .file_name()
             .is_some_and(|name| name.to_string_lossy().ends_with(".debcargo.hint"))
@@ -218,8 +229,8 @@ mod tests {
     use super::*;
 
     #[test]
-    /// Verifies new-package initialization creates hints only for managed output.
-    fn initializes_config_and_managed_hints() {
+    /// Verifies new-package initialization records baselines without redundant hints.
+    fn initializes_config_and_manifest() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("debian/patches/auto")).unwrap();
         fs::create_dir_all(root.path().join("debian/source")).unwrap();
@@ -237,7 +248,14 @@ mod tests {
             fs::read_to_string(root.path().join("debian/debcargo.toml")).unwrap(),
             config.contents
         );
-        assert!(root.path().join("debian/control.debcargo.hint").is_file());
+        assert!(!root.path().join("debian/control.debcargo.hint").exists());
+        assert!(root.path().join("debian/ubucargo-state.json").is_file());
+        let before = fs::read(root.path().join("debian/ubucargo-state.json")).unwrap();
+        initialize_package(root.path(), &config).unwrap();
+        assert_eq!(
+            before,
+            fs::read(root.path().join("debian/ubucargo-state.json")).unwrap()
+        );
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());
         assert!(root.path().join("debian/source/format").is_file());
         assert!(

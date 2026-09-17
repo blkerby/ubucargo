@@ -1,4 +1,4 @@
-//! Plans and applies managed-file updates using generated-state hints.
+//! Tracks generated fingerprints and preserves maintainer overrides.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,10 +7,103 @@ use std::{
     io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
+
+use super::output::is_package_managed;
+
+const MANIFEST_NAME: &str = "ubucargo-state.json";
+
+/// Content digest and permission bits of one generated regular file.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Fingerprint {
+    sha256: String,
+    mode: u32,
+}
+
+/// Latest generated state; null entries record absence, missing entries are unknown.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    version: u32,
+    files: BTreeMap<String, Option<Fingerprint>>,
+}
+
+/// Hashes captured bytes through sha256sum, without rereading a changing working file.
+fn compute_fingerprint(state: &FileState) -> Result<Fingerprint> {
+    let mut child = Command::new("sha256sum")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("run sha256sum")?;
+    let written = child.stdin.take().unwrap().write_all(&state.contents);
+    let output = child.wait_with_output().context("wait for sha256sum")?;
+    if !output.status.success() {
+        bail!(
+            "sha256sum failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    written.context("write contents to sha256sum")?;
+    let stdout = String::from_utf8(output.stdout).context("read sha256sum output")?;
+    let sha256 = stdout
+        .strip_suffix("  -\n")
+        .context("invalid sha256sum output")?;
+    if sha256.len() != 64
+        || !sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("invalid sha256sum digest");
+    }
+    Ok(Fingerprint {
+        sha256: sha256.to_owned(),
+        mode: state.mode,
+    })
+}
+
+/// Reads and validates the ownership manifest before any package changes.
+fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
+    let state = read_state(&debian.join(MANIFEST_NAME))?;
+    let Some(file) = &state else {
+        return Ok((
+            Manifest {
+                version: 1,
+                files: BTreeMap::new(),
+            },
+            None,
+        ));
+    };
+    let manifest: Manifest = serde_json::from_slice(&file.contents)
+        .with_context(|| format!("parse {}", debian.join(MANIFEST_NAME).display()))?;
+    if manifest.version != 1 {
+        bail!("unsupported {MANIFEST_NAME} version: {}", manifest.version);
+    }
+    for (path, fingerprint) in &manifest.files {
+        if path.split('/').any(|part| matches!(part, "" | "." | ".."))
+            || !is_package_managed(Path::new(path))
+        {
+            bail!("invalid managed path in {MANIFEST_NAME}: {path}");
+        }
+        if let Some(fingerprint) = fingerprint
+            && (fingerprint.mode > 0o7777
+                || fingerprint.sha256.len() != 64
+                || !fingerprint
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        {
+            bail!("invalid fingerprint in {MANIFEST_NAME}: {path}");
+        }
+    }
+    Ok((manifest, state))
+}
 
 /// File content and Unix permission mode relevant to generated packaging.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,15 +121,15 @@ pub struct PathPlan {
     pub path: PathBuf,
     /// Primary-file state observed in the working tree.
     pub old: Option<FileState>,
-    /// Previous generator output stored in the hint.
-    pub base: Option<FileState>,
+    /// Existing reference copy, separate from the manifest ownership baseline.
+    pub hint_before: Option<FileState>,
     /// Primary-file state to leave after applying the plan.
     pub primary_after: Option<FileState>,
     /// Hint state to leave after applying the plan.
     pub hint_after: Option<FileState>,
-    /// Whether the working primary differs from its previous generated state.
+    /// Whether the resulting primary differs from the latest generated state.
     pub overridden: bool,
-    /// Whether a missing hint requires an explicit keep-or-replace decision.
+    /// Whether missing or conflicting baselines require an explicit decision.
     pub ambiguous: bool,
 }
 
@@ -46,9 +139,9 @@ impl PathPlan {
         self.old != self.primary_after
     }
 
-    /// Reports whether applying this path changes its generated baseline.
+    /// Reports whether applying this path changes its generated reference copy.
     fn has_hint_changed(&self) -> bool {
-        self.base != self.hint_after
+        self.hint_before != self.hint_after
     }
 }
 
@@ -58,27 +151,25 @@ pub struct Plan {
     debian: PathBuf,
     /// Per-path reconciliation results in deterministic order.
     pub paths: Vec<PathPlan>,
-}
-
-/// Managed paths that are fully generator-owned and never use a hint.
-///
-/// Fresh generator output always replaces these primaries, so no hint is
-/// written and leftover hints from earlier versions are removed.
-pub(crate) const GENERATOR_OWNED_PATHS: &[&str] = &["debian/cargo-checksum.json"];
-
-/// Reports whether a managed path is fully generator-owned.
-pub(crate) fn is_generator_owned(path: &Path) -> bool {
-    GENERATOR_OWNED_PATHS
-        .iter()
-        .any(|owned| path == Path::new(owned))
+    /// Manifest bytes observed before planning.
+    manifest_before: Option<FileState>,
+    /// Deterministically serialized latest generator state.
+    manifest_after: FileState,
 }
 
 impl Plan {
+    /// Reports whether the ownership manifest needs installation.
+    fn has_manifest_changed(&self) -> bool {
+        self.manifest_before.as_ref() != Some(&self.manifest_after)
+    }
+
     /// Reports whether applying the plan performs any filesystem changes.
     pub fn has_changes(&self) -> bool {
-        self.paths
-            .iter()
-            .any(|path| path.has_primary_changed() || path.has_hint_changed())
+        self.has_manifest_changed()
+            || self
+                .paths
+                .iter()
+                .any(|path| path.has_primary_changed() || path.has_hint_changed())
     }
 
     /// Collects paths that require an explicit keep-or-replace decision.
@@ -108,15 +199,26 @@ impl Plan {
             if path.has_hint_changed() {
                 println!(
                     "{} {}",
-                    describe_change(&path.base, &path.hint_after),
+                    describe_change(&path.hint_before, &path.hint_after),
                     make_hint_path(&path.path).display()
                 );
             }
+        }
+        if self.has_manifest_changed() {
+            let verb = if self.manifest_before.is_some() {
+                "update"
+            } else {
+                "create"
+            };
+            println!("{verb} debian/{MANIFEST_NAME}");
         }
     }
 
     /// Applies primary changes first and writes generated baselines last.
     pub fn apply(&self) -> Result<()> {
+        if !self.collect_ambiguities().is_empty() {
+            bail!("unresolved generated-file ambiguities");
+        }
         // Install new generated files before changing references such as the
         // patch series, then remove obsolete files and update hints last.
         for path in &self.paths {
@@ -143,6 +245,10 @@ impl Plan {
                 .context("package may be partially updated; rerun `ubucargo package`")?;
             }
         }
+        if self.has_manifest_changed() {
+            install_state(&self.debian.join(MANIFEST_NAME), Some(&self.manifest_after))
+                .context("package may be partially updated; rerun `ubucargo package`")?;
+        }
         Ok(())
     }
 }
@@ -158,45 +264,37 @@ pub fn build_plan(
 ) -> Result<Plan> {
     let mut paths = Vec::new();
     let mut used_decisions = BTreeSet::new();
+    let (mut manifest, manifest_before) = read_manifest(debian)?;
+    let mut managed = managed.clone();
+    for path in manifest.files.keys() {
+        managed.insert(PathBuf::from(path));
+    }
 
-    for path in managed {
-        // Fully generator-owned paths take fresh output without a hint,
-        // like the patch series.
-        if is_generator_owned(path) {
-            let old = read_state(&resolve_managed_path(debian, path)?)?;
-            let stale_hint = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
-            paths.push(PathPlan {
-                path: path.clone(),
-                old,
-                base: None,
-                primary_after: generated.get(path).cloned(),
-                hint_after: None,
-                overridden: false,
-                ambiguous: false,
-            });
-            if let Some(stale_hint) = stale_hint {
-                paths.push(PathPlan {
-                    path: make_hint_path(path),
-                    old: Some(stale_hint),
-                    base: None,
-                    primary_after: None,
-                    hint_after: None,
-                    overridden: false,
-                    ambiguous: false,
-                });
-            }
-            continue;
-        }
+    for path in &managed {
         let old = read_state(&resolve_managed_path(debian, path)?)?;
-        let base = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
+        let hint_before = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
         let new = generated.get(path).cloned();
-        let effective_base = base.as_ref().or_else(|| {
-            inferred_bases
+        let name = path.to_str().context("managed path is not UTF-8")?;
+        let old_fingerprint = old.as_ref().map(compute_fingerprint).transpose()?;
+        let hint_fingerprint = hint_before.as_ref().map(compute_fingerprint).transpose()?;
+        // Some(None) is a known absence; None is an unknown baseline.
+        let recorded = manifest.files.get(name);
+        let conflict =
+            recorded.is_some_and(|base| hint_before.is_some() && *base != hint_fingerprint);
+        let mut effective_base = recorded.cloned();
+        if effective_base.is_none() {
+            if hint_before.is_some() {
+                effective_base = Some(hint_fingerprint);
+            } else if inferred_bases
                 .get(path)
-                .filter(|inferred| old.as_ref() == Some(*inferred))
-        });
-        let ambiguous = effective_base.is_none()
-            && matches!((&old, &new), (Some(old), Some(new)) if old != new);
+                .is_some_and(|inferred| old.as_ref() == Some(inferred))
+            {
+                effective_base = Some(old_fingerprint.clone());
+            }
+        }
+        let ambiguous = conflict
+            || (effective_base.is_none()
+                && matches!((&old, &new), (Some(old), Some(new)) if old != new));
         let decision_replace = if ambiguous {
             match (keep.contains(path), replace.contains(path)) {
                 (true, false) => {
@@ -217,29 +315,38 @@ pub fn build_plan(
             None
         };
 
-        // A managed path is not necessarily generator-controlled: when the
-        // primary differs from its hint, the primary is a maintainer override.
-        let (primary_after, hint_after, overridden, unresolved) = match effective_base {
-            // The primary still matches the last generated state, so accept the
-            // new generated state as both the primary and the hint.
-            Some(base) if old.as_ref() == Some(base) => (new.clone(), new.clone(), false, false),
-            // The primary no longer matches the last generated state, so it is
-            // a maintainer override: preserve it while tracking the new state.
-            Some(_) => (old.clone(), new.clone(), true, false),
-            None if ambiguous => match decision_replace {
-                Some(false) => (old.clone(), new.clone(), true, false),
-                Some(true) => (new.clone(), new.clone(), false, false),
-                None => (old.clone(), None, false, true),
-            },
-            // Unambiguous paths without a baseline retain an existing primary
-            // or install a new one, and record the current generator output.
-            None => (old.clone().or(new.clone()), new.clone(), false, false),
+        // Resolve conflicting evidence before considering any apparent match.
+        let unresolved = ambiguous && decision_replace.is_none();
+        let primary_after = if ambiguous {
+            if decision_replace == Some(true) {
+                new.clone()
+            } else {
+                old.clone()
+            }
+        } else {
+            match effective_base {
+                Some(base) if old_fingerprint == base => new.clone(),
+                Some(_) => old.clone(),
+                None => old.clone().or(new.clone()),
+            }
         };
+        let overridden = !unresolved && primary_after != new;
+        let hint_after = if unresolved {
+            hint_before.clone()
+        } else if overridden {
+            new.clone()
+        } else {
+            None
+        };
+        manifest.files.insert(
+            name.to_owned(),
+            new.as_ref().map(compute_fingerprint).transpose()?,
+        );
 
         paths.push(PathPlan {
             path: path.clone(),
             old,
-            base,
+            hint_before,
             primary_after,
             hint_after,
             overridden,
@@ -264,9 +371,16 @@ pub fn build_plan(
         );
     }
 
+    let mut contents = serde_json::to_vec_pretty(&manifest)?;
+    contents.push(b'\n');
     Ok(Plan {
         debian: debian.to_path_buf(),
         paths,
+        manifest_before,
+        manifest_after: FileState {
+            contents,
+            mode: 0o644,
+        },
     })
 }
 
@@ -347,7 +461,352 @@ fn describe_change(before: &Option<FileState>, after: &Option<FileState>) -> &'s
 
 #[cfg(test)]
 mod tests {
+    use super::super::output::collect_managed_paths;
     use super::*;
+
+    /// Plans a generation using filesystem discovery and the persisted manifest.
+    fn plan_generation(debian: &Path, generated: &BTreeMap<PathBuf, FileState>) -> Plan {
+        build_plan(
+            debian,
+            &collect_managed_paths(debian, generated).unwrap(),
+            generated,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    /// Checks the hash against a known digest and feeds input larger than a pipe buffer.
+    fn computes_content_fingerprints() {
+        let mut state = make_state("abc");
+        let fingerprint = compute_fingerprint(&state).unwrap();
+        assert_eq!(
+            fingerprint.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        state.mode = 0o755;
+        assert_ne!(compute_fingerprint(&state).unwrap(), fingerprint);
+        state.contents = vec![0xff; 1024 * 1024];
+        assert_eq!(
+            compute_fingerprint(&state).unwrap(),
+            compute_fingerprint(&state).unwrap()
+        );
+    }
+
+    #[test]
+    /// Preserves edits made without hints, then clears overrides on adoption or convergence.
+    fn preserves_edits_without_initial_hints() {
+        for name in [
+            "debian/control",
+            "debian/rules",
+            "debian/cargo-checksum.json",
+        ] {
+            for edited in [
+                Some(make_state("maintainer")),
+                Some(FileState {
+                    mode: 0o700,
+                    ..make_state("first")
+                }),
+                None,
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                let debian = root.path().join("debian");
+                fs::create_dir(&debian).unwrap();
+                let path = PathBuf::from(name);
+                let primary = root.path().join(&path);
+                let hint = root.path().join(make_hint_path(&path));
+                let mut generated = BTreeMap::from([(path.clone(), make_state("first"))]);
+                let plan = plan_generation(&debian, &generated);
+                assert!(plan.has_changes());
+                assert!(!primary.exists());
+                plan.apply().unwrap();
+                assert!(!hint.exists());
+                assert!(!plan_generation(&debian, &generated).has_changes());
+                let (manifest, _) = read_manifest(&debian).unwrap();
+                assert_eq!(
+                    manifest.files[name],
+                    Some(compute_fingerprint(&make_state("first")).unwrap())
+                );
+
+                install_state(&primary, edited.as_ref()).unwrap();
+                for next in ["second", "third"] {
+                    generated.insert(path.clone(), make_state(next));
+                    let plan = plan_generation(&debian, &generated);
+                    assert_eq!(read_state(&primary).unwrap(), edited);
+                    plan.apply().unwrap();
+                    assert_eq!(read_state(&primary).unwrap(), edited);
+                    assert_eq!(read_state(&hint).unwrap(), Some(make_state(next)));
+                    assert!(!plan_generation(&debian, &generated).has_changes());
+                }
+                install_state(&primary, read_state(&hint).unwrap().as_ref()).unwrap();
+                generated.insert(path.clone(), make_state("fourth"));
+                plan_generation(&debian, &generated).apply().unwrap();
+                assert_eq!(read_state(&primary).unwrap(), Some(make_state("fourth")));
+                assert!(!hint.exists());
+                assert!(!plan_generation(&debian, &generated).has_changes());
+
+                install_state(&primary, Some(&make_state("fifth"))).unwrap();
+                plan_generation(&debian, &generated).apply().unwrap();
+                assert!(hint.exists());
+                generated.insert(path.clone(), make_state("fifth"));
+                plan_generation(&debian, &generated).apply().unwrap();
+                assert!(!hint.exists());
+            }
+        }
+    }
+
+    #[test]
+    /// Retains explicit absence and discovers vanished dynamic paths from the manifest.
+    fn handles_generator_removal_and_reintroduction() {
+        for name in [
+            "debian/patches/auto/change.patch",
+            "debian/librust-example+feature-dev.lintian-overrides",
+        ] {
+            for edited in [Some(make_state("base")), Some(make_state("local")), None] {
+                let root = tempfile::tempdir().unwrap();
+                let debian = root.path().join("debian");
+                fs::create_dir(&debian).unwrap();
+                let path = PathBuf::from(name);
+                let primary = root.path().join(&path);
+                let hint = root.path().join(make_hint_path(&path));
+                let generated = BTreeMap::from([(path.clone(), make_state("base"))]);
+                plan_generation(&debian, &generated).apply().unwrap();
+                install_state(&primary, edited.as_ref()).unwrap();
+                let plan = plan_generation(&debian, &BTreeMap::new());
+                assert!(plan.paths.iter().any(|entry| entry.path == path));
+                plan.apply().unwrap();
+                let retained = if edited == Some(make_state("local")) {
+                    edited
+                } else {
+                    None
+                };
+                assert_eq!(read_state(&primary).unwrap(), retained);
+                assert!(!hint.exists());
+                let (manifest, _) = read_manifest(&debian).unwrap();
+                assert_eq!(manifest.files.get(name), Some(&None));
+                assert!(!plan_generation(&debian, &BTreeMap::new()).has_changes());
+                plan_generation(&debian, &generated).apply().unwrap();
+                assert_eq!(
+                    read_state(&primary).unwrap(),
+                    retained.clone().or(Some(make_state("base")))
+                );
+                assert_eq!(hint.exists(), retained.is_some());
+            }
+        }
+    }
+
+    #[test]
+    /// Imports legacy hints, removes redundant copies, and leaves unknown hints alone.
+    fn migrates_legacy_hints() {
+        let root = tempfile::tempdir().unwrap();
+        let debian = root.path().join("debian");
+        fs::create_dir(&debian).unwrap();
+        let mut generated = BTreeMap::new();
+        for (name, working) in [
+            ("control", "edited"),
+            ("rules", "base"),
+            ("cargo-checksum.json", "base"),
+        ] {
+            install_state(&debian.join(name), Some(&make_state(working))).unwrap();
+            install_state(
+                &debian.join(format!("{name}.debcargo.hint")),
+                Some(&make_state("base")),
+            )
+            .unwrap();
+            generated.insert(PathBuf::from("debian").join(name), make_state("new"));
+        }
+        fs::write(debian.join("unknown.debcargo.hint"), "unknown").unwrap();
+        let plan = plan_generation(&debian, &generated);
+        assert!(plan.collect_ambiguities().is_empty());
+        assert!(!debian.join(MANIFEST_NAME).exists());
+        plan.apply().unwrap();
+        assert_eq!(
+            fs::read_to_string(debian.join("control")).unwrap(),
+            "edited"
+        );
+        assert_eq!(
+            fs::read_to_string(debian.join("control.debcargo.hint")).unwrap(),
+            "new"
+        );
+        for name in ["rules", "cargo-checksum.json"] {
+            assert_eq!(fs::read_to_string(debian.join(name)).unwrap(), "new");
+            assert!(!debian.join(format!("{name}.debcargo.hint")).exists());
+        }
+        assert_eq!(
+            fs::read_to_string(debian.join("unknown.debcargo.hint")).unwrap(),
+            "unknown"
+        );
+        assert!(!plan_generation(&debian, &generated).has_changes());
+    }
+
+    #[test]
+    /// Requires decisions when hints conflict, even if the primary matches the manifest.
+    fn resolves_conflicting_baselines() {
+        for replace in [false, true] {
+            for initial in [Some(make_state("base")), None] {
+                let root = tempfile::tempdir().unwrap();
+                let debian = root.path().join("debian");
+                fs::create_dir(&debian).unwrap();
+                let path = PathBuf::from("debian/control");
+                let mut generated = BTreeMap::new();
+                if let Some(state) = &initial {
+                    generated.insert(path.clone(), state.clone());
+                }
+                plan_generation(&debian, &generated).apply().unwrap();
+                let hint = debian.join("control.debcargo.hint");
+                install_state(
+                    &hint,
+                    Some(&FileState {
+                        mode: 0o700,
+                        ..make_state("base")
+                    }),
+                )
+                .unwrap();
+                generated.insert(path.clone(), make_state("new"));
+                let before = fs::read(debian.join(MANIFEST_NAME)).unwrap();
+                let plan = plan_generation(&debian, &generated);
+                assert_eq!(plan.collect_ambiguities(), vec![path.as_path()]);
+                assert!(plan.apply().is_err());
+                assert_eq!(fs::read(debian.join(MANIFEST_NAME)).unwrap(), before);
+                assert_eq!(read_state(&debian.join("control")).unwrap(), initial);
+                let decision = BTreeSet::from([path]);
+                let empty = BTreeSet::new();
+                build_plan(
+                    &debian,
+                    &decision,
+                    &generated,
+                    &BTreeMap::new(),
+                    if replace { &empty } else { &decision },
+                    if replace { &decision } else { &empty },
+                )
+                .unwrap()
+                .apply()
+                .unwrap();
+                assert_eq!(
+                    read_state(&debian.join("control")).unwrap(),
+                    if replace {
+                        Some(make_state("new"))
+                    } else {
+                        initial
+                    }
+                );
+                assert_eq!(hint.exists(), !replace);
+                assert!(!plan_generation(&debian, &generated).has_changes());
+            }
+        }
+    }
+
+    #[test]
+    /// Rejects invalid state before modifying primaries or hints.
+    fn rejects_invalid_manifests() {
+        let directory = tempfile::tempdir().unwrap();
+        let debian = directory.path();
+        fs::write(debian.join("control"), "local").unwrap();
+        let mut invalid = vec![
+            "{".to_owned(),
+            r#"{"version":2,"files":{}}"#.to_owned(),
+            r#"{"version":1}"#.to_owned(),
+        ];
+        for path in [
+            "/debian/control",
+            "debian/../control",
+            "debian/patches/auto/../../control",
+            "debian/patches/auto",
+            "debian//control",
+            "debian/changelog",
+            "debian/ubucargo-state.json",
+            "debian/patches/series",
+            "debian/control.debcargo.hint",
+        ] {
+            invalid.push(serde_json::json!({"version":1, "files":{path:null}}).to_string());
+        }
+        for (sha256, mode) in [
+            ("bad".to_owned(), 420),
+            ("a".repeat(64), 4096),
+            ("A".repeat(64), 420),
+        ] {
+            invalid.push(serde_json::json!({"version":1,"files":{"debian/control":{"sha256":sha256,"mode":mode}}}).to_string());
+        }
+        for contents in invalid {
+            fs::write(debian.join(MANIFEST_NAME), &contents).unwrap();
+            assert!(
+                build_plan(
+                    debian,
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &BTreeSet::new(),
+                    &BTreeSet::new()
+                )
+                .is_err(),
+                "accepted {contents}"
+            );
+            assert_eq!(fs::read_to_string(debian.join("control")).unwrap(), "local");
+            assert_eq!(
+                fs::read_to_string(debian.join(MANIFEST_NAME)).unwrap(),
+                contents
+            );
+        }
+    }
+
+    #[test]
+    /// Reruns after partial installation preserve edits and expose conflicting hints.
+    fn preserves_edits_after_interrupted_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let debian = root.path().join("debian");
+        fs::create_dir(&debian).unwrap();
+        let generated = BTreeMap::from([
+            (PathBuf::from("debian/control"), make_state("base")),
+            (PathBuf::from("debian/rules"), make_state("base")),
+        ]);
+        plan_generation(&debian, &generated).apply().unwrap();
+        install_state(&debian.join("control"), Some(&make_state("local"))).unwrap();
+        let next = BTreeMap::from([
+            (PathBuf::from("debian/control"), make_state("new")),
+            (PathBuf::from("debian/rules"), make_state("new")),
+        ]);
+        let plan = plan_generation(&debian, &next);
+        // Simulate a stop after installing primaries and hints, before the manifest.
+        for path in &plan.paths {
+            if path.has_primary_changed() {
+                install_state(&root.path().join(&path.path), path.primary_after.as_ref()).unwrap();
+            }
+            if path.has_hint_changed() {
+                install_state(
+                    &root.path().join(make_hint_path(&path.path)),
+                    path.hint_after.as_ref(),
+                )
+                .unwrap();
+            }
+        }
+        install_state(&debian.join("rules"), Some(&make_state("another edit"))).unwrap();
+        let retry = plan_generation(&debian, &next);
+        assert_eq!(
+            retry.collect_ambiguities(),
+            vec![Path::new("debian/control")]
+        );
+        assert!(retry.apply().is_err());
+        let managed = collect_managed_paths(&debian, &next).unwrap();
+        build_plan(
+            &debian,
+            &managed,
+            &next,
+            &BTreeMap::new(),
+            &BTreeSet::from([PathBuf::from("debian/control")]),
+            &BTreeSet::new(),
+        )
+        .unwrap()
+        .apply()
+        .unwrap();
+        assert_eq!(fs::read_to_string(debian.join("control")).unwrap(), "local");
+        assert_eq!(
+            fs::read_to_string(debian.join("rules")).unwrap(),
+            "another edit"
+        );
+        assert!(!plan_generation(&debian, &next).has_changes());
+    }
 
     /// Creates a non-executable text state for planner tests.
     fn make_state(value: &str) -> FileState {
@@ -394,7 +853,7 @@ mod tests {
         .unwrap();
         assert!(!plan.paths[0].ambiguous);
         assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
-        assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
+        assert_eq!(plan.paths[0].hint_after, None);
 
         let plan = build_plan(
             &debian,
@@ -430,7 +889,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
-        assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
+        assert_eq!(plan.paths[0].hint_after, None);
     }
 
     #[test]
@@ -454,7 +913,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
-        assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
+        assert_eq!(plan.paths[0].hint_after, None);
 
         install_state(&root.join(&path), Some(&make_state("base"))).unwrap();
         install_state(&root.join(make_hint_path(&path)), Some(&make_state("base"))).unwrap();
@@ -482,12 +941,12 @@ mod tests {
         .unwrap();
         assert_eq!(plan.paths[0].primary_after, None);
         assert_eq!(plan.paths[0].hint_after, None);
-        assert!(plan.paths[0].overridden);
+        assert!(!plan.paths[0].overridden);
     }
 
     #[test]
-    /// Preserves every unambiguous missing-baseline case and removes obsolete checksum hints.
-    fn handles_missing_baselines_and_generator_owned_files() {
+    /// Preserves every unambiguous missing-baseline case.
+    fn handles_missing_baselines() {
         let directory = tempfile::tempdir().unwrap();
         let debian = directory.path().join("debian");
         fs::create_dir(&debian).unwrap();
@@ -513,34 +972,15 @@ mod tests {
             )
             .unwrap();
             assert_eq!(plan.paths[0].primary_after, old.or(new).map(make_state));
-            assert_eq!(plan.paths[0].hint_after, new.map(make_state));
+            assert_eq!(plan.paths[0].hint_after, None);
             assert!(!plan.paths[0].ambiguous);
-            assert!(!plan.paths[0].overridden);
+            assert_eq!(plan.paths[0].overridden, old.is_some() && new.is_none());
         }
-
-        let checksum = PathBuf::from("debian/cargo-checksum.json");
-        let hint = directory.path().join(make_hint_path(&checksum));
-        install_state(&hint, Some(&make_state("stale"))).unwrap();
-        let plan = build_plan(
-            &debian,
-            &BTreeSet::from([checksum.clone()]),
-            &BTreeMap::from([(checksum.clone(), make_state("new"))]),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        plan.apply().unwrap();
-        assert!(!hint.exists());
-        assert_eq!(
-            read_state(&directory.path().join(checksum)).unwrap(),
-            Some(make_state("new"))
-        );
     }
 
     #[test]
-    /// Verifies installation of matching primary and hint contents and modes.
-    fn writes_primary_and_hint_with_the_generated_mode() {
+    /// Verifies generated modes and preservation of a later permission override.
+    fn preserves_permission_changes() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let debian = root.join("debian");
@@ -566,10 +1006,7 @@ mod tests {
             read_state(&root.join(&path)).unwrap(),
             Some(generated.clone())
         );
-        assert_eq!(
-            read_state(&root.join(make_hint_path(&path))).unwrap(),
-            Some(generated)
-        );
+        assert_eq!(read_state(&root.join(make_hint_path(&path))).unwrap(), None);
 
         fs::set_permissions(root.join(&path), fs::Permissions::from_mode(0o700)).unwrap();
         let plan = build_plan(
