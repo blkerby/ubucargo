@@ -61,14 +61,44 @@ pub struct DependencyInspection {
     pub cargo_dependencies: Vec<MetadataDependency>,
 }
 
-/// Registry or local crate selection supplied to the package command.
-pub struct PackageSource<'a> {
-    /// Crate name from crates.io, or none for the current package.
-    pub crate_name: Option<&'a str>,
-    /// Exact crates.io version paired with an explicit crate name.
-    pub version: Option<&'a str>,
-    /// Local crate used only when creating a package.
-    pub local_crate: Option<&'a Path>,
+/// Create or reconcile a complete source package.
+#[derive(clap::Args)]
+pub struct PackageArgs {
+    /// Crate name; defaults to the existing package's root Cargo identity.
+    #[arg(value_name = "CRATE")]
+    pub crate_name: Option<String>,
+
+    /// Exact crate version; defaults to the latest release when a crate is named.
+    #[arg(value_name = "VERSION", requires = "crate_name")]
+    pub version: Option<String>,
+
+    /// Debian source-package directory; defaults to the nearest parent package.
+    #[arg(long = "package-dir", value_name = "DIR")]
+    pub package_dir: Option<PathBuf>,
+
+    /// Local crate used to create a new source package.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version"], requires = "package_dir")]
+    pub local_crate: Option<PathBuf>,
+
+    /// Report changes without writing them.
+    #[arg(long)]
+    pub check: bool,
+
+    /// Resolve source-tree conflicts in favor of the selected crate release.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Retain the temporary debcargo staging directory for inspection.
+    #[arg(long)]
+    pub keep_staging: bool,
+
+    /// Keep an ambiguous primary when baselines are missing or conflict.
+    #[arg(long, value_name = "PATH")]
+    pub keep: Vec<PathBuf>,
+
+    /// Resolve an ambiguous primary by taking the generated state.
+    #[arg(long, value_name = "PATH")]
+    pub replace: Vec<PathBuf>,
 }
 
 /// Validated configuration and release selection for an existing package.
@@ -84,16 +114,8 @@ struct ExistingPackage {
 }
 
 /// Creates or reconciles one source package, returning true when check mode finds changes.
-pub fn run(
-    source: PackageSource<'_>,
-    package_dir: Option<&Path>,
-    check: bool,
-    force: bool,
-    keep_staging: bool,
-    keep: &[PathBuf],
-    replace: &[PathBuf],
-) -> Result<bool> {
-    if let Some(version) = source.version {
+pub fn run(args: PackageArgs) -> Result<bool> {
+    if let Some(version) = args.version.as_deref() {
         parse_exact_version(version)?;
     }
 
@@ -103,22 +125,22 @@ pub fn run(
         .context("resolve current directory")?;
     let mode = select_package_mode(
         &current,
-        package_dir,
-        source.crate_name.is_some() || source.local_crate.is_some(),
+        args.package_dir.as_deref(),
+        args.crate_name.is_some() || args.local_crate.is_some(),
     )?;
-    let (keep_paths, replace_paths) = collect_decisions(keep, replace)?;
+    let (keep_paths, replace_paths) = collect_decisions(&args.keep, &args.replace)?;
     match mode {
         PackageMode::Existing(root) => {
-            if source.local_crate.is_some() {
+            if args.local_crate.is_some() {
                 bail!("--local-crate applies only when creating a package");
             }
             reconcile_existing(
                 &root,
-                source.crate_name,
-                source.version,
-                check,
-                force,
-                keep_staging,
+                args.crate_name.as_deref(),
+                args.version.as_deref(),
+                args.check,
+                args.force,
+                args.keep_staging,
                 &keep_paths,
                 &replace_paths,
             )
@@ -130,13 +152,7 @@ pub fn run(
             if !keep_paths.is_empty() || !replace_paths.is_empty() {
                 bail!("--keep and --replace apply only to existing packages");
             }
-            create_new(
-                &parent,
-                requested_dir.as_deref(),
-                &source,
-                check,
-                keep_staging,
-            )
+            create_new(&parent, requested_dir.as_deref(), &args)
         }
     }
 }
@@ -431,15 +447,9 @@ fn reconcile_existing(
 }
 
 /// Creates a clean source package
-fn create_new(
-    parent: &Path,
-    requested_dir: Option<&Path>,
-    source: &PackageSource<'_>,
-    check: bool,
-    keep_staging: bool,
-) -> Result<bool> {
+fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -> Result<bool> {
     let debcargo_version = check_debcargo_version()?;
-    let (config, crate_selection) = if let Some(local_crate) = source.local_crate {
+    let (config, crate_selection) = if let Some(local_crate) = args.local_crate.as_deref() {
         let local_crate = if local_crate.is_absolute() {
             local_crate.to_path_buf()
         } else {
@@ -457,11 +467,13 @@ fn create_new(
         let crate_selection = select_release(None, None, Some(&package), &config)?;
         (config, crate_selection)
     } else {
-        let crate_name = source
+        let crate_name = args
             .crate_name
+            .as_deref()
             .context("CRATE is required when creating a package")?;
         let config = read_new_package_config()?;
-        let crate_selection = select_release(Some(crate_name), source.version, None, &config)?;
+        let crate_selection =
+            select_release(Some(crate_name), args.version.as_deref(), None, &config)?;
         (config, crate_selection)
     };
     let (source_name, upstream) = selected_debian_identity(&crate_selection, &config)?;
@@ -473,7 +485,7 @@ fn create_new(
         &upstream,
         &crate_selection,
         &debcargo_version,
-        keep_staging,
+        args.keep_staging,
     )?;
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
@@ -494,7 +506,7 @@ fn create_new(
     if orig_changed {
         println!("create {}", orig.display());
     }
-    if check {
+    if args.check {
         return Ok(true);
     }
 

@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     io::{self, IsTerminal},
-    path::Path,
+    path::PathBuf,
 };
 
 use anyhow::Result;
@@ -23,6 +23,38 @@ const GRAY: &str = "\x1b[90m";
 const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
 const RESET: &str = "\x1b[0m";
+
+/// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
+#[derive(clap::Args)]
+pub struct DepArgs {
+    /// Crate name from crates.io; conflicts with --package-dir.
+    #[arg(value_name = "CRATE", conflicts_with = "package_dir")]
+    pub crate_name: Option<String>,
+
+    /// Exact crate version; defaults to the latest release when a crate is named.
+    #[arg(value_name = "VERSION", requires = "crate_name")]
+    pub version: Option<String>,
+
+    /// Existing source package directory; defaults to the nearest parent package.
+    #[arg(long = "package-dir", value_name = "DIR")]
+    pub package_dir: Option<PathBuf>,
+
+    /// Ubuntu series to query.
+    #[arg(long, value_name = "SERIES")]
+    pub series: String,
+
+    /// Include the Ubuntu proposed pocket.
+    #[arg(long)]
+    pub proposed: bool,
+
+    /// Public Launchpad PPA to include.
+    #[arg(long, value_name = "ppa:OWNER/NAME")]
+    pub ppa: Vec<String>,
+
+    /// Debian architecture; defaults to dpkg --print-architecture.
+    #[arg(long, value_name = "ARCH")]
+    pub architecture: Option<String>,
+}
 
 /// Availability of one displayed requirement component.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,27 +102,22 @@ struct Row {
 }
 
 /// Stages a crate, queries APT, prints the report, and returns whether it is unsatisfied.
-pub fn run(
-    crate_name: Option<&str>,
-    version: Option<&str>,
-    package_dir: Option<&Path>,
-    series: &str,
-    proposed: bool,
-    ppas: &[String],
-    architecture: Option<&str>,
-) -> Result<bool> {
-    let architecture = match architecture {
-        Some(architecture) => architecture.to_owned(),
+pub fn run(args: DepArgs) -> Result<bool> {
+    let architecture = match args.architecture {
+        Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let inspection =
-        crate::package::stage_for_dependency_inspection(crate_name, version, package_dir)?;
+    let inspection = crate::package::stage_for_dependency_inspection(
+        args.crate_name.as_deref(),
+        args.version.as_deref(),
+        args.package_dir.as_deref(),
+    )?;
     let dependencies = control::read_dependencies(
         &inspection.stage.path().join("output/debian/control"),
         &architecture,
         &inspection.cargo_dependencies,
     )?;
-    let candidates = apt::load_candidates(series, &architecture, proposed, ppas)?;
+    let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
     print!("{}", format_table(&rows, color));

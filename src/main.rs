@@ -4,7 +4,7 @@ mod command;
 mod deps;
 mod package;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
@@ -21,119 +21,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
-    Deps {
-        /// Crate name from crates.io; conflicts with --package-dir.
-        #[arg(value_name = "CRATE", conflicts_with = "package_dir")]
-        crate_name: Option<String>,
-
-        /// Exact crate version; defaults to the latest release when a crate is named.
-        #[arg(value_name = "VERSION", requires = "crate_name")]
-        version: Option<String>,
-
-        /// Existing source package directory; defaults to the nearest parent package.
-        #[arg(long = "package-dir", value_name = "DIR")]
-        package_dir: Option<PathBuf>,
-
-        /// Ubuntu series to query.
-        #[arg(long, value_name = "SERIES")]
-        series: String,
-
-        /// Include the Ubuntu proposed pocket.
-        #[arg(long)]
-        proposed: bool,
-
-        /// Public Launchpad PPA to include.
-        #[arg(long, value_name = "ppa:OWNER/NAME")]
-        ppa: Vec<String>,
-
-        /// Debian architecture; defaults to dpkg --print-architecture.
-        #[arg(long, value_name = "ARCH")]
-        architecture: Option<String>,
-    },
+    Deps(deps::DepArgs),
 
     /// Create or reconcile a complete source package.
-    Package {
-        /// Crate name; defaults to the existing package's root Cargo identity.
-        #[arg(value_name = "CRATE")]
-        crate_name: Option<String>,
-
-        /// Exact crate version; defaults to the latest release when a crate is named.
-        #[arg(value_name = "VERSION", requires = "crate_name")]
-        version: Option<String>,
-
-        /// Debian source-package directory; defaults to the nearest parent package.
-        #[arg(long = "package-dir", value_name = "DIR")]
-        package_dir: Option<PathBuf>,
-
-        /// Local crate used to create a new source package.
-        #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version"], requires = "package_dir")]
-        local_crate: Option<PathBuf>,
-
-        /// Report changes without writing them.
-        #[arg(long)]
-        check: bool,
-
-        /// Resolve source-tree conflicts in favor of the selected crate release.
-        #[arg(long)]
-        force: bool,
-
-        /// Retain the temporary debcargo staging directory for inspection.
-        #[arg(long)]
-        keep_staging: bool,
-
-        /// Keep an ambiguous primary when baselines are missing or conflict.
-        #[arg(long, value_name = "PATH")]
-        keep: Vec<PathBuf>,
-
-        /// Resolve an ambiguous primary by taking the generated state.
-        #[arg(long, value_name = "PATH")]
-        replace: Vec<PathBuf>,
-    },
+    Package(package::PackageArgs),
 }
 
 /// Parses the command line, runs the selected command, and maps its result to an exit status.
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Deps {
-            crate_name,
-            version,
-            package_dir,
-            series,
-            proposed,
-            ppa,
-            architecture,
-        } => deps::run(
-            crate_name.as_deref(),
-            version.as_deref(),
-            package_dir.as_deref(),
-            &series,
-            proposed,
-            &ppa,
-            architecture.as_deref(),
-        ),
-        Command::Package {
-            crate_name,
-            version,
-            package_dir,
-            local_crate,
-            check,
-            force,
-            keep_staging,
-            keep,
-            replace,
-        } => package::run(
-            package::PackageSource {
-                crate_name: crate_name.as_deref(),
-                version: version.as_deref(),
-                local_crate: local_crate.as_deref(),
-            },
-            package_dir.as_deref(),
-            check,
-            force,
-            keep_staging,
-            &keep,
-            &replace,
-        ),
+        Command::Deps(args) => deps::run(args),
+        Command::Package(args) => package::run(args),
     };
 
     match result {
@@ -168,26 +66,16 @@ mod tests {
         ])
         .unwrap();
 
-        let Command::Package {
-            crate_name,
-            version,
-            package_dir,
-            local_crate,
-            check,
-            force,
-            keep_staging,
-            ..
-        } = cli.command
-        else {
+        let Command::Package(args) = cli.command else {
             panic!("expected package command");
         };
-        assert_eq!(crate_name.as_deref(), Some("serde"));
-        assert_eq!(version.as_deref(), Some("1.0.220"));
-        assert_eq!(package_dir.as_deref(), Some(Path::new("rust-serde")));
-        assert_eq!(local_crate, None);
-        assert!(check);
-        assert!(force);
-        assert!(keep_staging);
+        assert_eq!(args.crate_name.as_deref(), Some("serde"));
+        assert_eq!(args.version.as_deref(), Some("1.0.220"));
+        assert_eq!(args.package_dir.as_deref(), Some(Path::new("rust-serde")));
+        assert_eq!(args.local_crate, None);
+        assert!(args.check);
+        assert!(args.force);
+        assert!(args.keep_staging);
     }
 
     #[test]
@@ -203,20 +91,13 @@ mod tests {
         ])
         .unwrap();
 
-        let Command::Package {
-            crate_name,
-            version,
-            package_dir,
-            local_crate,
-            ..
-        } = cli.command
-        else {
+        let Command::Package(args) = cli.command else {
             panic!("expected package command");
         };
-        assert_eq!(crate_name, None);
-        assert_eq!(version, None);
-        assert_eq!(package_dir.as_deref(), Some(Path::new("rust-example")));
-        assert_eq!(local_crate.as_deref(), Some(Path::new("../example")));
+        assert_eq!(args.crate_name, None);
+        assert_eq!(args.version, None);
+        assert_eq!(args.package_dir.as_deref(), Some(Path::new("rust-example")));
+        assert_eq!(args.local_crate.as_deref(), Some(Path::new("../example")));
         assert!(
             Cli::try_parse_from(["ubucargo", "package", "serde", "--directory", "rust-serde"])
                 .is_err()
@@ -241,25 +122,16 @@ mod tests {
         ])
         .unwrap();
 
-        let Command::Deps {
-            crate_name,
-            version,
-            package_dir,
-            series,
-            proposed,
-            ppa,
-            architecture,
-        } = cli.command
-        else {
+        let Command::Deps(args) = cli.command else {
             panic!("expected deps command");
         };
-        assert_eq!(crate_name.as_deref(), Some("serde"));
-        assert_eq!(version.as_deref(), Some("1.0.220"));
-        assert_eq!(package_dir, None);
-        assert_eq!(series, "noble");
-        assert!(proposed);
-        assert_eq!(ppa, ["ppa:example/rust-staging"]);
-        assert_eq!(architecture.as_deref(), Some("arm64"));
+        assert_eq!(args.crate_name.as_deref(), Some("serde"));
+        assert_eq!(args.version.as_deref(), Some("1.0.220"));
+        assert_eq!(args.package_dir, None);
+        assert_eq!(args.series, "noble");
+        assert!(args.proposed);
+        assert_eq!(args.ppa, ["ppa:example/rust-staging"]);
+        assert_eq!(args.architecture.as_deref(), Some("arm64"));
     }
 
     #[test]
