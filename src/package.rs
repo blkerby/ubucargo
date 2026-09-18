@@ -43,7 +43,8 @@ pub struct PackageArgs {
     #[arg(value_name = "VERSION", requires = "crate_name")]
     pub version: Option<String>,
 
-    /// Debian source-package directory; defaults to the nearest parent package.
+    /// Debian source-package directory. If omitted, uses the nearest parent package;
+    /// if none exists, CRATE creates one under the current directory, or the command fails.
     #[arg(long = "package-dir", value_name = "DIR")]
     pub package_dir: Option<PathBuf>,
 

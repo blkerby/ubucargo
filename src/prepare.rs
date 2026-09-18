@@ -177,8 +177,10 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
     Ok(())
 }
 
-/// Resolves configuration and an exact release; no target means a fresh registry package.
-/// Latest-release selection may download and extract a crate before final generation.
+/// Resolves configuration and an exact release for staged generation.
+/// The target provides existing-package context or a destination for a local crate;
+/// it may be omitted if the crate will only be inspected rather than packaged.
+/// Selecting the latest release runs `debcargo extract` and may download the crate.
 pub fn prepare_package(
     target: Option<&PackageTarget>,
     requested_name: Option<&str>,

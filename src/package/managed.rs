@@ -18,12 +18,12 @@ use super::output::is_package_managed;
 
 const MANIFEST_NAME: &str = "ubucargo-state.json";
 
-/// Content digest and permission bits of one generated regular file.
+/// Content digest and executable status of one generated regular file.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Fingerprint {
     sha256: String,
-    mode: u32,
+    executable: bool,
 }
 
 /// Latest generated state; null entries record absence, missing entries are unknown.
@@ -64,7 +64,7 @@ fn compute_fingerprint(state: &FileState) -> Result<Fingerprint> {
     }
     Ok(Fingerprint {
         sha256: sha256.to_owned(),
-        mode: state.mode,
+        executable: state.mode & 0o111 != 0,
     })
 }
 
@@ -92,8 +92,7 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
             bail!("invalid managed path in {MANIFEST_NAME}: {path}");
         }
         if let Some(fingerprint) = fingerprint
-            && (fingerprint.mode > 0o7777
-                || fingerprint.sha256.len() != 64
+            && (fingerprint.sha256.len() != 64
                 || !fingerprint
                     .sha256
                     .bytes()
@@ -106,12 +105,19 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
 }
 
 /// File content and Unix permission mode relevant to generated packaging.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq)]
 pub struct FileState {
     /// Complete file contents.
     pub contents: Vec<u8>,
     /// Permission and special bits, excluding the file-type bits.
     pub mode: u32,
+}
+
+impl PartialEq for FileState {
+    /// Compares contents and executable status using Git's file-mode semantics.
+    fn eq(&self, other: &Self) -> bool {
+        self.contents == other.contents && (self.mode & 0o111 != 0) == (other.mode & 0o111 != 0)
+    }
 }
 
 /// Planned reconciliation result for one managed primary file and its hint.
@@ -486,6 +492,8 @@ mod tests {
             fingerprint.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+        state.mode = 0o600;
+        assert_eq!(compute_fingerprint(&state).unwrap(), fingerprint);
         state.mode = 0o755;
         assert_ne!(compute_fingerprint(&state).unwrap(), fingerprint);
         state.contents = vec![0xff; 1024 * 1024];
@@ -722,12 +730,12 @@ mod tests {
         ] {
             invalid.push(serde_json::json!({"version":1, "files":{path:null}}).to_string());
         }
-        for (sha256, mode) in [
-            ("bad".to_owned(), 420),
-            ("a".repeat(64), 4096),
-            ("A".repeat(64), 420),
+        for (sha256, executable) in [
+            ("bad".to_owned(), serde_json::json!(false)),
+            ("a".repeat(64), serde_json::json!(420)),
+            ("A".repeat(64), serde_json::json!(false)),
         ] {
-            invalid.push(serde_json::json!({"version":1,"files":{"debian/control":{"sha256":sha256,"mode":mode}}}).to_string());
+            invalid.push(serde_json::json!({"version":1,"files":{"debian/control":{"sha256":sha256,"executable":executable}}}).to_string());
         }
         for contents in invalid {
             fs::write(debian.join(MANIFEST_NAME), &contents).unwrap();
@@ -979,8 +987,8 @@ mod tests {
     }
 
     #[test]
-    /// Verifies generated modes and preservation of a later permission override.
-    fn preserves_permission_changes() {
+    /// Verifies only executable-bit changes count as permission overrides.
+    fn compares_executable_status() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let debian = root.join("debian");
@@ -1024,7 +1032,29 @@ mod tests {
             &BTreeSet::new(),
         )
         .unwrap();
+        assert!(!plan.paths[0].overridden);
+        assert!(!plan.has_changes());
+        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o750);
+        plan.apply().unwrap();
+        assert_eq!(
+            read_state(&root.join("debian/rules"))
+                .unwrap()
+                .unwrap()
+                .mode,
+            0o700
+        );
+
+        fs::set_permissions(root.join("debian/rules"), fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = build_plan(
+            &debian,
+            &BTreeSet::from([PathBuf::from("debian/rules")]),
+            &BTreeMap::from([(PathBuf::from("debian/rules"), generated)]),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert!(plan.paths[0].overridden);
-        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o700);
+        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o600);
     }
 }

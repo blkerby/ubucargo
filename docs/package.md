@@ -172,7 +172,7 @@ Generated files may include:
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
 - `debian/patches/auto/<patch>`, for debcargo-generated source transformations
 
-During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json`. It writes `<file>.debcargo.hint` only when fresh generated output exists and differs from the resulting primary, including permissions. The hint contains the generated alternative from that run. `--check` previews these changes without writing them.
+During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json`. It writes `<file>.debcargo.hint` only when fresh generated output differs from the resulting primary in content or executable status. The hint contains the generated alternative from that run. `--check` previews these changes without writing them.
 
 `debian/cargo-checksum.json` uses these same ownership rules; maintainer edits are preserved. `debian/patches/series` retains the special merge behavior described below and has neither a manifest entry nor a hint.
 
@@ -196,14 +196,14 @@ The manifest travels with the source package. Version 1 is JSON with paths sorte
   "files": {
     "debian/control": {
       "sha256": "<64 lowercase hexadecimal characters>",
-      "mode": 420
+      "executable": false
     },
     "debian/watch": null
   }
 }
 ```
 
-Keys are package-relative managed paths. Present files have a SHA-256 content hash and numeric Unix permission mode (`420` is octal `0644`). A `null` entry records generated absence; a missing entry means its baseline is unknown. Entries for previously managed paths remain even after the files disappear. Invalid records, unsupported versions, and paths outside the managed namespaces cause errors before any changes are applied.
+Keys are package-relative managed paths. Present files have a SHA-256 content hash and an executable boolean matching Git's file-mode semantics. A `null` entry records generated absence; a missing entry means its baseline is unknown. Entries for previously managed paths remain even after the files disappear. Invalid records, unsupported versions, and paths outside the managed namespaces cause errors before any changes are applied.
 
 For each managed path, materialization has three values:
 
@@ -211,7 +211,7 @@ For each managed path, materialization has three values:
 - `old`: the working-tree `<file>`
 - `new`: the generated staging file
 
-Comparisons include existence, content hash, and Unix permission mode. A missing file differs from an empty file, so deleting a generated file counts as a maintainer override.
+Comparisons include existence, content hash, and executable status. A missing file differs from an empty file, so deleting a generated file counts as a maintainer override.
 
 When `base` is known, including recorded absence, an override exists when `old != base`.
 
@@ -220,7 +220,7 @@ When `base` is known, including recorded absence, an override exists when `old !
 | `old == base` | Unmodified generated file | Take `new` as primary; remove any hint |
 | `old != base` | Maintainer override | Preserve `old`; write a hint if `new` exists and differs from `old` |
 
-This comparison is deliberately conservative. Any content or permission-mode change preserves the primary as an override rather than risking data loss.
+This comparison is deliberately conservative. Any content or executable-status change preserves the primary as an override rather than risking data loss.
 
 After reconciliation the manifest always records fresh generator output, never preserved maintainer contents. Hints are removed when redundant or when generated output no longer exists. Matching the latest generated state, including absence, clears an override. These rules also handle generator removal and later reintroduction.
 
@@ -234,9 +234,9 @@ Maintainers can build or upload a source package with such manual edits without 
 
 ## Migration and ambiguous baselines
 
-When a manifest entry is missing, an existing `.debcargo.hint` establishes the baseline, including permissions. Migration happens during ordinary generation: establish the manifest, keep hints for overrides, and remove redundant recognized hints. Unrecognized hints remain untouched.
+When a manifest entry is missing, an existing `.debcargo.hint` establishes the baseline, including executable status. Migration happens during ordinary generation: establish the manifest, keep hints for overrides, and remove redundant recognized hints. Unrecognized hints remain untouched.
 
-When a manifest entry and hint both exist, they must agree on contents and permissions. A hint also conflicts with a recorded absence. Conflicts require `--keep` or `--replace`, even when the primary matches one of the records. Missing hints are normal and do not invalidate manifest entries.
+When a manifest entry and hint both exist, they must agree on contents and executable status. A hint also conflicts with a recorded absence. Conflicts require `--keep` or `--replace`, even when the primary matches one of the records. Missing hints are normal and do not invalidate manifest entries.
 
 Without either baseline, `package` initializes only cases that cannot overwrite existing content:
 
