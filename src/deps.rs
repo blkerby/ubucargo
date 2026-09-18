@@ -14,7 +14,7 @@ use std::{
 use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{cargo, command::run_command, prepare};
+use crate::{cargo, command::run_command, generate, resolve};
 
 use self::{
     apt::PackageCandidate,
@@ -110,27 +110,24 @@ pub fn run(args: DepArgs) -> Result<bool> {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let target = if args.crate_name.is_some() {
+    let current = if args.crate_name.is_some() {
         None
     } else {
-        let current = env::current_dir()
-            .context("get current directory")?
-            .canonicalize()
-            .context("resolve current directory")?;
-        Some(prepare::resolve_package_target(
-            &current,
-            args.package_dir.as_deref(),
-            None,
-            None,
-        )?)
+        Some(
+            env::current_dir()
+                .context("get current directory")?
+                .canonicalize()
+                .context("resolve current directory")?,
+        )
     };
-    let prepared = prepare::prepare_package(
-        target.as_ref(),
+    let resolved = resolve::resolve_package(
+        current.as_deref(),
+        args.package_dir.as_deref(),
         args.crate_name.as_deref(),
         args.version.as_deref(),
         None,
     )?;
-    let generated = prepare::generate_package(&prepared, false)?;
+    let generated = generate::generate_package(&resolved, false)?;
     let dependencies = read_staged_dependencies(&generated.source, &architecture)?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);

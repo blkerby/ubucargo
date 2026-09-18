@@ -1,10 +1,12 @@
 //! Command-line interface for creating and updating Ubuntu Rust source packages.
 
 mod cargo;
+mod changelog;
 mod command;
 mod deps;
+mod generate;
 mod package;
-mod prepare;
+mod resolve;
 mod tree;
 
 use std::process::ExitCode;

@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::{command::run_command, prepare::PackageConfig};
+use crate::{command::run_command, resolve::PackageConfig};
 use debian_control::lossless::control::Control;
 
 use super::managed::{FileState, PathPlan, build_plan, read_state};
@@ -224,7 +224,7 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::prepare::generate::read_new_package_config;
+    use crate::resolve::read_new_package_config;
 
     #[test]
     /// Removes generated VCS fields without changing adjacent control fields.

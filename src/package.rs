@@ -9,10 +9,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    prepare::{
-        ExistingPackage, GeneratedPackage, PackageConfig, generate_package, parse_exact_version,
-        prepare_package, resolve_package_target,
-    },
+    generate::{GeneratedPackage, generate_package},
+    resolve::{ExistingPackage, PackageConfig, parse_exact_version, resolve_package},
     tree::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
@@ -83,31 +81,22 @@ pub fn run(args: PackageArgs) -> Result<bool> {
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let target = resolve_package_target(
-        &current,
-        args.package_dir.as_deref(),
-        args.crate_name.as_deref(),
-        args.local_crate.as_deref(),
-    )?;
     let (keep_paths, replace_paths) = collect_decisions(&args.keep, &args.replace)?;
-    if target.existing {
-        if args.local_crate.is_some() {
-            bail!("--local-crate applies only when creating a package");
-        }
-    } else if !keep_paths.is_empty() || !replace_paths.is_empty() {
-        bail!("--keep and --replace apply only to existing packages");
-    }
-    let prepared = prepare_package(
-        Some(&target),
+    let resolved = resolve_package(
+        Some(&current),
+        args.package_dir.as_deref(),
         args.crate_name.as_deref(),
         args.version.as_deref(),
         args.local_crate.as_deref(),
     )?;
-    if let Some(existing) = &prepared.existing {
+    if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
+        bail!("--keep and --replace apply only to existing packages");
+    }
+    if let Some(existing) = &resolved.existing {
         let old_orig = acquire_old_orig(&existing.root, &existing.top_changelog)?;
         let base = tempfile::tempdir().context("create old-source extraction directory")?;
         extract_tree(&old_orig.path, base.path())?;
-        let generated = generate_package(&prepared, args.keep_staging)?;
+        let generated = generate_package(&resolved, args.keep_staging)?;
         reconcile_existing(
             existing,
             base.path(),
@@ -117,8 +106,16 @@ pub fn run(args: PackageArgs) -> Result<bool> {
             &replace_paths,
         )
     } else {
-        let generated = generate_package(&prepared, args.keep_staging)?;
-        create_new(&target.source, &prepared.config, &generated, args.check)
+        let generated = generate_package(&resolved, args.keep_staging)?;
+        create_new(
+            resolved
+                .destination
+                .as_deref()
+                .context("package destination is missing")?,
+            &resolved.config,
+            &generated,
+            args.check,
+        )
     }
 }
 
