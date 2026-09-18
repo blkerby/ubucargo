@@ -4,12 +4,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::cargo::{MetadataPackage, read_root_package};
 
 use self::{
     changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
@@ -17,7 +16,7 @@ use self::{
         CrateSelection, PackageConfig, cargo_to_debian_upstream_version, check_debcargo_version,
         generate_debcargo_package, get_crate_source_name, parse_exact_version,
         read_new_local_package_config, read_new_package_config, read_package_config,
-        read_root_package, remove_generated_vcs_fields, select_release, update_staged_maintainer,
+        remove_generated_vcs_fields, select_release, update_staged_maintainer,
     },
     managed::{build_plan, install_state, read_state},
     orig::acquire_old_orig,
@@ -36,30 +35,6 @@ mod orig;
 mod output;
 mod source;
 mod tree;
-
-pub use generate::MetadataDependency;
-
-/// Existing-package reconciliation or clean-package creation mode.
-#[derive(Debug, Eq, PartialEq)]
-enum PackageMode {
-    /// An existing Debian source package.
-    Existing(PathBuf),
-    /// A clean destination that does not yet exist.
-    New {
-        /// Directory that will contain the source package and orig tarball.
-        parent: PathBuf,
-        /// Explicit source directory, or none when the Debian source name is used.
-        requested_dir: Option<PathBuf>,
-    },
-}
-
-/// Temporary package and patched Cargo dependencies used by `deps`.
-pub struct DependencyInspection {
-    /// Complete temporary debcargo staging directory.
-    pub stage: tempfile::TempDir,
-    /// Direct dependencies from the patch-applied Cargo manifest.
-    pub cargo_dependencies: Vec<MetadataDependency>,
-}
 
 /// Create or reconcile a complete source package.
 #[derive(clap::Args)]
@@ -101,10 +76,19 @@ pub struct PackageArgs {
     pub replace: Vec<PathBuf>,
 }
 
+/// Resolved source-package destination and whether it already exists.
+#[derive(Debug, Eq, PartialEq)]
+struct PackageTarget {
+    /// Directory containing or intended to contain the Debian source package.
+    source: PathBuf,
+    /// Whether the directory is an existing source package.
+    existing: bool,
+}
+
 /// Validated configuration and release selection for an existing package.
 struct ExistingPackage {
     /// Top changelog entry describing the current upstream source.
-    top: TopChangelog,
+    top_changelog: TopChangelog,
     /// Effective debcargo configuration.
     config: PackageConfig,
     /// Exact crate release selected for regeneration.
@@ -123,46 +107,42 @@ pub fn run(args: PackageArgs) -> Result<bool> {
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let mode = select_package_mode(
+    let target = resolve_package_target(
         &current,
         args.package_dir.as_deref(),
-        args.crate_name.is_some() || args.local_crate.is_some(),
+        args.crate_name.as_deref(),
+        args.local_crate.as_deref(),
     )?;
     let (keep_paths, replace_paths) = collect_decisions(&args.keep, &args.replace)?;
-    match mode {
-        PackageMode::Existing(root) => {
-            if args.local_crate.is_some() {
-                bail!("--local-crate applies only when creating a package");
-            }
-            reconcile_existing(
-                &root,
-                args.crate_name.as_deref(),
-                args.version.as_deref(),
-                args.check,
-                args.force,
-                args.keep_staging,
-                &keep_paths,
-                &replace_paths,
-            )
+    if target.existing {
+        if args.local_crate.is_some() {
+            bail!("--local-crate applies only when creating a package");
         }
-        PackageMode::New {
-            parent,
-            requested_dir,
-        } => {
-            if !keep_paths.is_empty() || !replace_paths.is_empty() {
-                bail!("--keep and --replace apply only to existing packages");
-            }
-            create_new(&parent, requested_dir.as_deref(), &args)
+        reconcile_existing(
+            &target.source,
+            args.crate_name.as_deref(),
+            args.version.as_deref(),
+            args.check,
+            args.force,
+            args.keep_staging,
+            &keep_paths,
+            &replace_paths,
+        )
+    } else {
+        if !keep_paths.is_empty() || !replace_paths.is_empty() {
+            bail!("--keep and --replace apply only to existing packages");
         }
+        create_new(&target.source, &args)
     }
 }
 
-/// Selects existing-package reconciliation or clean-package creation.
-fn select_package_mode(
+/// Resolves an existing source package or an absent destination for a new one.
+fn resolve_package_target(
     start: &Path,
     package_dir: Option<&Path>,
-    has_crate: bool,
-) -> Result<PackageMode> {
+    crate_name: Option<&str>,
+    local_crate: Option<&Path>,
+) -> Result<PackageTarget> {
     if let Some(package_dir) = package_dir {
         let requested_dir = start.join(package_dir);
         match fs::symlink_metadata(&requested_dir) {
@@ -176,23 +156,22 @@ fn select_package_mode(
                         root.display()
                     );
                 }
-                return Ok(PackageMode::Existing(root));
+                return Ok(PackageTarget {
+                    source: root,
+                    existing: true,
+                });
             }
             Ok(_) => bail!("{} is not a directory", requested_dir.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if !has_crate {
+                if crate_name.is_none() && local_crate.is_none() {
                     bail!(
                         "CRATE or --local-crate is required when creating {}",
                         requested_dir.display()
                     );
                 }
-                let parent = requested_dir
-                    .parent()
-                    .with_context(|| format!("{} has no parent", requested_dir.display()))?
-                    .to_path_buf();
-                return Ok(PackageMode::New {
-                    parent,
-                    requested_dir: Some(requested_dir),
+                return Ok(PackageTarget {
+                    source: requested_dir,
+                    existing: false,
                 });
             }
             Err(error) => {
@@ -202,17 +181,23 @@ fn select_package_mode(
     }
 
     if let Some(root) = find_parent_package(start) {
-        return Ok(PackageMode::Existing(root));
+        return Ok(PackageTarget {
+            source: root,
+            existing: true,
+        });
     }
-    if !has_crate {
+    let Some(crate_name) = crate_name else {
         bail!(
             "{} is not inside a source package; CRATE is required to create one",
             start.display()
         );
-    }
-    Ok(PackageMode::New {
-        parent: start.to_path_buf(),
-        requested_dir: None,
+    };
+    // New registry packages use the default configuration, without a semver suffix.
+    let source = start.join(get_crate_source_name(crate_name, None));
+    require_absent(&source)?;
+    Ok(PackageTarget {
+        source,
+        existing: false,
     })
 }
 
@@ -231,12 +216,12 @@ fn has_debcargo_config(path: &Path) -> bool {
     path.join("debian/debcargo.toml").is_file()
 }
 
-/// Stages one crate package for read-only dependency inspection.
-pub fn stage_for_dependency_inspection(
+/// Generates a validated source package in the returned temporary directory's `output` tree.
+pub fn stage_package(
     crate_name: Option<&str>,
     version: Option<&str>,
     package_dir: Option<&Path>,
-) -> Result<DependencyInspection> {
+) -> Result<tempfile::TempDir> {
     if let Some(version) = version {
         parse_exact_version(version)?;
     }
@@ -256,16 +241,18 @@ pub fn stage_for_dependency_inspection(
             &debcargo_version,
             false,
         )?;
-        return finish_dependency_inspection(generated.stage);
+        return Ok(generated.stage);
     }
 
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
-    let PackageMode::Existing(root) = select_package_mode(&current, package_dir, false)? else {
-        bail!("dependency inspection requires an existing source package");
-    };
+    let target = resolve_package_target(&current, package_dir, None, None)?;
+    if !target.existing {
+        bail!("staging without CRATE requires an existing source package");
+    }
+    let root = target.source;
 
     let debian = root.join("debian");
     let package = prepare_existing_package(&root, None, None)?;
@@ -273,33 +260,14 @@ pub fn stage_for_dependency_inspection(
     let generated = generate_debcargo_package(
         &package.config,
         Some(&debian),
-        Some(&package.top),
-        &package.top.source,
+        Some(&package.top_changelog),
+        &package.top_changelog.source,
         &package.upstream,
         &package.crate_selection,
         &debcargo_version,
         false,
     )?;
-    finish_dependency_inspection(generated.stage)
-}
-
-/// Applies staged quilt patches and reads direct Cargo dependencies.
-fn finish_dependency_inspection(stage: tempfile::TempDir) -> Result<DependencyInspection> {
-    let source = stage.path().join("output");
-    if source.join("debian/patches/series").is_file() {
-        run_command(
-            Command::new("quilt")
-                .args(["push", "-a", "--quiltrc=-"])
-                .env("QUILT_PATCHES", "debian/patches")
-                .current_dir(&source),
-            "apply staged quilt patches",
-        )?;
-    }
-    let cargo_dependencies = read_root_package(&source)?.dependencies;
-    Ok(DependencyInspection {
-        stage,
-        cargo_dependencies,
-    })
+    Ok(generated.stage)
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -339,7 +307,7 @@ fn reconcile_existing(
     let debian = root.join("debian");
     let package = prepare_existing_package(root, requested_name, requested_version)?;
 
-    let old_orig = acquire_old_orig(root, &package.top)?;
+    let old_orig = acquire_old_orig(root, &package.top_changelog)?;
     let base = tempfile::tempdir().context("create old-source extraction directory")?;
     extract_tree(&old_orig.path, base.path())?;
     let patches_applied = check_patch_state(root)?;
@@ -347,8 +315,8 @@ fn reconcile_existing(
     let generated = generate_debcargo_package(
         &package.config,
         Some(&debian),
-        Some(&package.top),
-        &package.top.source,
+        Some(&package.top_changelog),
+        &package.top_changelog.source,
         &package.upstream,
         &package.crate_selection,
         &debcargo_version,
@@ -446,8 +414,9 @@ fn reconcile_existing(
     Ok(false)
 }
 
-/// Creates a clean source package
-fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -> Result<bool> {
+/// Creates a clean source package at the resolved destination.
+fn create_new(root: &Path, args: &PackageArgs) -> Result<bool> {
+    let parent = root.parent().context("package root has no parent")?;
     let debcargo_version = check_debcargo_version()?;
     let (config, crate_selection) = if let Some(local_crate) = args.local_crate.as_deref() {
         let local_crate = if local_crate.is_absolute() {
@@ -457,12 +426,11 @@ fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -
                 .context("get current directory")?
                 .join(local_crate)
         };
-        let package_root = requested_dir.context("--local-crate requires --package-dir")?;
-        validate_separate_trees(&local_crate, package_root)?;
+        validate_separate_trees(&local_crate, root)?;
         let source = local_crate
             .canonicalize()
             .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
-        let config = read_new_local_package_config(&source, package_root)?;
+        let config = read_new_local_package_config(&source, root)?;
         let package = read_root_package(&source)?;
         let crate_selection = select_release(None, None, Some(&package), &config)?;
         (config, crate_selection)
@@ -491,10 +459,7 @@ fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -
     update_staged_maintainer(generated.stage.path())?;
     initialize_package(&generated.source, &config)?;
 
-    let source = requested_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| parent.join(&generated.debian_source));
-    require_absent(&source)?;
+    require_absent(root)?;
     let orig = parent.join(
         generated
             .orig
@@ -502,7 +467,7 @@ fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -
             .context("candidate orig has no file name")?,
     );
     let orig_changed = files_differ(&generated.orig, &orig)?;
-    println!("create {}", source.display());
+    println!("create {}", root.display());
     if orig_changed {
         println!("create {}", orig.display());
     }
@@ -514,7 +479,7 @@ fn create_new(parent: &Path, requested_dir: Option<&Path>, args: &PackageArgs) -
     if orig_changed {
         fs::copy(&generated.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
     }
-    copy_tree(&generated.source, &source)?;
+    copy_tree(&generated.source, root)?;
     Ok(false)
 }
 
@@ -555,7 +520,7 @@ fn prepare_existing_package(
         );
     }
     Ok(ExistingPackage {
-        top,
+        top_changelog: top,
         config,
         crate_selection,
         upstream,
@@ -567,7 +532,7 @@ fn select_existing_release(
     root: &Path,
     requested_name: Option<&str>,
     requested_version: Option<&str>,
-    current_package: &generate::MetadataPackage,
+    current_package: &MetadataPackage,
     config: &PackageConfig,
 ) -> Result<CrateSelection> {
     let Some(local_crate) = &config.crate_src_path else {
@@ -593,7 +558,14 @@ fn selected_debian_identity(
 ) -> Result<(String, String)> {
     let version = parse_exact_version(&crate_selection.version)?;
     Ok((
-        get_crate_source_name(&crate_selection.crate_name, &version, config.semver_suffix),
+        get_crate_source_name(
+            &crate_selection.crate_name,
+            if config.semver_suffix {
+                Some(&version)
+            } else {
+                None
+            },
+        ),
         cargo_to_debian_upstream_version(&version, config.repack_suffix.as_deref()),
     ))
 }
@@ -613,38 +585,90 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("debian")).unwrap();
         fs::write(root.path().join("debian/debcargo.toml"), "").unwrap();
-        let mode = select_package_mode(root.path(), Some(Path::new("new-package")), true).unwrap();
+        let target = resolve_package_target(
+            root.path(),
+            Some(Path::new("new-package")),
+            Some("example"),
+            None,
+        )
+        .unwrap();
         assert_eq!(
-            mode,
-            PackageMode::New {
-                parent: root.path().to_path_buf(),
-                requested_dir: Some(root.path().join("new-package")),
+            target,
+            PackageTarget {
+                source: root.path().join("new-package"),
+                existing: false,
+            }
+        );
+        assert_eq!(
+            resolve_package_target(
+                root.path(),
+                Some(Path::new("new-package")),
+                None,
+                Some(Path::new("../crate")),
+            )
+            .unwrap(),
+            target
+        );
+        assert_eq!(
+            resolve_package_target(root.path(), Some(root.path()), None, None).unwrap(),
+            PackageTarget {
+                source: root.path().to_path_buf(),
+                existing: true,
             }
         );
     }
 
     #[test]
-    /// Verifies implicit mode finds a parent package or creates in the start directory.
-    fn selects_implicit_target_mode() {
+    /// Finds a parent package or resolves an unoccupied default destination from the crate name.
+    fn resolves_implicit_package_target() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("debian")).unwrap();
         fs::write(root.path().join("debian/debcargo.toml"), "").unwrap();
         let nested = root.path().join("a/b");
         fs::create_dir_all(&nested).unwrap();
         assert_eq!(
-            select_package_mode(&nested, None, false).unwrap(),
-            PackageMode::Existing(root.path().to_path_buf())
+            resolve_package_target(&nested, None, None, None).unwrap(),
+            PackageTarget {
+                source: root.path().to_path_buf(),
+                existing: true,
+            }
         );
 
         let clean = tempfile::tempdir().unwrap();
         assert_eq!(
-            select_package_mode(clean.path(), None, true).unwrap(),
-            PackageMode::New {
-                parent: clean.path().to_path_buf(),
-                requested_dir: None,
+            resolve_package_target(clean.path(), None, Some("Example_Crate"), None).unwrap(),
+            PackageTarget {
+                source: clean.path().join("rust-example-crate"),
+                existing: false,
             }
         );
-        assert!(select_package_mode(clean.path(), None, false).is_err());
+        assert!(resolve_package_target(clean.path(), None, None, None).is_err());
+
+        let occupied = clean.path().join("rust-example-crate");
+        fs::create_dir_all(occupied.join("debian")).unwrap();
+        fs::write(occupied.join("debian/debcargo.toml"), "").unwrap();
+        // An occupied default destination must not silently turn creation into reconciliation.
+        assert!(resolve_package_target(clean.path(), None, Some("Example_Crate"), None).is_err());
+    }
+
+    #[test]
+    /// Rejects invalid explicit targets, including symlinks and creation without a crate.
+    fn rejects_invalid_package_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let plain = root.path().join("plain");
+        fs::create_dir(&plain).unwrap();
+        let file = root.path().join("file");
+        fs::write(&file, "").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(root.path().join("absent"), &link).unwrap();
+        for path in [&plain, &file, &link] {
+            assert!(
+                resolve_package_target(root.path(), Some(path), Some("example"), None).is_err()
+            );
+        }
+        assert!(
+            resolve_package_target(root.path(), Some(Path::new("absent")), None, None).is_err()
+        );
     }
 
     #[test]
@@ -657,31 +681,5 @@ mod tests {
         assert!(validate_separate_trees(&crate_root, &crate_root).is_err());
         assert!(validate_separate_trees(&crate_root, &crate_root.join("package")).is_err());
         assert!(validate_separate_trees(&package_root.join("crate"), &package_root).is_err());
-    }
-
-    #[test]
-    /// Reads Cargo dependency requirements after applying staged quilt patches.
-    fn reads_patched_dependency_metadata() {
-        let stage = tempfile::tempdir().unwrap();
-        let output = stage.path().join("output");
-        fs::create_dir_all(output.join("src")).unwrap();
-        fs::create_dir_all(output.join("debian/patches")).unwrap();
-        fs::write(
-            output.join("Cargo.toml"),
-            "[package]\nname = \"example\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = \"1\"\n",
-        )
-        .unwrap();
-        fs::write(output.join("src/lib.rs"), "").unwrap();
-        fs::write(output.join("debian/patches/series"), "version.patch\n").unwrap();
-        fs::write(
-            output.join("debian/patches/version.patch"),
-            "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -7 +7 @@\n-serde = \"1\"\n+serde = \"2\"\n",
-        )
-        .unwrap();
-
-        let inspection = finish_dependency_inspection(stage).unwrap();
-
-        assert_eq!(inspection.cargo_dependencies[0].name, "serde");
-        assert_eq!(inspection.cargo_dependencies[0].req, "^2");
     }
 }

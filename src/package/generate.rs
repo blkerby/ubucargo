@@ -9,10 +9,12 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::{
+    cargo::{MetadataPackage, read_root_package},
+    command::run_command,
+};
 use debian_control::lossless::control::Control;
 use semver::{Version, VersionReq};
-use serde::Deserialize;
 use tempfile::TempDir;
 use toml_edit::{DocumentMut, value};
 
@@ -22,36 +24,6 @@ use super::tree::copy_tree;
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
 const UBUNTU_MAINTAINER: &str = "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>";
-
-/// Relevant package records returned by `cargo metadata`.
-#[derive(Deserialize)]
-struct Metadata {
-    /// Cargo packages contained in the staged workspace.
-    packages: Vec<MetadataPackage>,
-}
-
-/// Cargo metadata needed to identify the staged root package.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetadataPackage {
-    /// Cargo package name passed to debcargo.
-    pub name: String,
-    /// Exact Cargo package version passed to debcargo.
-    pub version: String,
-    /// Direct Cargo dependencies declared by the package.
-    #[serde(default)]
-    pub dependencies: Vec<MetadataDependency>,
-    /// Manifest used to distinguish the root package from workspace members.
-    manifest_path: PathBuf,
-}
-
-/// Direct dependency fields used by dependency inspection.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetadataDependency {
-    /// Canonical package name, independent of any local rename.
-    pub name: String,
-    /// Cargo semantic-version requirement.
-    pub req: String,
-}
 
 /// Debcargo configuration values that affect package identity.
 pub struct PackageConfig {
@@ -99,8 +71,6 @@ pub struct GeneratedPackage {
     pub source: PathBuf,
     /// Staged Debian orig tarball.
     pub orig: PathBuf,
-    /// Debian source package name.
-    pub debian_source: String,
 }
 
 /// Returns the installed debcargo version when it is compatible.
@@ -124,35 +94,6 @@ fn parse_debcargo_version(output: &str) -> Result<Version> {
         bail!("unsupported debcargo {version}; this release requires {requirement}");
     }
     Ok(version)
-}
-
-/// Uses Cargo to identify the package defined by the root manifest.
-pub fn read_root_package(root: &Path) -> Result<MetadataPackage> {
-    let manifest = root.join("Cargo.toml").canonicalize()?;
-    let output = run_command(
-        Command::new("cargo")
-            .args([
-                "metadata",
-                "--offline",
-                "--no-deps",
-                "--format-version",
-                "1",
-                "--manifest-path",
-            ])
-            .arg(&manifest),
-        "cargo metadata",
-    )?;
-    let metadata: Metadata = serde_json::from_slice(&output.stdout)?;
-    metadata
-        .packages
-        .into_iter()
-        .find(|package| {
-            package
-                .manifest_path
-                .canonicalize()
-                .is_ok_and(|path| path == manifest)
-        })
-        .with_context(|| format!("{} does not contain a root [package]", manifest.display()))
 }
 
 /// Selects an exact release, using preliminary extraction only for latest-version resolution.
@@ -199,10 +140,10 @@ pub fn cargo_to_debian_upstream_version(version: &Version, repack_suffix: Option
     converted
 }
 
-/// Computes debcargo's Debian source name for a crate release.
-pub fn get_crate_source_name(crate_name: &str, version: &Version, semver_suffix: bool) -> String {
+/// Computes debcargo's Debian source name, optionally suffixed by a release's semver line.
+pub fn get_crate_source_name(crate_name: &str, semver_suffix: Option<&Version>) -> String {
     let mut source = format!("rust-{}", normalize_crate_name(crate_name));
-    if semver_suffix {
+    if let Some(version) = semver_suffix {
         if version.major == 0 {
             source.push_str(&format!("-0.{}", version.minor));
         } else {
@@ -411,7 +352,6 @@ fn validate_debcargo_output(
         stage,
         source,
         orig,
-        debian_source,
     })
 }
 
@@ -564,6 +504,23 @@ fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// Preserves normalized source names with and without a semver suffix.
+    fn computes_source_names() {
+        assert_eq!(
+            get_crate_source_name("Example_Crate", None),
+            "rust-example-crate"
+        );
+        assert_eq!(
+            get_crate_source_name("example", Some(&Version::new(0, 4, 1))),
+            "rust-example-0.4"
+        );
+        assert_eq!(
+            get_crate_source_name("example", Some(&Version::new(2, 3, 1))),
+            "rust-example-2"
+        );
+    }
 
     #[test]
     /// Verifies exact Cargo-to-Debian upstream conversion.

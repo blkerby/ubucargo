@@ -7,11 +7,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     io::{self, IsTerminal},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::Result;
 use debian_control::relations::VersionConstraint;
+
+use crate::{cargo, command::run_command, package};
 
 use self::{
     apt::PackageCandidate,
@@ -107,16 +110,12 @@ pub fn run(args: DepArgs) -> Result<bool> {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let inspection = crate::package::stage_for_dependency_inspection(
+    let stage = package::stage_package(
         args.crate_name.as_deref(),
         args.version.as_deref(),
         args.package_dir.as_deref(),
     )?;
-    let dependencies = control::read_dependencies(
-        &inspection.stage.path().join("output/debian/control"),
-        &architecture,
-        &inspection.cargo_dependencies,
-    )?;
+    let dependencies = read_staged_dependencies(&stage.path().join("output"), &architecture)?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -124,6 +123,25 @@ pub fn run(args: DepArgs) -> Result<bool> {
     Ok(rows
         .iter()
         .any(|row| matches!(row.status, "incompatible" | "missing")))
+}
+
+/// Applies staged quilt patches and reads Cargo and Debian dependency requirements.
+fn read_staged_dependencies(source: &Path, architecture: &str) -> Result<Vec<Dependency>> {
+    if source.join("debian/patches/series").is_file() {
+        run_command(
+            Command::new("quilt")
+                .args(["push", "-a", "--quiltrc=-"])
+                .env("QUILT_PATCHES", "debian/patches")
+                .current_dir(source),
+            "apply staged quilt patches",
+        )?;
+    }
+    let cargo_dependencies = cargo::read_root_package(source)?.dependencies;
+    control::read_dependencies(
+        &source.join("debian/control"),
+        architecture,
+        &cargo_dependencies,
+    )
 }
 
 /// Classifies all candidates for each dependency in deterministic order.
@@ -423,11 +441,43 @@ fn format_table(rows: &[Row], color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs};
 
     use debversion::Version;
 
     use super::*;
+
+    #[test]
+    /// Reads dependency requirements after applying staged quilt patches.
+    fn reads_patched_dependency_metadata() {
+        let stage = tempfile::tempdir().unwrap();
+        let output = stage.path().join("output");
+        fs::create_dir_all(output.join("src")).unwrap();
+        fs::create_dir_all(output.join("debian/patches")).unwrap();
+        fs::write(
+            output.join("Cargo.toml"),
+            "[package]\nname = \"example\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = \"1\"\n",
+        )
+        .unwrap();
+        fs::write(output.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            output.join("debian/control"),
+            "Source: rust-example\nBuild-Depends: librust-serde-dev (>= 2)\n",
+        )
+        .unwrap();
+        fs::write(output.join("debian/patches/series"), "version.patch\n").unwrap();
+        fs::write(
+            output.join("debian/patches/version.patch"),
+            "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -7 +7 @@\n-serde = \"1\"\n+serde = \"2\"\n",
+        )
+        .unwrap();
+
+        let dependencies = read_staged_dependencies(&output, "amd64").unwrap();
+
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].name, "serde");
+        assert_eq!(dependencies[0].cargo_requirement, "^2");
+    }
 
     /// Creates one candidate with a set of versioned virtual packages.
     fn candidate(version: &str, location: &str, provides: &[&str]) -> PackageCandidate {

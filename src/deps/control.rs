@@ -9,7 +9,7 @@ use debian_control::{
 };
 use debversion::Version;
 
-use crate::package::{MetadataDependency, normalize_crate_name};
+use crate::{cargo::MetadataDependency, package::normalize_crate_name};
 
 /// One Debian package alternative in a dependency expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
