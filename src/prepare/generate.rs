@@ -12,15 +12,16 @@ use anyhow::{Context, Result, bail};
 use crate::{
     cargo::{MetadataPackage, read_root_package},
     command::run_command,
+    tree::copy_tree,
 };
 use debian_control::lossless::control::Control;
 use semver::{Version, VersionReq};
 use tempfile::TempDir;
 use toml_edit::{DocumentMut, value};
 
-use super::changelog::{TopChangelog, prepare_changelog};
+use super::PreparedPackage;
+use super::changelog::prepare_changelog;
 use super::normalize_crate_name;
-use super::tree::copy_tree;
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
 const UBUNTU_MAINTAINER: &str = "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>";
@@ -193,17 +194,8 @@ pub fn read_new_local_package_config(
     Ok(config)
 }
 
-/// Builds and validates a debcargo source tree with a prepared Ubuntu changelog.
-pub fn generate_debcargo_package(
-    config: &PackageConfig,
-    existing_debian: Option<&Path>,
-    old_top: Option<&TopChangelog>,
-    source_name: &str,
-    upstream: &str,
-    crate_selection: &CrateSelection,
-    debcargo_version: &Version,
-    keep_staging: bool,
-) -> Result<GeneratedPackage> {
+/// Generates and validates a staged source package using the prepared release and configuration.
+pub fn generate_package(package: &PreparedPackage, keep_staging: bool) -> Result<GeneratedPackage> {
     let stage = tempfile::Builder::new()
         .disable_cleanup(keep_staging)
         .tempdir()
@@ -213,62 +205,44 @@ pub fn generate_debcargo_package(
     }
     let overlay = stage.path().join("overlay");
     fs::create_dir(&overlay)?;
-    if let Some(debian) = existing_debian {
-        prepare_patch_overlay(debian, &overlay)?;
+    if let Some(existing) = &package.existing {
+        prepare_patch_overlay(&existing.root.join("debian"), &overlay)?;
     }
-    write_staged_config(config, stage.path())?;
-    let source = if config.crate_src_path.is_some() {
+    write_staged_config(&package.config, stage.path())?;
+    let source = if package.config.crate_src_path.is_some() {
         "local source"
     } else {
         "crates.io"
     };
     let provenance = format!(
         "Package {} {} from {source}.\n  Generated with debcargo {} and ubucargo {}.",
-        crate_selection.crate_name,
-        crate_selection.version,
-        debcargo_version,
+        package.crate_selection.crate_name,
+        package.crate_selection.version,
+        package.debcargo_version,
         env!("CARGO_PKG_VERSION")
     );
     prepare_changelog(
-        existing_debian.map(|debian| debian.join("changelog")),
+        package
+            .existing
+            .as_ref()
+            .map(|existing| existing.root.join("debian/changelog")),
         &overlay.join("changelog"),
-        old_top,
-        source_name,
-        upstream,
+        package
+            .existing
+            .as_ref()
+            .map(|existing| &existing.top_changelog),
+        &package.source_name,
+        &package.upstream,
         &provenance,
     )?;
-    run_debcargo(stage.path(), crate_selection)?;
+    run_debcargo(stage.path(), &package.crate_selection)?;
     validate_debcargo_output(
         stage,
-        source_name,
-        upstream,
-        &crate_selection.crate_name,
-        &crate_selection.version,
+        &package.source_name,
+        &package.upstream,
+        &package.crate_selection.crate_name,
+        &package.crate_selection.version,
     )
-}
-
-/// Applies Ubuntu maintainer fields to staged debcargo output.
-pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
-    run_command(
-        Command::new("update-maintainer")
-            .arg("--quiet")
-            .arg("--debian-directory")
-            .arg(stage.join("output/debian")),
-        "update-maintainer",
-    )?;
-    Ok(())
-}
-
-/// Removes Debian packaging repository fields from generated control output.
-pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
-    let path = stage.join("output/debian/control");
-    let control = Control::from_file(&path).with_context(|| format!("parse {}", path.display()))?;
-    let mut source = control
-        .source()
-        .context("generated control has no source paragraph")?;
-    source.as_mut_deb822().remove("Vcs-Git");
-    source.as_mut_deb822().remove("Vcs-Browser");
-    fs::write(&path, control.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
@@ -550,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    /// Preserves the new-package maintainer through initialization, reload, and staging.
+    /// Preserves the new-package maintainer through configuration reload and staging.
     fn preserves_new_package_maintainer() {
         let stage = tempfile::tempdir().unwrap();
         let crate_root = stage.path().join("crate");
@@ -563,7 +537,7 @@ mod tests {
         ] {
             write_staged_config(&config, stage.path()).unwrap();
             let initial = fs::read_to_string(stage.path().join("debcargo.toml")).unwrap();
-            super::super::output::initialize_package(&package_root, &config).unwrap();
+            fs::write(package_root.join("debian/debcargo.toml"), &config.contents).unwrap();
             let reloaded = read_package_config(&package_root.join("debian/debcargo.toml")).unwrap();
             let document: DocumentMut = reloaded.contents.parse().unwrap();
             assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
@@ -631,32 +605,6 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(staged["crate_src_path"].as_str(), crate_root.to_str());
-    }
-
-    #[test]
-    /// Removes generated VCS fields without changing adjacent control fields.
-    fn removes_generated_vcs_fields() {
-        let stage = tempfile::tempdir().unwrap();
-        let debian = stage.path().join("output/debian");
-        fs::create_dir_all(&debian).unwrap();
-        fs::write(
-            debian.join("control"),
-            concat!(
-                "Source: rust-example\n",
-                "Vcs-Git: https://salsa.debian.org/rust-team/debcargo-conf.git\n",
-                " [src/example]\n",
-                "Vcs-Browser: https://salsa.debian.org/rust-team/debcargo-conf/src/example\n",
-                "Homepage: https://example.com\n",
-            ),
-        )
-        .unwrap();
-
-        remove_generated_vcs_fields(stage.path()).unwrap();
-
-        assert_eq!(
-            fs::read_to_string(debian.join("control")).unwrap(),
-            "Source: rust-example\nHomepage: https://example.com\n"
-        );
     }
 
     #[test]

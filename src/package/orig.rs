@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use crate::command::run_command;
 use tempfile::TempDir;
 
-use super::changelog::TopChangelog;
+use crate::prepare::TopChangelog;
 
 /// An old orig path and any temporary directory that keeps it alive.
 pub struct OrigBaseline {

@@ -1,4 +1,4 @@
-//! Selects managed files and patch metadata from debcargo output.
+//! Adjusts generated packaging and selects managed files and patch metadata.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,12 +9,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::{command::run_command, prepare::PackageConfig};
+use debian_control::lossless::control::Control;
 
-use super::{
-    generate::PackageConfig,
-    managed::{FileState, PathPlan, build_plan, read_state},
-};
+use super::managed::{FileState, PathPlan, build_plan, read_state};
 
 const PACKAGE_MANAGED_PATHS: &[&str] = &[
     "debian/cargo-checksum.json",
@@ -27,28 +25,28 @@ const PACKAGE_MANAGED_PATHS: &[&str] = &[
 ];
 const EXPECTED_UNMANAGED_OUTPUTS: &[&str] = &["debian/changelog", "debian/source/format"];
 
-/// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
-pub fn check_patch_state(source: &Path) -> Result<bool> {
-    let path = source.join(".pc/applied-patches");
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-    if !contents.lines().any(|line| !line.trim().is_empty()) {
-        return Ok(false);
-    }
-    let output = run_command(
-        Command::new("quilt")
-            .args(["diff", "--quiltrc=-", "-z", "--no-timestamps", "--no-index"])
-            .env("QUILT_PATCHES", "debian/patches")
-            .current_dir(source),
-        "quilt diff -z",
+/// Applies Ubuntu maintainer fields to staged debcargo output.
+pub fn update_staged_maintainer(stage: &Path) -> Result<()> {
+    run_command(
+        Command::new("update-maintainer")
+            .arg("--quiet")
+            .arg("--debian-directory")
+            .arg(stage.join("output/debian")),
+        "update-maintainer",
     )?;
-    if !output.stdout.is_empty() {
-        bail!("the current quilt patch has unrefreshed changes; run `quilt refresh`");
-    }
-    Ok(true)
+    Ok(())
+}
+
+/// Removes Debian packaging repository fields from generated control output.
+pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
+    let path = stage.join("output/debian/control");
+    let control = Control::from_file(&path).with_context(|| format!("parse {}", path.display()))?;
+    let mut source = control
+        .source()
+        .context("generated control has no source paragraph")?;
+    source.as_mut_deb822().remove("Vcs-Git");
+    source.as_mut_deb822().remove("Vcs-Browser");
+    fs::write(&path, control.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
 /// Reports whether generated automatic patches or their series change.
@@ -225,8 +223,34 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::generate::read_new_package_config;
     use super::*;
+    use crate::prepare::generate::read_new_package_config;
+
+    #[test]
+    /// Removes generated VCS fields without changing adjacent control fields.
+    fn removes_generated_vcs_fields() {
+        let stage = tempfile::tempdir().unwrap();
+        let debian = stage.path().join("output/debian");
+        fs::create_dir_all(&debian).unwrap();
+        fs::write(
+            debian.join("control"),
+            concat!(
+                "Source: rust-example\n",
+                "Vcs-Git: https://salsa.debian.org/rust-team/debcargo-conf.git\n",
+                " [src/example]\n",
+                "Vcs-Browser: https://salsa.debian.org/rust-team/debcargo-conf/src/example\n",
+                "Homepage: https://example.com\n",
+            ),
+        )
+        .unwrap();
+
+        remove_generated_vcs_fields(stage.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(debian.join("control")).unwrap(),
+            "Source: rust-example\nHomepage: https://example.com\n"
+        );
+    }
 
     #[test]
     /// Verifies new-package initialization records baselines without redundant hints.

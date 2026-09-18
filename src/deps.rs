@@ -11,10 +11,10 @@ use std::{
     process::Command,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{cargo, command::run_command, package};
+use crate::{cargo, command::run_command, prepare};
 
 use self::{
     apt::PackageCandidate,
@@ -110,12 +110,28 @@ pub fn run(args: DepArgs) -> Result<bool> {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let stage = package::stage_package(
+    let target = if args.crate_name.is_some() {
+        None
+    } else {
+        let current = env::current_dir()
+            .context("get current directory")?
+            .canonicalize()
+            .context("resolve current directory")?;
+        Some(prepare::resolve_package_target(
+            &current,
+            args.package_dir.as_deref(),
+            None,
+            None,
+        )?)
+    };
+    let prepared = prepare::prepare_package(
+        target.as_ref(),
         args.crate_name.as_deref(),
         args.version.as_deref(),
-        args.package_dir.as_deref(),
+        None,
     )?;
-    let dependencies = read_staged_dependencies(&stage.path().join("output"), &architecture)?;
+    let generated = prepare::generate_package(&prepared, false)?;
+    let dependencies = read_staged_dependencies(&generated.source, &architecture)?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();

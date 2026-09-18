@@ -4,6 +4,8 @@ mod cargo;
 mod command;
 mod deps;
 mod package;
+mod prepare;
+mod tree;
 
 use std::process::ExitCode;
 
