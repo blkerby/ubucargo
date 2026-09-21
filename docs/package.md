@@ -213,6 +213,8 @@ For each managed path, materialization has three values:
 
 Comparisons include existence, content hash, and executable status. A missing file differs from an empty file, so deleting a generated file counts as a maintainer override.
 
+Copied files and trees retain their source permissions. Atomic writes of generated files and hints also retain the captured source permissions. Newly created directories and content without a source file, such as the ownership manifest, use ordinary creation permissions filtered by umask. Only executable status participates in ownership comparisons; incidental mode changes do not trigger updates. Preserved overrides and otherwise untouched paths retain their existing permissions. Symbolic links are preserved without changing their targets' permissions.
+
 When `base` is known, including recorded absence, an override exists when `old != base`.
 
 | Condition     | Meaning                   | Behavior                                    |
@@ -248,7 +250,7 @@ Without either baseline, `package` initializes only cases that cannot overwrite 
 | present | different from `old` | Stop without writing; require `--keep` or `--replace` |
 | present | absent               | Preserve the primary and record generated absence |
 
-Old `cargo-checksum.json` files receive these same migration rules. Since earlier versions saved no baseline, differing output may require a one-time decision. The exact-match inference for raw Debian control output remains available when neither a manifest entry nor a hint exists.
+The exact-match inference for raw Debian control output remains available when neither a manifest entry nor a hint exists.
 
 For an ambiguous path, the user may disambiguate by supplying a `--keep` or `--replace` option using a package-relative path:
 

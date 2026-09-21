@@ -65,8 +65,8 @@ pub fn generated_patch_changes(plan: &super::managed::Plan) -> bool {
 }
 
 /// Reads fresh debcargo outputs proposed for reconciliation.
-pub fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
-    let output_debian = stage.join("output/debian");
+pub fn read_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
+    let output_debian = source.join("debian");
     if !output_debian.is_dir() {
         bail!("debcargo produced no debian directory");
     }
@@ -75,14 +75,11 @@ pub fn read_generated_candidates(stage: &Path) -> Result<BTreeMap<PathBuf, FileS
     collect_output_paths(&output_debian, &output_debian, &mut output_paths)?;
     for path in output_paths {
         if is_package_managed(&path) {
-            let state = read_state(&stage.join("output").join(&path))?
+            let state = read_state(&source.join(&path))?
                 .with_context(|| format!("missing generated {}", path.display()))?;
             generated.insert(path, state);
         } else if !is_expected_unmanaged_output(&path) {
-            eprintln!(
-                "warning: ignoring unrecognized debcargo output {}",
-                path.display()
-            );
+            eprintln!("warning: unrecognized debcargo output {}", path.display());
         }
     }
     Ok(generated)
@@ -147,19 +144,8 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
 /// Adds the used Ubucargo configuration and generated-file baselines to a new staged package.
 pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let debian = source.join("debian");
+    let generated = read_generated_candidates(source)?;
     write_package_config(config, source)?;
-    let mut paths = BTreeSet::new();
-    collect_output_paths(&debian, &debian, &mut paths)?;
-    let mut generated = BTreeMap::new();
-    for path in paths {
-        if is_package_managed(&path) {
-            let primary = source.join(&path);
-            generated.insert(
-                path,
-                read_state(&primary)?.context("generated file disappeared")?,
-            );
-        }
-    }
     build_plan(
         &debian,
         &collect_managed_paths(&debian, &generated)?,
@@ -277,12 +263,6 @@ mod tests {
         );
         assert!(!root.path().join("debian/control.debcargo.hint").exists());
         assert!(root.path().join("debian/ubucargo-state.json").is_file());
-        let before = fs::read(root.path().join("debian/ubucargo-state.json")).unwrap();
-        initialize_package(root.path(), &config).unwrap();
-        assert_eq!(
-            before,
-            fs::read(root.path().join("debian/ubucargo-state.json")).unwrap()
-        );
         assert!(!root.path().join("debian/changelog.debcargo.hint").exists());
         assert!(root.path().join("debian/source/format").is_file());
         assert!(

@@ -30,13 +30,6 @@ pub struct PackageCandidate {
     pub location: String,
 }
 
-impl PackageCandidate {
-    /// Returns the supplied version for a concrete or virtual package name.
-    pub fn provided_version(&self, name: &str) -> Option<&Version> {
-        self.provides.get(name).and_then(Option::as_ref)
-    }
-}
-
 /// Launchpad archive metadata used to configure one public PPA.
 #[derive(Deserialize)]
 struct LaunchpadArchive {
@@ -60,46 +53,34 @@ impl AptView {
     /// Adds the isolated APT configuration to a command.
     fn configure(&self, command: &mut Command) {
         let root = self.temporary.path();
-        command
-            .arg("-o")
-            .arg(format!(
+        for option in [
+            format!(
                 "Dir::Etc::sourcelist={}",
                 root.join("sources.sources").display()
-            ))
-            .arg("-o")
-            .arg(format!(
+            ),
+            format!(
                 "Dir::Etc::sourceparts={}",
                 root.join("sourceparts").display()
-            ))
-            .arg("-o")
-            .arg(format!("Dir::State::lists={}/", self.lists.display()))
-            .arg("-o")
-            .arg(format!(
-                "Dir::State::status={}",
-                root.join("status").display()
-            ))
-            .arg("-o")
-            .arg(format!(
+            ),
+            format!("Dir::State::lists={}/", self.lists.display()),
+            format!("Dir::State::status={}", root.join("status").display()),
+            format!(
                 "Dir::Etc::preferences={}",
                 root.join("preferences").display()
-            ))
-            .arg("-o")
-            .arg(format!(
+            ),
+            format!(
                 "Dir::Etc::preferencesparts={}",
                 root.join("preferences.d").display()
-            ))
-            .arg("-o")
-            .arg("Dir::Cache::pkgcache=")
-            .arg("-o")
-            .arg("Dir::Cache::srcpkgcache=")
-            .arg("-o")
-            .arg("APT::Get::List-Cleanup=0")
-            .arg("-o")
-            .arg("Acquire::Languages=none")
-            .arg("-o")
-            .arg("Acquire::GzipIndexes=false")
-            .arg("-o")
-            .arg(format!("APT::Architecture={}", self.architecture));
+            ),
+            "Dir::Cache::pkgcache=".to_owned(),
+            "Dir::Cache::srcpkgcache=".to_owned(),
+            "APT::Get::List-Cleanup=0".to_owned(),
+            "Acquire::Languages=none".to_owned(),
+            "Acquire::GzipIndexes=false".to_owned(),
+            format!("APT::Architecture={}", self.architecture),
+        ] {
+            command.arg("-o").arg(option);
+        }
     }
 }
 
@@ -467,16 +448,12 @@ mod tests {
         .unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(
-            candidates[0]
-                .provided_version("librust-serde-1+derive-dev")
+            candidates[0].provides["librust-serde-1+derive-dev"]
+                .as_ref()
                 .unwrap()
                 .to_string(),
             "1.0.219-1"
         );
-        assert!(
-            candidates[0]
-                .provided_version("librust-serde-1+std-dev")
-                .is_some()
-        );
+        assert!(candidates[0].provides["librust-serde-1+std-dev"].is_some());
     }
 }

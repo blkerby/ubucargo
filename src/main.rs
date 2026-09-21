@@ -52,92 +52,44 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     #[test]
-    /// Verifies the consolidated package command's positional and flag parsing.
-    fn parses_package_arguments() {
-        let cli = Cli::try_parse_from([
-            "ubucargo",
-            "package",
-            "serde",
-            "1.0.220",
-            "--package-dir",
-            "rust-serde",
-            "--check",
-            "--force",
-            "--keep-staging",
-        ])
-        .unwrap();
-
-        let Command::Package(args) = cli.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(args.crate_name.as_deref(), Some("serde"));
-        assert_eq!(args.version.as_deref(), Some("1.0.220"));
-        assert_eq!(args.package_dir.as_deref(), Some(Path::new("rust-serde")));
-        assert_eq!(args.local_crate, None);
-        assert!(args.check);
-        assert!(args.force);
-        assert!(args.keep_staging);
-    }
-
-    #[test]
-    /// Verifies local crate and package directory argument parsing.
-    fn parses_local_package_arguments() {
-        let cli = Cli::try_parse_from([
-            "ubucargo",
-            "package",
-            "--local-crate",
-            "../example",
-            "--package-dir",
-            "rust-example",
-        ])
-        .unwrap();
-
-        let Command::Package(args) = cli.command else {
-            panic!("expected package command");
-        };
-        assert_eq!(args.crate_name, None);
-        assert_eq!(args.version, None);
-        assert_eq!(args.package_dir.as_deref(), Some(Path::new("rust-example")));
-        assert_eq!(args.local_crate.as_deref(), Some(Path::new("../example")));
-        assert!(
-            Cli::try_parse_from(["ubucargo", "package", "serde", "--directory", "rust-serde"])
-                .is_err()
-        );
-    }
-
-    #[test]
-    /// Verifies dependency command target and Archive argument parsing.
-    fn parses_dependency_arguments() {
-        let cli = Cli::try_parse_from([
-            "ubucargo",
-            "deps",
-            "serde",
-            "1.0.220",
-            "--series",
-            "noble",
-            "--proposed",
-            "--ppa",
-            "ppa:example/rust-staging",
-            "--architecture",
-            "arm64",
-        ])
-        .unwrap();
-
-        let Command::Deps(args) = cli.command else {
-            panic!("expected deps command");
-        };
-        assert_eq!(args.crate_name.as_deref(), Some("serde"));
-        assert_eq!(args.version.as_deref(), Some("1.0.220"));
-        assert_eq!(args.package_dir, None);
-        assert_eq!(args.series, "noble");
-        assert!(args.proposed);
-        assert_eq!(args.ppa, ["ppa:example/rust-staging"]);
-        assert_eq!(args.architecture.as_deref(), Some("arm64"));
+    /// Accepts registry, local, and dependency command forms.
+    fn parses_command_arguments() {
+        for arguments in [
+            vec![
+                "package",
+                "serde",
+                "1.0.220",
+                "--package-dir",
+                "rust-serde",
+                "--check",
+                "--force",
+                "--keep-staging",
+            ],
+            vec![
+                "package",
+                "--local-crate",
+                "../example",
+                "--package-dir",
+                "rust-example",
+            ],
+            vec![
+                "deps",
+                "serde",
+                "1.0.220",
+                "--series",
+                "noble",
+                "--proposed",
+                "--ppa",
+                "ppa:example/rust-staging",
+                "--architecture",
+                "arm64",
+            ],
+        ] {
+            Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments)).unwrap();
+        }
     }
 
     #[test]

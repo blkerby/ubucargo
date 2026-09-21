@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
+use tempfile::Builder;
 
 use super::output::is_package_managed;
 
@@ -64,7 +64,7 @@ fn compute_fingerprint(state: &FileState) -> Result<Fingerprint> {
     }
     Ok(Fingerprint {
         sha256: sha256.to_owned(),
-        executable: state.mode & 0o111 != 0,
+        executable: state.is_executable(),
     })
 }
 
@@ -104,19 +104,26 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
     Ok((manifest, state))
 }
 
-/// File content and Unix permission mode relevant to generated packaging.
+/// File content and installation mode, compared using only contents and executable status.
 #[derive(Clone, Debug, Eq)]
 pub struct FileState {
     /// Complete file contents.
     pub contents: Vec<u8>,
-    /// Permission and special bits, excluding the file-type bits.
-    pub mode: u32,
+    /// Captured permission bits to preserve; None creates a new file according to umask.
+    pub mode: Option<u32>,
+}
+
+impl FileState {
+    /// Reports executable status; newly created content is non-executable.
+    fn is_executable(&self) -> bool {
+        self.mode.unwrap_or(0o666) & 0o111 != 0
+    }
 }
 
 impl PartialEq for FileState {
-    /// Compares contents and executable status using Git's file-mode semantics.
+    /// Ignores permission differences other than executable status.
     fn eq(&self, other: &Self) -> bool {
-        self.contents == other.contents && (self.mode & 0o111 != 0) == (other.mode & 0o111 != 0)
+        self.contents == other.contents && self.is_executable() == other.is_executable()
     }
 }
 
@@ -232,14 +239,12 @@ impl Plan {
                 install_state(
                     &resolve_managed_path(&self.debian, &path.path)?,
                     path.primary_after.as_ref(),
-                )
-                .context("package may be partially updated; rerun `ubucargo package`")?;
+                )?;
             }
         }
         for path in &self.paths {
             if path.has_primary_changed() && path.primary_after.is_none() {
-                install_state(&resolve_managed_path(&self.debian, &path.path)?, None)
-                    .context("package may be partially updated; rerun `ubucargo package`")?;
+                install_state(&resolve_managed_path(&self.debian, &path.path)?, None)?;
             }
         }
         for path in &self.paths {
@@ -247,13 +252,11 @@ impl Plan {
                 install_state(
                     &resolve_managed_path(&self.debian, &make_hint_path(&path.path))?,
                     path.hint_after.as_ref(),
-                )
-                .context("package may be partially updated; rerun `ubucargo package`")?;
+                )?;
             }
         }
         if self.has_manifest_changed() {
-            install_state(&self.debian.join(MANIFEST_NAME), Some(&self.manifest_after))
-                .context("package may be partially updated; rerun `ubucargo package`")?;
+            install_state(&self.debian.join(MANIFEST_NAME), Some(&self.manifest_after))?;
         }
         Ok(())
     }
@@ -385,12 +388,12 @@ pub fn build_plan(
         manifest_before,
         manifest_after: FileState {
             contents,
-            mode: 0o644,
+            mode: None,
         },
     })
 }
 
-/// Reads a regular file's contents and permission mode, preserving absence distinctly.
+/// Captures a regular file's contents and permissions, preserving absence distinctly.
 pub fn read_state(path: &Path) -> Result<Option<FileState>> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -404,7 +407,7 @@ pub fn read_state(path: &Path) -> Result<Option<FileState>> {
 
     Ok(Some(FileState {
         contents: fs::read(path).with_context(|| format!("read {}", path.display()))?,
-        mode: metadata.permissions().mode() & 0o7777,
+        mode: Some(metadata.permissions().mode() & 0o7777),
     }))
 }
 
@@ -416,7 +419,7 @@ fn resolve_managed_path(debian: &Path, path: &Path) -> Result<PathBuf> {
     ))
 }
 
-/// Atomically replaces one file with the requested state, or removes it.
+/// Atomically installs captured contents and permissions, or removes the file.
 pub fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     let parent = path
         .parent()
@@ -425,15 +428,19 @@ pub fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     match state {
         Some(state) => {
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-            let mut temporary = NamedTempFile::new_in(parent)
+            let mut temporary = Builder::new()
+                .permissions(fs::Permissions::from_mode(state.mode.unwrap_or(0o666)))
+                .tempfile_in(parent)
                 .with_context(|| format!("create temporary file in {}", parent.display()))?;
             temporary
                 .write_all(&state.contents)
                 .with_context(|| format!("write temporary file for {}", path.display()))?;
-            temporary
-                .as_file()
-                .set_permissions(fs::Permissions::from_mode(state.mode))
-                .with_context(|| format!("set mode for {}", path.display()))?;
+            if let Some(mode) = state.mode {
+                temporary
+                    .as_file()
+                    .set_permissions(fs::Permissions::from_mode(mode))
+                    .with_context(|| format!("set mode for {}", path.display()))?;
+            }
             temporary
                 .persist(path)
                 .map_err(|error| error.error)
@@ -492,9 +499,7 @@ mod tests {
             fingerprint.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        state.mode = 0o600;
-        assert_eq!(compute_fingerprint(&state).unwrap(), fingerprint);
-        state.mode = 0o755;
+        state.mode = Some(0o700);
         assert_ne!(compute_fingerprint(&state).unwrap(), fingerprint);
         state.contents = vec![0xff; 1024 * 1024];
         assert_eq!(
@@ -514,7 +519,7 @@ mod tests {
             for edited in [
                 Some(make_state("maintainer")),
                 Some(FileState {
-                    mode: 0o700,
+                    mode: Some(0o700),
                     ..make_state("first")
                 }),
                 None,
@@ -606,8 +611,8 @@ mod tests {
     }
 
     #[test]
-    /// Imports legacy hints, removes redundant copies, and leaves unknown hints alone.
-    fn migrates_legacy_hints() {
+    /// Imports debcargo hints, removes redundant copies, and leaves unknown hints alone.
+    fn migrates_debcargo_hints() {
         let root = tempfile::tempdir().unwrap();
         let debian = root.path().join("debian");
         fs::create_dir(&debian).unwrap();
@@ -667,7 +672,7 @@ mod tests {
                 install_state(
                     &hint,
                     Some(&FileState {
-                        mode: 0o700,
+                        mode: Some(0o700),
                         ..make_state("base")
                     }),
                 )
@@ -820,7 +825,7 @@ mod tests {
     fn make_state(value: &str) -> FileState {
         FileState {
             contents: value.as_bytes().to_vec(),
-            mode: 0o644,
+            mode: None,
         }
     }
 
@@ -987,74 +992,69 @@ mod tests {
     }
 
     #[test]
-    /// Verifies only executable-bit changes count as permission overrides.
+    /// Preserves source and override modes without treating incidental changes as ownership changes.
     fn compares_executable_status() {
         let directory = tempfile::tempdir().unwrap();
-        let root = directory.path();
-        let debian = root.join("debian");
-        fs::create_dir(&debian).unwrap();
-        let path = PathBuf::from("debian/rules");
-        let generated = FileState {
-            contents: b"#!/usr/bin/make -f\n".to_vec(),
-            mode: 0o750,
-        };
-        let plan = build_plan(
-            &debian,
-            &BTreeSet::from([path.clone()]),
-            &BTreeMap::from([(path.clone(), generated.clone())]),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
-
-        plan.apply().unwrap();
-
+        let debian = directory.path();
+        let rules = debian.join("rules");
+        let staged = debian.join("staged");
+        fs::write(&staged, "generated").unwrap();
+        let initial_mode = fs::metadata(&staged).unwrap().permissions().mode() & 0o7777;
+        install_state(&debian.join("fresh"), Some(&make_state("fresh"))).unwrap();
         assert_eq!(
-            read_state(&root.join(&path)).unwrap(),
-            Some(generated.clone())
+            fs::metadata(debian.join("fresh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            initial_mode
         );
-        assert_eq!(read_state(&root.join(make_hint_path(&path))).unwrap(), None);
-
-        fs::set_permissions(root.join(&path), fs::Permissions::from_mode(0o700)).unwrap();
-        let plan = build_plan(
-            &debian,
-            &BTreeSet::from([path.clone()]),
-            &BTreeMap::from([(
-                path,
-                FileState {
-                    contents: b"#!/usr/bin/make -f\n".to_vec(),
-                    mode: 0o750,
-                },
-            )]),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        assert!(!plan.paths[0].overridden);
-        assert!(!plan.has_changes());
-        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o750);
+        for mode in [0o600, 0o660, 0o710, 0o775] {
+            fs::set_permissions(&staged, fs::Permissions::from_mode(mode)).unwrap();
+            let state = read_state(&staged).unwrap().unwrap();
+            let installed = debian.join("nested/child/file");
+            install_state(&installed, Some(&state)).unwrap();
+            assert_eq!(
+                fs::metadata(&installed).unwrap().permissions().mode() & 0o7777,
+                mode
+            );
+            assert_eq!(read_state(&installed).unwrap(), Some(state));
+        }
+        let generated = BTreeMap::from([(
+            PathBuf::from("debian/rules"),
+            read_state(&staged).unwrap().unwrap(),
+        )]);
+        plan_generation(debian, &generated).apply().unwrap();
+        for mode in [0o700, 0o750, 0o775] {
+            fs::set_permissions(&rules, fs::Permissions::from_mode(mode)).unwrap();
+            let plan = plan_generation(debian, &generated);
+            assert!(!plan.has_changes());
+            plan.apply().unwrap();
+            assert_eq!(
+                fs::metadata(&rules).unwrap().permissions().mode() & 0o7777,
+                mode
+            );
+        }
+        fs::set_permissions(&rules, fs::Permissions::from_mode(0o600)).unwrap();
+        let plan = plan_generation(debian, &generated);
+        assert!(
+            plan.paths
+                .iter()
+                .any(|path| path.path == Path::new("debian/rules") && path.overridden)
+        );
         plan.apply().unwrap();
         assert_eq!(
-            read_state(&root.join("debian/rules"))
-                .unwrap()
-                .unwrap()
-                .mode,
-            0o700
+            fs::metadata(&rules).unwrap().permissions().mode() & 0o7777,
+            0o600
         );
-
-        fs::set_permissions(root.join("debian/rules"), fs::Permissions::from_mode(0o600)).unwrap();
-        let plan = build_plan(
-            &debian,
-            &BTreeSet::from([PathBuf::from("debian/rules")]),
-            &BTreeMap::from([(PathBuf::from("debian/rules"), generated)]),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-            &BTreeSet::new(),
-        )
-        .unwrap();
-        assert!(plan.paths[0].overridden);
-        assert_eq!(plan.paths[0].primary_after.as_ref().unwrap().mode, 0o600);
+        assert_eq!(
+            fs::metadata(make_hint_path(&rules))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o775
+        );
+        assert!(!plan_generation(debian, &generated).has_changes());
     }
 }

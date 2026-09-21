@@ -13,8 +13,8 @@ use anyhow::{Context, Result, bail};
 /// Regular file metadata and its backing path on disk.
 #[derive(Clone, Debug)]
 pub struct SourceFile {
-    /// Permission and special bits, excluding the file-type bits.
-    mode: u32,
+    /// Whether any executable bit is set.
+    executable: bool,
     /// Backing file path, valid while the scanned tree's directory exists.
     origin: PathBuf,
 }
@@ -22,8 +22,8 @@ pub struct SourceFile {
 /// Source-tree entry relevant to three-way reconciliation.
 #[derive(Clone, Debug)]
 pub enum TreeNode {
-    /// Directory with its Unix permission mode.
-    Directory(u32),
+    /// Directory; its permissions do not participate in reconciliation.
+    Directory,
     /// Regular file metadata backed by an on-disk path.
     File(SourceFile),
     /// Symbolic-link target.
@@ -32,7 +32,7 @@ pub enum TreeNode {
 
 /// Complete source-tree update outside `debian/`.
 pub struct SourcePlan {
-    /// Changed path transitions in deterministic order.
+    /// Changed path transitions in deterministic order; retained directories are excluded.
     paths: BTreeMap<PathBuf, (Option<TreeNode>, Option<TreeNode>)>,
 }
 
@@ -54,50 +54,27 @@ impl SourcePlan {
         }
     }
 
-    /// Applies a source transition plan, creating/overwriting/deleting files and directories.
+    /// Removes old entries, copies new files with their permissions, and creates new directories.
     pub fn apply(&self, root: &Path) -> Result<()> {
-        let mut changed: Vec<_> = self.paths.iter().collect();
-        changed.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-
-        // Remove leaf files and symlinks that are being deleted or replaced.
-        for (path, (old, new)) in &changed {
-            let keep_file = matches!(
-                (old, new),
-                (Some(TreeNode::File(_)), Some(TreeNode::File(_)))
-            );
-            if !keep_file && matches!(old, Some(TreeNode::File(_) | TreeNode::Symlink(_))) {
-                fs::remove_file(root.join(path))
-                    .with_context(|| format!("remove {}", root.join(path).display()))?;
+        // Reverse path order removes descendants before their parents.
+        for (path, (old, _)) in self.paths.iter().rev() {
+            let destination = root.join(path);
+            match old {
+                Some(TreeNode::Directory) => fs::remove_dir(&destination),
+                Some(TreeNode::File(_) | TreeNode::Symlink(_)) => fs::remove_file(&destination),
+                None => continue,
             }
+            .with_context(|| format!("remove {}", destination.display()))?;
         }
 
-        // Remove directories that are being deleted or replaced, deepest first so
-        // child directories are emptied before their parents.
-        for (path, (old, new)) in &changed {
-            if matches!(old, Some(TreeNode::Directory(_)))
-                && !matches!(new, Some(TreeNode::Directory(_)))
-            {
-                fs::remove_dir(root.join(path))
-                    .with_context(|| format!("remove {}", root.join(path).display()))?;
-            }
-        }
-
-        changed.sort_by_key(|(path, _)| path.components().count());
-
-        // Create new directories, shallowest first so parents exist before children.
-        for (path, (old, new)) in &changed {
-            if matches!(new, Some(TreeNode::Directory(_)))
-                && !matches!(old, Some(TreeNode::Directory(_)))
-            {
-                fs::create_dir(root.join(path))
-                    .with_context(|| format!("create {}", root.join(path).display()))?;
-            }
-        }
-
-        // Copy changed file contents from their origin trees and recreate symlinks.
-        for (path, (_, new)) in &changed {
+        // Forward path order creates parents before installing their contents.
+        for (path, (_, new)) in &self.paths {
             let destination = root.join(path);
             match new {
+                Some(TreeNode::Directory) => {
+                    fs::create_dir(&destination)
+                        .with_context(|| format!("create {}", destination.display()))?;
+                }
                 Some(TreeNode::File(file)) => {
                     fs::copy(&file.origin, &destination).with_context(|| {
                         format!(
@@ -111,17 +88,10 @@ impl SourcePlan {
                     symlink(target, &destination)
                         .with_context(|| format!("create symlink {}", destination.display()))?;
                 }
-                _ => {}
+                None => {}
             }
         }
 
-        // Set directory permissions after all content exists beneath them.
-        for (path, (_, new)) in &changed {
-            if let Some(TreeNode::Directory(mode)) = new {
-                fs::set_permissions(root.join(path), fs::Permissions::from_mode(*mode))
-                    .with_context(|| format!("set mode for {}", root.join(path).display()))?;
-            }
-        }
         Ok(())
     }
 }
@@ -144,16 +114,13 @@ pub fn scan_tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeNode>> {
             let metadata = fs::symlink_metadata(entry.path())?;
             let file_type = metadata.file_type();
             if file_type.is_dir() {
-                tree.insert(
-                    path.clone(),
-                    TreeNode::Directory(metadata.permissions().mode() & 0o7777),
-                );
+                tree.insert(path.clone(), TreeNode::Directory);
                 directories.push(path);
             } else if file_type.is_file() {
                 tree.insert(
                     path,
                     TreeNode::File(SourceFile {
-                        mode: metadata.permissions().mode() & 0o7777,
+                        executable: metadata.permissions().mode() & 0o111 != 0,
                         origin: entry.path(),
                     }),
                 );
@@ -173,12 +140,12 @@ pub fn scan_tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeNode>> {
 /// Reports whether two source-tree states are equivalent, comparing file contents on disk.
 pub fn states_match(first: &TreeNode, second: &TreeNode) -> bool {
     match (first, second) {
-        (TreeNode::Directory(_), TreeNode::Directory(_)) => true,
+        (TreeNode::Directory, TreeNode::Directory) => true,
         (TreeNode::Symlink(first_target), TreeNode::Symlink(second_target)) => {
             first_target == second_target
         }
         (TreeNode::File(first), TreeNode::File(second)) => {
-            (first.mode & 0o111 != 0) == (second.mode & 0o111 != 0)
+            first.executable == second.executable
                 // Treat comparison errors as a difference to stay conservative.
                 && !files_differ(&first.origin, &second.origin).unwrap_or(true)
         }
@@ -266,7 +233,7 @@ pub fn build_source_plan(
             if parent.as_os_str().is_empty() {
                 break;
             }
-            if !matches!(after.get(parent), Some(Some(TreeNode::Directory(_)))) {
+            if !matches!(after.get(parent), Some(Some(TreeNode::Directory))) {
                 blocked.push(path.clone());
                 break;
             }
@@ -405,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    /// Verifies source reconciliation preserves modes and accepts upstream file-type changes.
+    /// Ignores incidental permission differences and accepts executable and file-type changes.
     fn handles_modes_and_symlink_changes() {
         let base_directory = tempdir().unwrap();
         fs::create_dir(base_directory.path().join("directory")).unwrap();
@@ -452,41 +419,70 @@ mod tests {
     }
 
     #[test]
-    /// Verifies applying a plan copies changed contents and modes from their origins.
+    /// Preserves copied and local file modes while creating directories according to umask.
     fn applies_source_updates_from_disk() {
         let old_directory = tempdir().unwrap();
         write_file(old_directory.path(), "file", "old");
+        write_file(old_directory.path(), "local", "local");
+        set_mode(&old_directory.path().join("local"), 0o600);
+        fs::create_dir_all(old_directory.path().join("to-file/child")).unwrap();
+        write_file(old_directory.path(), "to-file/child/file", "removed");
+        write_file(old_directory.path(), "to-directory", "old file");
+        create_symlink("file", old_directory.path().join("link")).unwrap();
         let old = scan_tree(old_directory.path()).unwrap();
 
         let new_directory = tempdir().unwrap();
         write_file(new_directory.path(), "file", "new");
-        set_mode(&new_directory.path().join("file"), 0o755);
+        set_mode(&new_directory.path().join("file"), 0o710);
         write_file(new_directory.path(), "added", "new");
+        set_mode(&new_directory.path().join("added"), 0o660);
+        write_file(new_directory.path(), "to-file", "was a directory");
+        fs::create_dir_all(new_directory.path().join("to-directory/child")).unwrap();
+        create_symlink(
+            "../../file",
+            new_directory.path().join("to-directory/child/link"),
+        )
+        .unwrap();
+        create_symlink("added", new_directory.path().join("link")).unwrap();
         fs::create_dir_all(new_directory.path().join("nested/child")).unwrap();
+        set_mode(&new_directory.path().join("nested"), 0o2700);
         write_file(new_directory.path(), "nested/child/file", "nested");
         fs::create_dir(new_directory.path().join("debian")).unwrap();
         write_file(new_directory.path(), "debian/control", "packaging");
         let new = scan_tree(new_directory.path()).unwrap();
 
-        let plan = build_source_plan(&old, &old, &new, false).unwrap();
+        let reference = old_directory.path().join("reference-directory");
+        fs::create_dir(&reference).unwrap();
+        let directory_mode = fs::metadata(&reference).unwrap().permissions().mode() & 0o7777;
+        fs::remove_dir(&reference).unwrap();
+        let mut base = old.clone();
+        base.remove(Path::new("local"));
+        let plan = build_source_plan(&base, &old, &new, false).unwrap();
         plan.apply(old_directory.path()).unwrap();
+        let mut expected = new.clone();
+        expected.insert(PathBuf::from("local"), old[Path::new("local")].clone());
+        assert!(trees_match(
+            &scan_tree(old_directory.path()).unwrap(),
+            &expected
+        ));
         assert!(!old_directory.path().join("debian").exists());
         assert_eq!(
-            fs::read(old_directory.path().join("nested/child/file")).unwrap(),
-            b"nested"
-        );
-        assert_eq!(fs::read(old_directory.path().join("file")).unwrap(), b"new");
-        assert_eq!(
-            fs::metadata(old_directory.path().join("file"))
+            fs::metadata(old_directory.path().join("nested"))
                 .unwrap()
                 .permissions()
                 .mode()
-                & 0o777,
-            0o755
+                & 0o7777,
+            directory_mode
         );
-        assert_eq!(
-            fs::read(old_directory.path().join("added")).unwrap(),
-            b"new"
-        );
+        for (path, mode) in [("file", 0o710), ("added", 0o660), ("local", 0o600)] {
+            assert_eq!(
+                fs::metadata(old_directory.path().join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                mode
+            );
+        }
     }
 }

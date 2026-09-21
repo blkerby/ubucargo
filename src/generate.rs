@@ -1,7 +1,6 @@
 //! Generates and validates staged Debian source packages from resolved inputs.
 
 use std::{
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -42,7 +41,10 @@ pub fn generate_package(package: &ResolvedPackage, keep_staging: bool) -> Result
     let overlay = stage.path().join("overlay");
     fs::create_dir(&overlay)?;
     if let Some(existing) = &package.existing {
-        prepare_patch_overlay(&existing.root.join("debian"), &overlay)?;
+        let patches = existing.root.join("debian/patches");
+        if patches.is_dir() {
+            copy_tree(&patches, &overlay.join("patches"))?;
+        }
     }
     write_staged_config(&package.config, stage.path())?;
     let source = if package.config.crate_src_path.is_some() {
@@ -133,45 +135,17 @@ fn validate_debcargo_output(
         bail!("debcargo changed the prepared changelog despite --changelog-ready");
     }
 
-    let expected_orig = format!("{expected_source}_{expected_upstream}.orig.tar.gz");
-    let mut origs = Vec::new();
-    for entry in fs::read_dir(stage.path())? {
-        let path = entry?.path();
-        if path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .is_some_and(|name| name.ends_with(".orig.tar.gz"))
-        {
-            origs.push(path);
-        }
-    }
-    if origs.len() != 1 {
-        bail!(
-            "debcargo produced {} orig tarballs; expected one",
-            origs.len()
-        );
-    }
-    let orig = origs.pop().unwrap();
-    if orig.file_name() != Some(OsStr::new(&expected_orig)) {
-        bail!(
-            "debcargo produced orig {}, expected {expected_orig}",
-            orig.display()
-        );
+    let orig = stage
+        .path()
+        .join(format!("{expected_source}_{expected_upstream}.orig.tar.gz"));
+    if !orig.is_file() {
+        bail!("debcargo produced no {}", orig.display());
     }
     Ok(GeneratedPackage {
         stage,
         source,
         orig,
     })
-}
-
-/// Copies the complete patch set into the debcargo overlay.
-fn prepare_patch_overlay(debian: &Path, overlay: &Path) -> Result<()> {
-    let patches = debian.join("patches");
-    if !patches.is_dir() {
-        return Ok(());
-    }
-    copy_tree(&patches, &overlay.join("patches"))
 }
 
 /// Runs final debcargo generation for one exact selected release.

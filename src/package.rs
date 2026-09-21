@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     config::PackageConfig,
     generate::{GeneratedPackage, generate_package},
-    resolve::{ExistingPackage, parse_exact_version, resolve_package},
+    resolve::{ExistingPackage, resolve_package},
     tree::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
@@ -74,10 +74,6 @@ pub struct PackageArgs {
 
 /// Creates or reconciles one source package, returning true when check mode finds changes.
 pub fn run(args: PackageArgs) -> Result<bool> {
-    if let Some(version) = args.version.as_deref() {
-        parse_exact_version(version)?;
-    }
-
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
@@ -165,7 +161,7 @@ fn reconcile_existing(
     }
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, args.force)?;
 
-    let generated_candidates = read_generated_candidates(generated.stage.path())?;
+    let generated_candidates = read_generated_candidates(&generated.source)?;
     let managed = collect_managed_paths(&debian, &generated_candidates)?;
     let control = PathBuf::from("debian/control");
     let mut inferred_bases = BTreeMap::new();
@@ -237,7 +233,9 @@ fn reconcile_existing(
         .apply(root)
         .context("package may be partially updated; rerun `ubucargo package`")?;
     if generated_changed {
-        generated_plan.apply()?;
+        generated_plan
+            .apply()
+            .context("package may be partially updated; rerun `ubucargo package`")?;
     }
     if changelog_changed {
         install_state(&debian.join("changelog"), Some(&prepared_changelog))?;

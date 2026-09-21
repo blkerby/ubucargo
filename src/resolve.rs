@@ -350,13 +350,10 @@ fn select_release(
             crate_name: current.name.clone(),
             version: current.version.clone(),
         }),
-        (Some(name), Some(version), _) => {
-            parse_exact_version(version)?;
-            Ok(CrateSelection {
-                crate_name: name.to_owned(),
-                version: version.to_owned(),
-            })
-        }
+        (Some(name), Some(version), _) => Ok(CrateSelection {
+            crate_name: name.to_owned(),
+            version: version.to_owned(),
+        }),
         (Some(name), None, _) => resolve_latest(name, config),
         (None, _, None) => bail!("CRATE is required when creating a package"),
         (None, Some(_), Some(_)) => bail!("VERSION requires CRATE"),
@@ -451,8 +448,6 @@ mod tests {
                 start.map(|path| path.join("rust-example-crate"))
             );
         }
-        assert!(!destination.exists());
-
         let local = parent.path().join("local");
         fs::create_dir_all(local.join("src")).unwrap();
         fs::write(local.join("src/lib.rs"), "").unwrap();

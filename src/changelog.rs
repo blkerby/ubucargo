@@ -20,19 +20,6 @@ pub struct TopChangelog {
     pub distribution: String,
 }
 
-/// Changelog operation delegated to `dch`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ChangelogAction {
-    /// Create the first changelog entry.
-    Create,
-    /// Increment a released entry for the same upstream version.
-    Increment,
-    /// Select a specified upstream version.
-    NewVersion,
-    /// Retain and update the current unreleased entry.
-    Append,
-}
-
 /// Parses only the first Debian changelog header.
 pub fn read_top_changelog(path: &Path) -> Result<TopChangelog> {
     let changelog =
@@ -75,7 +62,6 @@ pub fn prepare_changelog(
             .with_context(|| format!("copy {} to {}", old_path.display(), staged_path.display()))?;
     }
     let initial_version = format!("{upstream}-0ubuntu1");
-    let action = select_changelog_action(old_top, upstream);
     let mut command = Command::new("dch");
     command
         .arg("--no-conf")
@@ -88,8 +74,8 @@ pub fn prepare_changelog(
         .arg("--distribution")
         .arg("UNRELEASED")
         .arg("--force-distribution");
-    match action {
-        ChangelogAction::Create => {
+    match old_top {
+        None => {
             command
                 .arg("--create")
                 .arg("--package")
@@ -97,14 +83,15 @@ pub fn prepare_changelog(
                 .arg("--newversion")
                 .arg(&initial_version);
         }
-        ChangelogAction::Increment => {
-            command.arg("--increment");
+        Some(old) if old.upstream == upstream => {
+            command.arg(if old.distribution == "UNRELEASED" {
+                "--append"
+            } else {
+                "--increment"
+            });
         }
-        ChangelogAction::NewVersion => {
+        Some(_) => {
             command.arg("--newversion").arg(&initial_version);
-        }
-        ChangelogAction::Append => {
-            command.arg("--append");
         }
     }
     run_command(command.arg(provenance), "dch")?;
@@ -147,24 +134,6 @@ fn parse_top_changelog(changelog: &ChangeLog) -> Result<TopChangelog> {
         upstream: version.upstream_version,
         distribution,
     })
-}
-
-/// Selects the `dch` action for old and candidate changelog state.
-fn select_changelog_action(
-    old: Option<&TopChangelog>,
-    candidate_upstream: &str,
-) -> ChangelogAction {
-    let Some(old) = old else {
-        return ChangelogAction::Create;
-    };
-    let unreleased = old.distribution == "UNRELEASED";
-    if unreleased && old.upstream == candidate_upstream {
-        ChangelogAction::Append
-    } else if !unreleased && old.upstream == candidate_upstream {
-        ChangelogAction::Increment
-    } else {
-        ChangelogAction::NewVersion
-    }
 }
 
 /// Normalizes the top entry distribution and provenance bullet.
@@ -230,26 +199,53 @@ mod tests {
     }
 
     #[test]
-    /// Verifies changelog action selection for released and unreleased entries.
-    fn selects_changelog_actions() {
-        let mut top = parse_text("rust-example (1.2.3-0ubuntu1) noble; urgency=medium\n");
-        assert_eq!(
-            select_changelog_action(Some(&top), "1.2.3"),
-            ChangelogAction::Increment
-        );
-        assert_eq!(
-            select_changelog_action(Some(&top), "2.0.0"),
-            ChangelogAction::NewVersion
-        );
-        top.distribution = "UNRELEASED".to_owned();
-        assert_eq!(
-            select_changelog_action(Some(&top), "1.2.3"),
-            ChangelogAction::Append
-        );
-        assert_eq!(
-            select_changelog_action(None, "1.2.3"),
-            ChangelogAction::Create
-        );
+    /// Creates, increments, or updates entries while preserving existing changes.
+    fn prepares_changelog_entries() {
+        for (distribution, upstream, version, entries) in [
+            (None, "1.0.0", "1.0.0-0ubuntu1", 1),
+            (Some("noble"), "1.0.0", "1.0.0-0ubuntu2", 2),
+            (Some("noble"), "2.0.0", "2.0.0-0ubuntu1", 2),
+            (Some("UNRELEASED"), "1.0.0", "1.0.0-0ubuntu1", 1),
+            (Some("UNRELEASED"), "2.0.0", "2.0.0-0ubuntu1", 1),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let old_path = directory.path().join("old");
+            let staged_path = directory.path().join("changelog");
+            let old_top = distribution.map(|distribution| {
+                fs::write(&old_path, format!(
+                    "rust-example (1.0.0-0ubuntu1) {distribution}; urgency=medium\n\n  * Maintainer change.\n\n -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n"
+                )).unwrap();
+                read_top_changelog(&old_path).unwrap()
+            });
+            let provenance = format!(
+                "Package example {upstream} from crates.io.\n  Generated with debcargo 2.8.4 and ubucargo {}.",
+                env!("CARGO_PKG_VERSION")
+            );
+            prepare_changelog(
+                old_top.as_ref().map(|_| old_path),
+                &staged_path,
+                old_top.as_ref(),
+                "rust-example",
+                upstream,
+                &provenance,
+            )
+            .unwrap();
+            let changelog = ChangeLog::read_path(&staged_path).unwrap();
+            let top = parse_top_changelog(&changelog).unwrap();
+            assert_eq!(top.version, version);
+            assert_eq!(top.distribution, "UNRELEASED");
+            assert_eq!(changelog.iter().count(), entries);
+            assert_eq!(
+                changelog
+                    .to_string()
+                    .matches("Generated with debcargo")
+                    .count(),
+                1
+            );
+            if old_top.is_some() {
+                assert!(changelog.to_string().contains("Maintainer change."));
+            }
+        }
     }
 
     #[test]
@@ -258,18 +254,18 @@ mod tests {
         let old = concat!(
             "rust-example (1.0.0-1) UNRELEASED; urgency=medium\n",
             "\n",
-            "  * Package example 1.0.0 from crates.io using debcargo 2.7.0\n",
-            "    with an old wrapped continuation.\n",
             "  * local change\n",
-            "  * Package example 1.0.0 from crates.io using debcargo 2.8.0 and ubucargo 0.0.1.\n",
-            "  * Package example 1.0.0 from crates.io.   Generated with debcargo\n",
-            "    2.8.4 and ubucargo 0.1.0.\n",
+            "  * Package example 0.9.0 from crates.io.\n",
+            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
+            "  * Package example 1.0.0 from crates.io.\n",
+            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
             "\n",
             " -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n",
             "\n",
             "rust-example (0.9.0-1) unstable; urgency=medium\n",
             "\n",
-            "  * Package example 0.9.0 from crates.io using debcargo 2.7.0\n",
+            "  * Package example 0.9.0 from crates.io.\n",
+            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
             "\n",
             " -- B <b@example.com>  Sun, 31 Dec 2023 00:00:00 +0000\n"
         );
@@ -281,7 +277,7 @@ mod tests {
         .unwrap();
         let new = changelog.to_string();
         assert_eq!(new.matches("debcargo").count(), 2);
-        assert!(new.contains("* Package example 0.9.0 from crates.io using debcargo 2.7.0"));
+        assert!(new.contains("* Package example 0.9.0 from crates.io."));
         assert!(new.contains("  * local change"));
         assert!(new.contains(concat!(
             "  * Package example 1.0.0 from crates.io.\n",

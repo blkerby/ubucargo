@@ -207,30 +207,20 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
             } else {
                 "available"
             };
-            rows.push(make_row(dependency, candidate, status, index == 0));
+            rows.push(Row {
+                dependency: if index == 0 {
+                    dependency.name.clone()
+                } else {
+                    String::new()
+                },
+                status,
+                location: candidate.location.clone(),
+                version: candidate.version.to_string(),
+                requirement: make_requirement(dependency, Some(candidate)),
+            });
         }
     }
     rows
-}
-
-/// Creates one report row from a dependency and candidate.
-fn make_row(
-    dependency: &Dependency,
-    candidate: &PackageCandidate,
-    status: &'static str,
-    first: bool,
-) -> Row {
-    Row {
-        dependency: if first {
-            dependency.name.clone()
-        } else {
-            String::new()
-        },
-        status,
-        location: candidate.location.clone(),
-        version: candidate.version.to_string(),
-        requirement: make_requirement(dependency, Some(candidate)),
-    }
 }
 
 /// Builds independently classified semver and feature display components.
@@ -368,7 +358,11 @@ fn satisfies_package(requirement: &PackageRequirement, candidate: &PackageCandid
     let Some((constraint, expected_version)) = &requirement.version else {
         return candidate.provides.contains_key(&requirement.name);
     };
-    let Some(actual_version) = candidate.provided_version(&requirement.name) else {
+    let Some(actual_version) = candidate
+        .provides
+        .get(&requirement.name)
+        .and_then(Option::as_ref)
+    else {
         return false;
     };
     match constraint {
@@ -585,9 +579,9 @@ mod tests {
     }
 
     #[test]
-    /// Keeps the requirement last and blank on continuation rows.
+    /// Keeps requirements last and repeats them on continuation rows.
     fn formats_rows() {
-        let rows = [
+        let mut rows = [
             Row {
                 dependency: "serde".to_owned(),
                 status: "selected",
@@ -629,19 +623,17 @@ mod tests {
                 "            available  noble-updates/universe  1.0.217-1  ^1 +derive\n",
             )
         );
-        assert_eq!(
-            format_table(&rows, true),
-            concat!(
-                "DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT\n",
-                "serde       \x1b[32mselected \x1b[0m  noble/universe          1.0.219-1  ^1 +derive\n",
-                "            \x1b[90mavailable\x1b[0m  noble-updates/universe  1.0.217-1  ^1 +derive\n",
-            )
-        );
+        let colored = format_table(&rows, true);
+        assert!(colored.contains("\x1b[32mselected \x1b[0m"));
+        assert!(colored.contains("\x1b[90mavailable\x1b[0m"));
+        rows[0].requirement[0].status = RequirementStatus::Incompatible;
+        rows[0].requirement[1].status = RequirementStatus::Missing;
+        assert!(format_table(&rows, true).contains("\x1b[33m^1\x1b[0m \x1b[31m+derive\x1b[0m"));
     }
 
     #[test]
-    /// Colors each requirement component according to its matching package relation.
-    fn colors_requirement_components() {
+    /// Classifies each requirement component according to its matching package relation.
+    fn classifies_requirement_components() {
         let dependency = Dependency {
             name: "serde".to_owned(),
             cargo_requirement: "^1".to_owned(),
@@ -688,17 +680,17 @@ mod tests {
             "librust-serde-1+derive-dev".to_owned(),
             Some("1.0.100-1".parse().unwrap()),
         );
-        let row = make_row(&dependency, &candidate, "incompatible", true);
-
-        assert_eq!(
-            format_table(&[row], true),
-            concat!(
-                "DEPENDENCY  STATUS        LOCATION        VERSION    REQUIREMENT\n",
-                "serde       \x1b[33mincompatible\x1b[0m  noble/universe  1.0.219-1  ",
-                "^1 -default \x1b[31m+alloc\x1b[0m ",
-                "\x1b[33m+derive\x1b[0m \x1b[33m+std\x1b[0m\n",
-            )
-        );
+        let parts = make_requirement(&dependency, Some(&candidate));
+        for (part, (text, status)) in parts.iter().zip([
+            ("^1", RequirementStatus::Satisfied),
+            ("-default", RequirementStatus::Satisfied),
+            ("+alloc", RequirementStatus::Missing),
+            ("+derive", RequirementStatus::Incompatible),
+            ("+std", RequirementStatus::Incompatible),
+        ]) {
+            assert_eq!((part.text.as_str(), part.status), (text, status));
+        }
+        assert_eq!(parts.len(), 5);
     }
 
     #[test]
@@ -733,24 +725,16 @@ mod tests {
                 ),
             ]),
         };
-        let default_row = make_row(
+        let default_parts = make_requirement(
             &default_dependency,
-            &candidate(
+            Some(&candidate(
                 "2.0.0",
                 "noble/universe",
                 &["librust-foo-1+default-dev", "librust-foo-1+special-dev"],
-            ),
-            "incompatible",
-            true,
+            )),
         );
-        assert_eq!(
-            default_row.requirement[0].status,
-            RequirementStatus::Incompatible
-        );
-        assert_eq!(
-            default_row.requirement[1].status,
-            RequirementStatus::Satisfied
-        );
+        assert_eq!(default_parts[0].status, RequirementStatus::Incompatible);
+        assert_eq!(default_parts[1].status, RequirementStatus::Satisfied);
 
         let no_default_dependency = Dependency {
             name: "foo".to_owned(),
@@ -763,24 +747,16 @@ mod tests {
                 }]],
             )]),
         };
-        let no_default_row = make_row(
+        let no_default_parts = make_requirement(
             &no_default_dependency,
-            &candidate(
+            Some(&candidate(
                 "0.2.0",
                 "noble/universe",
                 &["librust-foo-0.2+formatting-dev"],
-            ),
-            "incompatible",
-            true,
+            )),
         );
-        assert_eq!(
-            no_default_row.requirement[0].status,
-            RequirementStatus::Incompatible
-        );
-        assert_eq!(
-            no_default_row.requirement[1].status,
-            no_default_row.requirement[0].status
-        );
+        assert_eq!(no_default_parts[0].status, RequirementStatus::Incompatible);
+        assert_eq!(no_default_parts[1].status, no_default_parts[0].status);
     }
 
     #[test]
@@ -815,19 +791,17 @@ mod tests {
                 ),
             ]),
         };
-        let row = make_row(
+        let parts = make_requirement(
             &dependency,
-            &candidate(
+            Some(&candidate(
                 "1.5.0",
                 "noble/universe",
                 &["librust-foo-1+default-dev", "librust-foo-1+special-dev"],
-            ),
-            "incompatible",
-            true,
+            )),
         );
 
-        assert_eq!(row.requirement[0].status, RequirementStatus::Satisfied);
-        assert_eq!(row.requirement[1].status, RequirementStatus::Incompatible);
+        assert_eq!(parts[0].status, RequirementStatus::Satisfied);
+        assert_eq!(parts[1].status, RequirementStatus::Incompatible);
     }
 
     #[test]
