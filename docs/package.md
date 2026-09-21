@@ -118,7 +118,7 @@ The orig tarball is placed beside the source directory using Debian naming:
 
 When repacking is not required, debcargo copies the verified `.crate` archive unchanged. Matching `excludes` entries cause debcargo to rebuild the archive without those paths. `repack_suffix` supplies the suffix added to the Debian upstream version.
 
-An explicit `repack_suffix` in `debian/debcargo.toml` always wins. Otherwise, when regenerating an existing package, ubucargo preserves a suffix already present after the Cargo version in the top changelog entry, such as `dfsg` in `1.0.0+dfsg-1`. The inferred value is passed only through the temporary debcargo configuration; ubucargo does not add it to the maintainer-owned `debian/debcargo.toml`. New packages default to `ds` when `excludes` is present.
+The next package's repack suffix comes only from `debian/debcargo.toml`: an explicit `repack_suffix` is used as written, otherwise it defaults to `ds` when `excludes` is present, or no suffix when it is absent. The existing changelog identifies the old package and does not supply a suffix for the next one. To retain `+dfsg` from an existing version such as `1.0.0+dfsg-1`, set `repack_suffix = "dfsg"` in the configuration.
 
 For an existing package, the old orig tarball is the source-merge baseline. Its source name and upstream version come from the top changelog entry. Ubucargo first looks beside the package, then uses `pull-lp-source --download-only SOURCE VERSION` to retrieve that exact Ubuntu source version independently of the host's configured APT series. Acquisition happens before the staged changelog is changed.
 

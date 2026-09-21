@@ -3,6 +3,7 @@
 mod cargo;
 mod changelog;
 mod command;
+mod config;
 mod deps;
 mod generate;
 mod package;

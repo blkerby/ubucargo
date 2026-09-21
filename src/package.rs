@@ -9,8 +9,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    config::PackageConfig,
     generate::{GeneratedPackage, generate_package},
-    resolve::{ExistingPackage, PackageConfig, parse_exact_version, resolve_package},
+    resolve::{ExistingPackage, parse_exact_version, resolve_package},
     tree::{copy_tree, extract_tree, files_differ, require_absent},
 };
 

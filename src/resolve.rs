@@ -3,54 +3,26 @@
 
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Command,
 };
 
 use anyhow::{Context, Result, bail};
 use semver::{Version, VersionReq};
-use toml_edit::{DocumentMut, value};
 
 use crate::{
     cargo::{MetadataPackage, read_root_package},
     changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
     command::run_command,
+    config::{
+        PackageConfig, get_package_config_path, get_staged_config_path, has_debcargo_config,
+        read_new_local_package_config, read_new_package_config, read_package_config,
+        write_staged_config,
+    },
     tree::require_absent,
 };
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
-const UBUNTU_MAINTAINER: &str = "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>";
-
-/// Debcargo configuration values that affect package identity.
-pub struct PackageConfig {
-    /// Complete in-tree configuration text.
-    pub contents: String,
-    /// Whether the Debian source name includes the crate's semver line.
-    pub semver_suffix: bool,
-    /// Effective repack suffix, including debcargo's default for exclusions.
-    pub repack_suffix: Option<String>,
-    /// Resolved local crate source, or none for crates.io.
-    pub crate_src_path: Option<PathBuf>,
-    /// Whether the repack suffix was explicitly configured by the maintainer.
-    repack_suffix_explicit: bool,
-}
-
-impl PackageConfig {
-    /// Preserves an existing package's repack suffix when none is configured explicitly.
-    pub fn preserve_repack_suffix(&mut self, cargo_upstream: &str, existing_upstream: &str) {
-        if self.repack_suffix_explicit {
-            return;
-        }
-        if let Some(suffix) = existing_upstream
-            .strip_prefix(cargo_upstream)
-            .and_then(|suffix| suffix.strip_prefix('+'))
-            .filter(|suffix| !suffix.is_empty())
-        {
-            self.repack_suffix = Some(suffix.to_owned());
-        }
-    }
-}
-
 /// Exact crate release selected for final generation.
 pub struct CrateSelection {
     /// Canonical crate name reported by Cargo.
@@ -112,8 +84,9 @@ fn resolve_package_target(
                     .with_context(|| format!("resolve {}", requested_dir.display()))?;
                 if !has_debcargo_config(&root) {
                     bail!(
-                        "{} is not a source-package root with debian/debcargo.toml",
-                        root.display()
+                        "{} is not a source-package root with {}",
+                        root.display(),
+                        get_package_config_path(Path::new("")).display()
                     );
                 }
                 return Ok(PackageTarget {
@@ -169,11 +142,6 @@ fn find_parent_package(start: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Reports whether a directory contains Ubucargo's source-package marker.
-fn has_debcargo_config(path: &Path) -> bool {
-    path.join("debian/debcargo.toml").is_file()
 }
 
 /// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
@@ -250,8 +218,7 @@ pub fn resolve_package(
         let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
         let top = read_top_changelog(&debian.join("changelog"))?;
         validate_top_changelog(&top, &current_package.version, &current_upstream)?;
-        let mut config = read_package_config(&debian.join("debcargo.toml"))?;
-        config.preserve_repack_suffix(&current_upstream, &top.upstream);
+        let config = read_package_config(root)?;
         let crate_selection = select_existing_release(
             root,
             requested_name,
@@ -428,43 +395,6 @@ fn get_crate_source_name(crate_name: &str, semver_suffix: Option<&Version>) -> S
     source
 }
 
-/// Reads and validates the in-tree debcargo configuration.
-fn read_package_config(path: &Path) -> Result<PackageConfig> {
-    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let mut config =
-        read_package_config_text(&contents).with_context(|| format!("parse {}", path.display()))?;
-    if let Some(crate_src_path) = &config.crate_src_path {
-        let config_dir = path
-            .parent()
-            .context("debcargo.toml has no parent directory")?;
-        config.crate_src_path = Some(
-            config_dir
-                .join(crate_src_path)
-                .canonicalize()
-                .with_context(|| format!("resolve crate_src_path from {}", path.display()))?,
-        );
-    }
-    Ok(config)
-}
-
-/// Creates the persisted Ubuntu configuration used for a new package.
-pub fn read_new_package_config() -> Result<PackageConfig> {
-    let mut document = DocumentMut::new();
-    document["maintainer"] = value(UBUNTU_MAINTAINER);
-    read_package_config_text(&document.to_string())
-}
-
-/// Creates the persisted configuration for a new package built from a local crate.
-fn read_new_local_package_config(crate_root: &Path, package_root: &Path) -> Result<PackageConfig> {
-    let relative = make_relative_path(crate_root, &package_root.join("debian"))?;
-    let mut config = read_new_package_config()?;
-    let mut document: DocumentMut = config.contents.parse()?;
-    document["crate_src_path"] = value(require_utf8_path(&relative)?);
-    config.contents = document.to_string();
-    config.crate_src_path = Some(crate_root.to_path_buf());
-    Ok(config)
-}
-
 /// Resolves the latest crate release with `debcargo extract` and reads its Cargo identity.
 fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelection> {
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
@@ -474,7 +404,7 @@ fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelec
         Command::new("debcargo")
             .arg("extract")
             .arg("--config")
-            .arg(stage.path().join("debcargo.toml"))
+            .arg(get_staged_config_path(stage.path()))
             .arg("--directory")
             .arg(stage.path().join("output"))
             .arg(crate_name)
@@ -492,93 +422,6 @@ fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelec
         crate_name: package.name,
         version: package.version,
     })
-}
-
-/// Reads the package-identity subset of a debcargo configuration.
-fn read_package_config_text(contents: &str) -> Result<PackageConfig> {
-    let config: DocumentMut = contents.parse().context("parse debcargo configuration")?;
-    if let Some(overlay) = config.get("overlay")
-        && overlay.as_str() != Some(".")
-    {
-        bail!("overlay must be omitted or \".\"");
-    }
-    let crate_src_path = config
-        .get("crate_src_path")
-        .map(|item| {
-            item.as_str()
-                .context("crate_src_path must be a string")
-                .map(PathBuf::from)
-        })
-        .transpose()?;
-    let semver_suffix = config
-        .get("semver_suffix")
-        .and_then(|item| item.as_bool())
-        .unwrap_or(false);
-    let repack_suffix_explicit = config.get("repack_suffix").is_some();
-    let repack_suffix = if let Some(item) = config.get("repack_suffix") {
-        Some(
-            item.as_str()
-                .context("repack_suffix must be a string")?
-                .to_owned(),
-        )
-    } else if config.get("excludes").is_some() {
-        Some("ds".to_owned())
-    } else {
-        None
-    };
-    Ok(PackageConfig {
-        contents: contents.to_owned(),
-        semver_suffix,
-        repack_suffix,
-        crate_src_path,
-        repack_suffix_explicit,
-    })
-}
-
-/// Writes staged configuration with resolved local source and temporary overlay paths.
-pub fn write_staged_config(config: &PackageConfig, stage: &Path) -> Result<()> {
-    let mut document: DocumentMut = config.contents.parse()?;
-    if let Some(repack_suffix) = &config.repack_suffix {
-        document["repack_suffix"] = value(repack_suffix);
-    }
-    if let Some(crate_src_path) = &config.crate_src_path {
-        document["crate_src_path"] = value(require_utf8_path(crate_src_path)?);
-    }
-    document["overlay"] = value(require_utf8_path(&stage.join("overlay"))?);
-    fs::write(stage.join("debcargo.toml"), document.to_string())?;
-    Ok(())
-}
-
-/// Returns a path as UTF-8 for insertion into TOML.
-fn require_utf8_path(path: &Path) -> Result<&str> {
-    path.to_str()
-        .with_context(|| format!("path is not valid UTF-8: {}", path.display()))
-}
-
-/// Expresses one absolute path relative to another absolute directory.
-fn make_relative_path(path: &Path, base: &Path) -> Result<PathBuf> {
-    let path_components: Vec<Component<'_>> = path.components().collect();
-    let base_components: Vec<Component<'_>> = base.components().collect();
-    let common = path_components
-        .iter()
-        .zip(&base_components)
-        .take_while(|(path, base)| path == base)
-        .count();
-    if common == 0 {
-        bail!(
-            "{} and {} have no common filesystem root",
-            path.display(),
-            base.display()
-        );
-    }
-    let mut relative = PathBuf::new();
-    for _ in common..base_components.len() {
-        relative.push("..");
-    }
-    for component in &path_components[common..] {
-        relative.push(component.as_os_str());
-    }
-    Ok(relative)
 }
 
 #[cfg(test)]
@@ -643,7 +486,7 @@ mod tests {
         fs::create_dir(destination.join("src")).unwrap();
         fs::write(destination.join("src/lib.rs"), "").unwrap();
         fs::write(destination.join("Cargo.toml"), manifest).unwrap();
-        let config_path = destination.join("debian/debcargo.toml");
+        let config_path = get_package_config_path(&destination);
         fs::write(&config_path, &resolved.config.contents).unwrap();
         let changelog = "rust-example (0.4.0+dfsg-1) UNRELEASED; urgency=medium\n\n  * Initial release.\n\n -- Example <example@example.com>  Thu, 17 Sep 2026 12:00:00 +0000\n";
         fs::write(destination.join("debian/changelog"), changelog).unwrap();
@@ -676,7 +519,7 @@ mod tests {
         let resolved =
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).unwrap();
         assert_eq!(resolved.crate_selection.version, "0.4.1");
-        assert_eq!(resolved.upstream, "0.4.1+dfsg");
+        assert_eq!(resolved.upstream, "0.4.1");
         let existing = resolved.existing.as_ref().unwrap();
         assert_eq!(existing.root, destination);
         assert_eq!(existing.top_changelog.upstream, "0.4.0+dfsg");
@@ -696,15 +539,28 @@ mod tests {
         let resolved =
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).unwrap();
         assert_eq!(resolved.crate_selection.version, "0.4.0");
-        let resolved = resolve_package(
-            Some(parent.path()),
-            Some(&destination),
-            Some("example"),
-            Some("0.4.2"),
-            None,
-        )
-        .unwrap();
-        assert_eq!(resolved.upstream, "0.4.2+dfsg");
+        assert_eq!(resolved.upstream, "0.4.0");
+        // The old changelog identifies the baseline, not the next release's suffix.
+        for (contents, expected) in [
+            ("", "0.4.2"),
+            ("excludes = [\"benches/**\"]\n", "0.4.2+ds"),
+            ("repack_suffix = \"custom\"\n", "0.4.2+custom"),
+        ] {
+            fs::write(&config_path, contents).unwrap();
+            let resolved = resolve_package(
+                Some(parent.path()),
+                Some(&destination),
+                Some("example"),
+                Some("0.4.2"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(resolved.upstream, expected);
+            assert_eq!(
+                resolved.existing.unwrap().top_changelog.upstream,
+                "0.4.0+dfsg"
+            );
+        }
         assert!(
             resolve_package(
                 Some(parent.path()),
@@ -735,7 +591,7 @@ mod tests {
     fn selects_clean_explicit_destination() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("debian")).unwrap();
-        fs::write(root.path().join("debian/debcargo.toml"), "").unwrap();
+        fs::write(get_package_config_path(root.path()), "").unwrap();
         let target = resolve_package_target(
             root.path(),
             Some(Path::new("new-package")),
@@ -774,7 +630,7 @@ mod tests {
     fn resolves_implicit_package_target() {
         let root = tempfile::tempdir().unwrap();
         fs::create_dir_all(root.path().join("debian")).unwrap();
-        fs::write(root.path().join("debian/debcargo.toml"), "").unwrap();
+        fs::write(get_package_config_path(root.path()), "").unwrap();
         let nested = root.path().join("a/b");
         fs::create_dir_all(&nested).unwrap();
         assert_eq!(
@@ -797,7 +653,7 @@ mod tests {
 
         let occupied = clean.path().join("rust-example-crate");
         fs::create_dir_all(occupied.join("debian")).unwrap();
-        fs::write(occupied.join("debian/debcargo.toml"), "").unwrap();
+        fs::write(get_package_config_path(&occupied), "").unwrap();
         // An occupied default destination must not silently turn creation into reconciliation.
         assert!(resolve_package_target(clean.path(), None, Some("Example_Crate"), None).is_err());
     }
@@ -876,111 +732,5 @@ mod tests {
         assert!(parse_debcargo_version("debcargo 2.8.3").is_err());
         assert!(parse_debcargo_version("debcargo 3.0.0").is_err());
         assert!(parse_debcargo_version("2.8.4").is_err());
-    }
-
-    #[test]
-    /// Preserves the new-package maintainer through configuration reload and staging.
-    fn preserves_new_package_maintainer() {
-        let stage = tempfile::tempdir().unwrap();
-        let crate_root = stage.path().join("crate");
-        let package_root = stage.path().join("output");
-        fs::create_dir(&crate_root).unwrap();
-        fs::create_dir_all(package_root.join("debian")).unwrap();
-        for config in [
-            read_new_package_config().unwrap(),
-            read_new_local_package_config(&crate_root, &package_root).unwrap(),
-        ] {
-            write_staged_config(&config, stage.path()).unwrap();
-            let initial = fs::read_to_string(stage.path().join("debcargo.toml")).unwrap();
-            fs::write(package_root.join("debian/debcargo.toml"), &config.contents).unwrap();
-            let reloaded = read_package_config(&package_root.join("debian/debcargo.toml")).unwrap();
-            let document: DocumentMut = reloaded.contents.parse().unwrap();
-            assert_eq!(document["maintainer"].as_str(), Some(UBUNTU_MAINTAINER));
-            assert!(!document.contains_key("overlay"));
-
-            write_staged_config(&reloaded, stage.path()).unwrap();
-            assert_eq!(
-                fs::read_to_string(stage.path().join("debcargo.toml")).unwrap(),
-                initial
-            );
-        }
-    }
-
-    #[test]
-    /// Leaves existing maintainer settings and debcargo's implicit default unchanged.
-    fn preserves_existing_maintainer_config() {
-        let stage = tempfile::tempdir().unwrap();
-        let path = stage.path().join("existing.toml");
-        for contents in [
-            "# Use debcargo's default maintainer.\n",
-            "maintainer = \"Debian Rust Maintainers <pkg-rust-maintainers@alioth-lists.debian.net>\"\n",
-            "maintainer = \"Example Developer <example@ubuntu.com>\"\n",
-        ] {
-            fs::write(&path, contents).unwrap();
-            let config = read_package_config(&path).unwrap();
-            write_staged_config(&config, stage.path()).unwrap();
-            let mut staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
-                .unwrap()
-                .parse()
-                .unwrap();
-            staged.remove("overlay");
-            assert_eq!(staged.to_string(), contents);
-            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
-        }
-    }
-
-    #[test]
-    /// Persists a relative local source while staging its resolved absolute path.
-    fn configures_local_crate_source() {
-        let parent = tempfile::tempdir().unwrap();
-        let crate_root = parent.path().join("example");
-        let package_root = parent.path().join("rust-example");
-        fs::create_dir(&crate_root).unwrap();
-        let config = read_new_local_package_config(&crate_root, &package_root).unwrap();
-        assert!(
-            config
-                .contents
-                .contains("crate_src_path = \"../../example\"")
-        );
-
-        fs::create_dir_all(package_root.join("debian")).unwrap();
-        fs::write(package_root.join("debian/debcargo.toml"), &config.contents).unwrap();
-        assert_eq!(
-            read_package_config(&package_root.join("debian/debcargo.toml"))
-                .unwrap()
-                .crate_src_path
-                .as_deref(),
-            Some(crate_root.as_path())
-        );
-
-        let stage = tempfile::tempdir().unwrap();
-        write_staged_config(&config, stage.path()).unwrap();
-        let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(staged["crate_src_path"].as_str(), crate_root.to_str());
-    }
-
-    #[test]
-    /// Preserves an existing implicit suffix while respecting an explicit suffix.
-    fn selects_repack_suffix() {
-        let mut inferred = read_package_config_text("excludes = [\"benches/**\"]").unwrap();
-        inferred.preserve_repack_suffix("1.0.0", "1.0.0+dfsg");
-        assert_eq!(inferred.repack_suffix.as_deref(), Some("dfsg"));
-
-        let stage = tempfile::tempdir().unwrap();
-        write_staged_config(&inferred, stage.path()).unwrap();
-        let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(staged["repack_suffix"].as_str(), Some("dfsg"));
-
-        let mut explicit =
-            read_package_config_text("excludes = [\"benches/**\"]\nrepack_suffix = \"custom\"")
-                .unwrap();
-        explicit.preserve_repack_suffix("1.0.0", "1.0.0+dfsg");
-        assert_eq!(explicit.repack_suffix.as_deref(), Some("custom"));
     }
 }

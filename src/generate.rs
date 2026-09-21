@@ -15,7 +15,8 @@ use crate::{
     cargo::read_root_package,
     changelog::prepare_changelog,
     command::run_command,
-    resolve::{CrateSelection, ResolvedPackage, normalize_crate_name, write_staged_config},
+    config::{get_staged_config_path, write_staged_config},
+    resolve::{CrateSelection, ResolvedPackage, normalize_crate_name},
     tree::copy_tree,
 };
 
@@ -179,7 +180,7 @@ fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
     command
         .arg("package")
         .arg("--config")
-        .arg(stage.join("debcargo.toml"))
+        .arg(get_staged_config_path(stage))
         .arg("--directory")
         .arg(stage.join("output"))
         .arg("--no-overlay-write-back")

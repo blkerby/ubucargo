@@ -9,7 +9,10 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::{command::run_command, resolve::PackageConfig};
+use crate::{
+    command::run_command,
+    config::{PackageConfig, write_package_config},
+};
 use debian_control::lossless::control::Control;
 
 use super::managed::{FileState, PathPlan, build_plan, read_state};
@@ -144,7 +147,7 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
 /// Adds the used Ubucargo configuration and generated-file baselines to a new staged package.
 pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let debian = source.join("debian");
-    fs::write(debian.join("debcargo.toml"), &config.contents)?;
+    write_package_config(config, source)?;
     let mut paths = BTreeSet::new();
     collect_output_paths(&debian, &debian, &mut paths)?;
     let mut generated = BTreeMap::new();
@@ -224,7 +227,7 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::read_new_package_config;
+    use crate::config::{get_package_config_path, read_new_package_config};
 
     #[test]
     /// Removes generated VCS fields without changing adjacent control fields.
@@ -269,7 +272,7 @@ mod tests {
         let config = read_new_package_config().unwrap();
         initialize_package(root.path(), &config).unwrap();
         assert_eq!(
-            fs::read_to_string(root.path().join("debian/debcargo.toml")).unwrap(),
+            fs::read_to_string(get_package_config_path(root.path())).unwrap(),
             config.contents
         );
         assert!(!root.path().join("debian/control.debcargo.hint").exists());
