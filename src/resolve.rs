@@ -35,7 +35,7 @@ pub struct CrateSelection {
 #[derive(Debug, Eq, PartialEq)]
 struct PackageTarget {
     /// Directory containing or intended to contain the Debian source package.
-    source: PathBuf,
+    destination: PathBuf,
     /// Whether the directory is an existing source package.
     existing: bool,
 }
@@ -90,7 +90,7 @@ fn resolve_package_target(
                     );
                 }
                 return Ok(PackageTarget {
-                    source: root,
+                    destination: root,
                     existing: true,
                 });
             }
@@ -103,7 +103,7 @@ fn resolve_package_target(
                     );
                 }
                 return Ok(PackageTarget {
-                    source: requested_dir,
+                    destination: requested_dir,
                     existing: false,
                 });
             }
@@ -115,7 +115,7 @@ fn resolve_package_target(
 
     if let Some(root) = find_parent_package(start) {
         return Ok(PackageTarget {
-            source: root,
+            destination: root,
             existing: true,
         });
     }
@@ -126,10 +126,10 @@ fn resolve_package_target(
         );
     };
     // New registry packages use the default configuration, without a semver suffix.
-    let source = start.join(get_crate_source_name(crate_name, None));
-    require_absent(&source)?;
+    let destination = start.join(get_crate_source_name(crate_name, None));
+    require_absent(&destination)?;
     Ok(PackageTarget {
-        source,
+        destination,
         existing: false,
     })
 }
@@ -176,10 +176,15 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
     Ok(())
 }
 
-/// Resolves a destination, configuration, and exact release for staged generation.
-/// A starting directory enables package discovery and destination selection.
-/// Omit it to inspect a registry crate independently of the working directory.
-/// Selecting the latest release runs `debcargo extract` and may download the crate.
+/// Resolves a destination, configuration, and exact version to use for a package.
+/// - Local sources (`local_crate` for new packages or configured `crate_src_path`
+///   for existing packages) use the local source's Cargo.toml version.
+/// - Without `local_crate` or a configured `crate_src_path`, the source is
+///   crates.io. A requested crate name selects the requested exact version,
+///   or the latest release if no version is requested.
+/// - If neither a local source nor a crate name is supplied, an existing
+///   package is required. Its Cargo.toml supplies the crate name and version
+///   to select from crates.io.
 pub fn resolve_package(
     start: Option<&Path>,
     package_dir: Option<&Path>,
@@ -207,11 +212,13 @@ pub fn resolve_package(
         bail!("--local-crate applies only when creating a package");
     }
     let debcargo_version = check_debcargo_version()?;
+
+    // Prepare the packaging context and retain its Cargo identity as a registry fallback.
     let existing_root = match &target {
-        Some(target) if target.existing => Some(target.source.as_path()),
+        Some(target) if target.existing => Some(target.destination.as_path()),
         _ => None,
     };
-    let (config, crate_selection, existing) = if let Some(root) = existing_root {
+    let (config, current_package, existing) = if let Some(root) = existing_root {
         let debian = root.join("debian");
         let current_package = read_root_package(root)?;
         let current_version = parse_exact_version(&current_package.version)?;
@@ -219,24 +226,17 @@ pub fn resolve_package(
         let top = read_top_changelog(&debian.join("changelog"))?;
         validate_top_changelog(&top, &current_package.version, &current_upstream)?;
         let config = read_package_config(root)?;
-        let crate_selection = select_existing_release(
-            root,
-            requested_name,
-            requested_version,
-            &current_package,
-            &config,
-        )?;
         let existing = ExistingPackage {
             root: root.to_path_buf(),
             top_changelog: top,
             patches_applied: check_patch_state(root)?,
         };
-        (config, crate_selection, Some(existing))
+        (config, Some(current_package), Some(existing))
     } else if let Some(local_crate) = local_crate {
         let root = &target
             .as_ref()
             .context("local crate resolution requires a package destination")?
-            .source;
+            .destination;
         let local_crate = if local_crate.is_absolute() {
             local_crate.to_path_buf()
         } else {
@@ -249,14 +249,33 @@ pub fn resolve_package(
             .canonicalize()
             .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
         let config = read_new_local_package_config(&source, root)?;
-        let package = read_root_package(&source)?;
-        let crate_selection = select_release(None, None, Some(&package), &config)?;
-        (config, crate_selection, None)
+        (config, None, None)
     } else {
-        let config = read_new_package_config()?;
-        let crate_selection = select_release(requested_name, requested_version, None, &config)?;
-        (config, crate_selection, None)
+        (read_new_package_config()?, None, None)
     };
+
+    // The effective configuration selects local input for both new and existing packages.
+    let crate_selection = if let Some(local_crate) = &config.resolved_crate_src_path {
+        if let Some(root) = existing_root {
+            if requested_name.is_some() || requested_version.is_some() {
+                bail!("CRATE and VERSION may not be used with crate_src_path");
+            }
+            validate_separate_trees(local_crate, root)?;
+        }
+        let package = read_root_package(local_crate)?;
+        CrateSelection {
+            crate_name: package.name,
+            version: package.version,
+        }
+    } else {
+        select_registry_release(
+            requested_name,
+            requested_version,
+            current_package.as_ref(),
+            &config,
+        )?
+    };
+
     let version = parse_exact_version(&crate_selection.version)?;
     let source_name = get_crate_source_name(
         &crate_selection.crate_name,
@@ -266,7 +285,8 @@ pub fn resolve_package(
             None
         },
     );
-    let upstream = cargo_to_debian_upstream_version(&version, config.repack_suffix.as_deref());
+    let upstream =
+        cargo_to_debian_upstream_version(&version, config.effective_repack_suffix.as_deref());
     if let Some(existing) = &existing
         && source_name != existing.top_changelog.source
     {
@@ -276,7 +296,7 @@ pub fn resolve_package(
         );
     }
     Ok(ResolvedPackage {
-        destination: target.map(|target| target.source),
+        destination: target.map(|target| target.destination),
         config,
         crate_selection,
         source_name,
@@ -284,30 +304,6 @@ pub fn resolve_package(
         debcargo_version,
         existing,
     })
-}
-
-/// Selects registry or configured local input for an existing source package.
-fn select_existing_release(
-    root: &Path,
-    requested_name: Option<&str>,
-    requested_version: Option<&str>,
-    current_package: &MetadataPackage,
-    config: &PackageConfig,
-) -> Result<CrateSelection> {
-    let Some(local_crate) = &config.crate_src_path else {
-        return select_release(
-            requested_name,
-            requested_version,
-            Some(current_package),
-            config,
-        );
-    };
-    if requested_name.is_some() || requested_version.is_some() {
-        bail!("CRATE and VERSION may not be used with crate_src_path");
-    }
-    validate_separate_trees(local_crate, root)?;
-    let local_package = read_root_package(local_crate)?;
-    select_release(None, None, Some(&local_package), config)
 }
 
 /// Normalizes Cargo crate spelling to Debian's dashed lowercase form.
@@ -338,8 +334,8 @@ fn parse_debcargo_version(output: &str) -> Result<Version> {
     Ok(version)
 }
 
-/// Selects an exact release, using preliminary extraction only for latest-version resolution.
-fn select_release(
+/// Selects an exact registry release, extracting the crate only to resolve the latest version.
+fn select_registry_release(
     requested_name: Option<&str>,
     requested_version: Option<&str>,
     current: Option<&MetadataPackage>,
@@ -465,13 +461,13 @@ mod tests {
         assert_eq!(resolved.source_name, "rust-example");
         assert_eq!(resolved.upstream, "0.4.0");
         assert_eq!(
-            resolved.config.crate_src_path.as_deref(),
+            resolved.config.resolved_crate_src_path.as_deref(),
             Some(local.as_path())
         );
         assert!(
             resolved
                 .config
-                .contents
+                .original_contents
                 .contains("crate_src_path = \"../../local\"")
         );
         assert!(resolved.existing.is_none());
@@ -482,7 +478,7 @@ mod tests {
         fs::write(destination.join("src/lib.rs"), "").unwrap();
         fs::write(destination.join("Cargo.toml"), manifest).unwrap();
         let config_path = get_package_config_path(&destination);
-        fs::write(&config_path, &resolved.config.contents).unwrap();
+        fs::write(&config_path, &resolved.config.original_contents).unwrap();
         let changelog = "rust-example (0.4.0+dfsg-1) UNRELEASED; urgency=medium\n\n  * Initial release.\n\n -- Example <example@example.com>  Thu, 17 Sep 2026 12:00:00 +0000\n";
         fs::write(destination.join("debian/changelog"), changelog).unwrap();
 
@@ -597,7 +593,7 @@ mod tests {
         assert_eq!(
             target,
             PackageTarget {
-                source: root.path().join("new-package"),
+                destination: root.path().join("new-package"),
                 existing: false,
             }
         );
@@ -614,7 +610,7 @@ mod tests {
         assert_eq!(
             resolve_package_target(root.path(), Some(root.path()), None, None).unwrap(),
             PackageTarget {
-                source: root.path().to_path_buf(),
+                destination: root.path().to_path_buf(),
                 existing: true,
             }
         );
@@ -631,7 +627,7 @@ mod tests {
         assert_eq!(
             resolve_package_target(&nested, None, None, None).unwrap(),
             PackageTarget {
-                source: root.path().to_path_buf(),
+                destination: root.path().to_path_buf(),
                 existing: true,
             }
         );
@@ -640,7 +636,7 @@ mod tests {
         assert_eq!(
             resolve_package_target(clean.path(), None, Some("Example_Crate"), None).unwrap(),
             PackageTarget {
-                source: clean.path().join("rust-example-crate"),
+                destination: clean.path().join("rust-example-crate"),
                 existing: false,
             }
         );

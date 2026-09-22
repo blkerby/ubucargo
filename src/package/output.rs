@@ -259,7 +259,7 @@ mod tests {
         initialize_package(root.path(), &config).unwrap();
         assert_eq!(
             fs::read_to_string(get_package_config_path(root.path())).unwrap(),
-            config.contents
+            config.original_contents
         );
         assert!(!root.path().join("debian/control.debcargo.hint").exists());
         assert!(root.path().join("debian/ubucargo-state.json").is_file());

@@ -47,7 +47,7 @@ pub fn generate_package(package: &ResolvedPackage, keep_staging: bool) -> Result
         }
     }
     write_staged_config(&package.config, stage.path())?;
-    let source = if package.config.crate_src_path.is_some() {
+    let source = if package.config.resolved_crate_src_path.is_some() {
         "local source"
     } else {
         "crates.io"
