@@ -7,8 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use debian_control::lossless::control::Control;
 
 use crate::{
+    changelog::read_top_changelog,
     config::PackageConfig,
     generate::{GeneratedPackage, generate_package},
     resolve::{ExistingPackage, resolve_package},
@@ -185,6 +187,27 @@ fn reconcile_existing(
             println!("ambiguous {} (use --keep or --replace)", path.display());
         }
         bail!("unresolved generated-file ambiguities");
+    }
+
+    // Preserve control overrides, but flag identities that will prevent a build.
+    let prepared_top = read_top_changelog(&generated.stage.path().join("overlay/changelog"))?;
+    for path in &generated_plan.paths {
+        if path.path == Path::new("debian/control") {
+            let state = path
+                .primary_after
+                .as_ref()
+                .context("planned debian/control is missing")?;
+            let control: Control = std::str::from_utf8(&state.contents)?
+                .parse()
+                .context("parse planned debian/control")?;
+            let source = control.source().and_then(|source| source.name());
+            if source.as_deref() != Some(prepared_top.source.as_str()) {
+                eprintln!(
+                    "warning: debian/control Source is missing or does not match {}; the package will not build until reconciled with debian/control.debcargo.hint (written when applying changes)",
+                    prepared_top.source
+                );
+            }
+        }
     }
 
     let prepared_changelog = read_state(&generated.stage.path().join("overlay/changelog"))?

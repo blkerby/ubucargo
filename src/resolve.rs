@@ -274,6 +274,16 @@ pub fn resolve_package(
         )?
     };
 
+    if let Some(current) = &current_package
+        && normalize_crate_name(&crate_selection.crate_name) != normalize_crate_name(&current.name)
+    {
+        bail!(
+            "selected crate {} does not match existing crate {}",
+            crate_selection.crate_name,
+            current.name
+        );
+    }
+
     let version = parse_exact_version(&crate_selection.version)?;
     let source_name = get_crate_source_name(
         &crate_selection.crate_name,
@@ -285,14 +295,6 @@ pub fn resolve_package(
     );
     let upstream =
         cargo_to_debian_upstream_version(&version, config.effective_repack_suffix.as_deref());
-    if let Some(existing) = &existing
-        && source_name != existing.top_changelog.source
-    {
-        bail!(
-            "selected crate maps to Debian source {source_name}, not existing source {}",
-            existing.top_changelog.source
-        );
-    }
     Ok(ResolvedPackage {
         destination: target.map(|target| target.destination),
         config,
@@ -663,36 +665,48 @@ mod tests {
     }
 
     #[test]
-    /// Rejects a crate whose Debian source name differs from the existing package.
+    /// Rejects a different Cargo crate, even if its Debian name matches the old source.
     fn rejects_existing_package_crate_change() {
         let parent = tempfile::tempdir().unwrap();
         let destination = parent.path().join("rust-example");
         create_test_package(&destination, "");
-        assert!(
-            resolve_package(
+        let changelog_path = destination.join("debian/changelog");
+        let changelog = fs::read_to_string(&changelog_path).unwrap();
+        fs::write(
+            &changelog_path,
+            changelog.replace("rust-example", "rust-example-0.4"),
+        )
+        .unwrap();
+        for name in ["different", "example-0.4"] {
+            let error = resolve_package(
                 Some(parent.path()),
                 Some(&destination),
-                Some("different"),
+                Some(name),
                 Some("0.4.2"),
-                None
+                None,
             )
-            .is_err()
-        );
+            .err()
+            .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not match existing crate example")
+            );
+        }
     }
 
     #[test]
-    /// Rejects a semver suffix that changes the existing Debian source name.
-    fn rejects_existing_package_semver_suffix_change() {
+    /// Allows a new source name while retaining the old changelog identity.
+    fn resolves_existing_package_source_name_changes() {
         let parent = tempfile::tempdir().unwrap();
         let destination = parent.path().join("rust-example");
-        create_test_package(
-            &destination,
-            indoc! {r"
-                semver_suffix = true
-            "},
-        );
-        assert!(
-            resolve_package(Some(parent.path()), Some(&destination), None, None, None).is_err()
+        create_test_package(&destination, "semver_suffix = true");
+        let resolved =
+            resolve_package(Some(parent.path()), Some(&destination), None, None, None).unwrap();
+        assert_eq!(resolved.source_name, "rust-example-0.4");
+        assert_eq!(
+            resolved.existing.unwrap().top_changelog.source,
+            "rust-example"
         );
     }
 

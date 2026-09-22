@@ -97,6 +97,16 @@ pub fn prepare_changelog(
     run_command(command.arg(provenance), "dch")?;
 
     let mut changelog = ChangeLog::read_path(staged_path).context("read prepared changelog")?;
+    if let Some(old) = old_top
+        && old.source != source_name
+    {
+        let mut entry = changelog.iter().next().context("changelog is empty")?;
+        entry.set_package(source_name.to_owned());
+        entry.prepend_change_line(&format!(
+            "* Rename source package from {} to {source_name}.",
+            old.source
+        ));
+    }
     normalize_top_entry(&mut changelog, provenance)?;
     changelog
         .write_to_path(staged_path)
@@ -147,7 +157,9 @@ fn normalize_top_entry(changelog: &mut ChangeLog, provenance: &str) -> Result<()
     let provenance = format!("* {provenance}");
     let mut provenance_bullet = None;
     for change in debian_changelog::iter_changes_by_author(changelog) {
-        if change.try_version().transpose()? != Some(top_version.clone()) {
+        if change.package() != entry.package()
+            || change.try_version().transpose()? != Some(top_version.clone())
+        {
             break;
         }
         for bullet in change.split_into_bullets() {
@@ -259,6 +271,90 @@ mod tests {
                 assert!(changelog.to_string().contains("Maintainer change."));
             }
         }
+    }
+
+    #[test]
+    /// Renames drafts in place while preserving released entries under the old name.
+    fn prepares_source_name_changes() {
+        for (distribution, version, entries) in [
+            ("UNRELEASED", "1.0.0-0ubuntu3", 1),
+            ("noble", "1.0.0-0ubuntu4", 2),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let old_path = directory.path().join("old");
+            let staged_path = directory.path().join("changelog");
+            let old = formatdoc! {r"
+                rust-example (1.0.0-0ubuntu3) {distribution}; urgency=medium
+
+                  * Maintainer change.
+
+                 -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000
+            "};
+            fs::write(&old_path, &old).unwrap();
+            let old_top = read_top_changelog(&old_path).unwrap();
+            prepare_changelog(
+                Some(old_path),
+                &staged_path,
+                Some(&old_top),
+                "rust-example-1",
+                "1.0.0",
+                "Generated package.",
+            )
+            .unwrap();
+            let changelog = ChangeLog::read_path(&staged_path).unwrap();
+            let top = parse_top_changelog(&changelog).unwrap();
+            assert_eq!(top.source, "rust-example-1");
+            assert_eq!(top.version, version);
+            assert_eq!(changelog.iter().count(), entries);
+            assert!(changelog.to_string().contains("Maintainer change."));
+            assert!(
+                changelog
+                    .to_string()
+                    .contains("Rename source package from rust-example to rust-example-1.")
+            );
+            if distribution != "UNRELEASED" {
+                assert!(changelog.to_string().ends_with(&old));
+            }
+        }
+    }
+
+    #[test]
+    /// Keeps provenance in older entries with the same version but a different source name.
+    fn preserves_provenance_across_source_names() {
+        let old = indoc! {r"
+            rust-example (1.0.0-1) unstable; urgency=medium
+
+              * Package example 1.0.0 from crates.io.
+                Generated with debcargo 2.8.4 and ubucargo 0.1.0.
+
+             -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000
+        "};
+        let mut changelog: ChangeLog = formatdoc! {r"
+            rust-example-1 (1.0.0-1) UNRELEASED; urgency=medium
+
+              * Rename source package.
+
+             -- Example <example@example.com>  Tue, 02 Jan 2024 00:00:00 +0000
+
+            {old}"}
+        .parse()
+        .unwrap();
+        normalize_top_entry(
+            &mut changelog,
+            indoc! {r"
+                Package example 1.0.0 from crates.io.
+                  Generated with debcargo 2.8.4 and ubucargo 0.2.0."},
+        )
+        .unwrap();
+        assert!(changelog.to_string().ends_with(old));
+        assert!(
+            changelog
+                .iter()
+                .next()
+                .unwrap()
+                .to_string()
+                .contains("ubucargo 0.2.0")
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ For a new crates.io package, `CRATE` is required. `VERSION` requests an exact Ca
 
 Local-source packaging retains debcargo's limitation that dependencies must be resolvable from crates.io during generation. The generated Debian package still builds against dependencies declared from the Ubuntu Archive. A local working tree is suitable for iteration, but an Archive upload should use a fixed upstream release or snapshot and may not reuse one upstream version number for differing orig-tarball contents.
 
-The selected release must keep the existing Debian source identity when updating a package in place. A release with a different source identity must be packaged into a new directory.
+The selected release must belong to the same Cargo crate as the existing root `Cargo.toml` (allowing normalized case and underscore/hyphen spelling). The Debian source name may change: adding or removing `semver_suffix`, or upgrading a suffixed package to another semver line, regenerates the package under its new identity in the same working directory. The directory itself is not renamed. Maintainer overrides still follow the normal reconciliation rules; if the planned `debian/control` has a `Source` field inconsistent with the new identity, ubucargo issues a warning, since the maintainer would need to correct this before the package can build.
 
 These invocations use the same reconciliation pipeline:
 
@@ -87,6 +87,8 @@ The changelog remains primarily maintainer-owned, but ubucargo updates the versi
 - an `UNRELEASED` top entry for a different upstream version is retained and changed to `<upstream>-0ubuntu1`; and
 - `dch` handles existing Ubuntu revision forms such as `ubuntuN`, stable-update suffixes, rebuilds, and other derivative revisions.
 
+A change to the Debian source name follows the same rules: a released top entry is preserved and a new entry is created under the new name; an `UNRELEASED` top entry is renamed in place, retaining the maintainer's change notes and its Debian version when the upstream version is unchanged. A different upstream version starts at `<upstream>-0ubuntu1`. A rename item records both source names, and earlier entries retain their original names and contents.
+
 Ubucargo adds a provenance item recording the crate release and both tool versions:
 
 ```text
@@ -121,6 +123,8 @@ When repacking is not required, debcargo copies the verified `.crate` archive un
 The next package's repack suffix comes only from `debian/debcargo.toml`: an explicit `repack_suffix` is used as written, otherwise it defaults to `ds` when `excludes` is present, or no suffix when it is absent. The existing changelog identifies the old package and does not supply a suffix for the next one. To retain `+dfsg` from an existing version such as `1.0.0+dfsg-1`, set `repack_suffix = "dfsg"` in the configuration.
 
 For an existing package, the old orig tarball is the source-merge baseline. Its source name and upstream version come from the top changelog entry. Ubucargo first looks beside the package, then uses `pull-lp-source --download-only SOURCE VERSION` to retrieve that exact Ubuntu source version independently of the host's configured APT series. Acquisition happens before the staged changelog is changed.
+
+When the source name changes, the existing changelog still identifies the old orig baseline. The generated orig is installed beside it under the new source name; the old orig remains available.
 
 `pull-lp-source` verifies the downloaded source files against their `.dsc`; ubucargo only checks that the expected orig tarball was produced. If no old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
