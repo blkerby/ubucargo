@@ -49,19 +49,19 @@ pub fn has_debcargo_config(package_root: &Path) -> bool {
 pub fn read_package_config(package_root: &Path) -> Result<PackageConfig> {
     let path = get_package_config_path(package_root);
     let contents = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    read_package_config_text(&contents, &package_root.join("debian"), None)
+    parse_package_config(&contents, &package_root.join("debian"), None)
         .with_context(|| format!("read configuration {}", path.display()))
 }
 
 /// Creates the persisted Ubuntu configuration used for a new package.
-pub fn read_new_package_config() -> Result<PackageConfig> {
+pub fn get_new_package_config() -> Result<PackageConfig> {
     let mut document = DocumentMut::new();
     document["maintainer"] = value(UBUNTU_MAINTAINER);
-    read_package_config_text(&document.to_string(), Path::new(""), None)
+    parse_package_config(&document.to_string(), Path::new(""), None)
 }
 
 /// Creates the persisted configuration for a new package built from a local crate.
-pub fn read_new_local_package_config(
+pub fn get_new_local_package_config(
     crate_root: &Path,
     package_root: &Path,
 ) -> Result<PackageConfig> {
@@ -69,17 +69,17 @@ pub fn read_new_local_package_config(
     document["maintainer"] = value(UBUNTU_MAINTAINER);
     document["crate_src_path"] = value(require_utf8_path(crate_root)?);
     // Resolve the source before making its path relative to a destination that may not exist.
-    read_package_config_text(
+    parse_package_config(
         &document.to_string(),
         Path::new(""),
         Some(&package_root.join("debian")),
     )
 }
 
-/// Validates configuration and resolves its effective values before creating a snapshot.
+/// Parses configuration and resolves its effective values before creating a snapshot.
 /// Paths are read relative to `config_dir`. For new local packages, `new_config_dir`
 /// selects where to make the persisted source path relative; that directory need not exist.
-fn read_package_config_text(
+fn parse_package_config(
     contents: &str,
     config_dir: &Path,
     new_config_dir: Option<&Path>,
@@ -154,6 +154,8 @@ fn require_utf8_path(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
 
     #[test]
@@ -165,8 +167,8 @@ mod tests {
         fs::create_dir(&crate_root).unwrap();
         fs::create_dir_all(package_root.join("debian")).unwrap();
         for config in [
-            read_new_package_config().unwrap(),
-            read_new_local_package_config(&crate_root, &package_root).unwrap(),
+            get_new_package_config().unwrap(),
+            get_new_local_package_config(&crate_root, &package_root).unwrap(),
         ] {
             write_staged_config(&config, stage.path()).unwrap();
             let initial = fs::read_to_string(stage.path().join("debcargo.toml")).unwrap();
@@ -191,9 +193,15 @@ mod tests {
         fs::create_dir(stage.path().join("debian")).unwrap();
         let path = get_package_config_path(stage.path());
         for contents in [
-            "# Use debcargo's default maintainer.\n",
-            "maintainer = \"Debian Rust Maintainers <pkg-rust-maintainers@alioth-lists.debian.net>\"\n",
-            "maintainer = \"Example Developer <example@ubuntu.com>\"\n",
+            indoc! {r"
+                # Use debcargo's default maintainer.
+            "},
+            indoc! {r#"
+                maintainer = "Debian Rust Maintainers <pkg-rust-maintainers@alioth-lists.debian.net>"
+            "#},
+            indoc! {r#"
+                maintainer = "Example Developer <example@ubuntu.com>"
+            "#},
         ] {
             fs::write(&path, contents).unwrap();
             let config = read_package_config(stage.path()).unwrap();
@@ -219,7 +227,7 @@ mod tests {
         std::os::unix::fs::symlink(&crate_root, &link).unwrap();
         assert!(!has_debcargo_config(&package_root));
         assert!(read_package_config(&package_root).is_err());
-        let config = read_new_local_package_config(&link, &package_root).unwrap();
+        let config = get_new_local_package_config(&link, &package_root).unwrap();
         assert!(!package_root.exists());
         assert_eq!(
             config.resolved_crate_src_path.as_deref(),
@@ -251,7 +259,10 @@ mod tests {
         assert_eq!(staged["crate_src_path"].as_str(), crate_root.to_str());
 
         // Existing configurations retain their spelling, even when the path uses a symlink.
-        let contents = "# Keep this relative path.\ncrate_src_path = \"../../source-link\"\n";
+        let contents = indoc! {r#"
+            # Keep this relative path.
+            crate_src_path = "../../source-link"
+        "#};
         fs::write(get_package_config_path(&package_root), contents).unwrap();
         let config = read_package_config(&package_root).unwrap();
         assert_eq!(config.original_contents, contents);
@@ -272,10 +283,12 @@ mod tests {
         );
 
         let missing = parent.path().join("missing");
-        assert!(read_new_local_package_config(&missing, &package_root).is_err());
+        assert!(get_new_local_package_config(&missing, &package_root).is_err());
         fs::write(
             get_package_config_path(&package_root),
-            "crate_src_path = \"../../missing\"\n",
+            indoc! {r#"
+                crate_src_path = "../../missing"
+            "#},
         )
         .unwrap();
         assert!(read_package_config(&package_root).is_err());
@@ -287,14 +300,27 @@ mod tests {
         let stage = tempfile::tempdir().unwrap();
         for (contents, expected) in [
             ("", None),
-            ("excludes = [\"benches/**\"]\n", Some("ds")),
-            ("repack_suffix = \"custom\"\n", Some("custom")),
             (
-                "excludes = [\"benches/**\"]\nrepack_suffix = \"custom\"\n",
+                indoc! {r#"
+                    excludes = ["benches/**"]
+                "#},
+                Some("ds"),
+            ),
+            (
+                indoc! {r#"
+                    repack_suffix = "custom"
+                "#},
+                Some("custom"),
+            ),
+            (
+                indoc! {r#"
+                    excludes = ["benches/**"]
+                    repack_suffix = "custom"
+                "#},
                 Some("custom"),
             ),
         ] {
-            let config = read_package_config_text(contents, stage.path(), None).unwrap();
+            let config = parse_package_config(contents, stage.path(), None).unwrap();
             assert_eq!(config.effective_repack_suffix.as_deref(), expected);
             write_staged_config(&config, stage.path()).unwrap();
             let mut staged: DocumentMut = fs::read_to_string(get_staged_config_path(stage.path()))

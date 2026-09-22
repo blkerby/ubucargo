@@ -15,8 +15,8 @@ use crate::{
     changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
     command::run_command,
     config::{
-        PackageConfig, get_package_config_path, get_staged_config_path, has_debcargo_config,
-        read_new_local_package_config, read_new_package_config, read_package_config,
+        PackageConfig, get_new_local_package_config, get_new_package_config,
+        get_package_config_path, get_staged_config_path, has_debcargo_config, read_package_config,
         write_staged_config,
     },
     tree::require_absent,
@@ -68,15 +68,16 @@ pub struct ResolvedPackage {
     pub existing: Option<ExistingPackage>,
 }
 
-/// Resolves an existing source package or an absent destination for a new one.
+/// Resolves an existing source package (either specified explicitly, or located within
+/// the current directory or ancestor), or determine a default destination for a new one.
 fn resolve_package_target(
-    start: &Path,
+    current_dir: &Path,
     package_dir: Option<&Path>,
     crate_name: Option<&str>,
     local_crate: Option<&Path>,
 ) -> Result<PackageTarget> {
     if let Some(package_dir) = package_dir {
-        let requested_dir = start.join(package_dir);
+        let requested_dir = current_dir.join(package_dir);
         match fs::symlink_metadata(&requested_dir) {
             Ok(metadata) if metadata.is_dir() => {
                 let root = requested_dir
@@ -113,7 +114,7 @@ fn resolve_package_target(
         }
     }
 
-    if let Some(root) = find_parent_package(start) {
+    if let Some(root) = find_parent_package(current_dir) {
         return Ok(PackageTarget {
             destination: root,
             existing: true,
@@ -122,11 +123,11 @@ fn resolve_package_target(
     let Some(crate_name) = crate_name else {
         bail!(
             "{} is not inside a source package; CRATE is required to create one",
-            start.display()
+            current_dir.display()
         );
     };
     // New registry packages use the default configuration, without a semver suffix.
-    let destination = start.join(get_crate_source_name(crate_name, None));
+    let destination = current_dir.join(get_crate_source_name(crate_name, None));
     require_absent(&destination)?;
     Ok(PackageTarget {
         destination,
@@ -177,6 +178,8 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
 }
 
 /// Resolves a destination, configuration, and exact version to use for a package.
+/// `current_dir` is the canonical working directory used for relative paths and
+/// parent-package discovery. `None` selects registry inspection without a destination.
 /// - Local sources (`local_crate` for new packages or configured `crate_src_path`
 ///   for existing packages) use the local source's Cargo.toml version.
 /// - Without `local_crate` or a configured `crate_src_path`, the source is
@@ -186,7 +189,7 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
 ///   package is required. Its Cargo.toml supplies the crate name and version
 ///   to select from crates.io.
 pub fn resolve_package(
-    start: Option<&Path>,
+    current_dir: Option<&Path>,
     package_dir: Option<&Path>,
     requested_name: Option<&str>,
     requested_version: Option<&str>,
@@ -195,16 +198,16 @@ pub fn resolve_package(
     if let Some(version) = requested_version {
         parse_exact_version(version)?;
     }
-    let target = if let Some(start) = start {
+    let target = if let Some(current_dir) = current_dir {
         Some(resolve_package_target(
-            start,
+            current_dir,
             package_dir,
             requested_name,
             local_crate,
         )?)
     } else {
         if package_dir.is_some() || local_crate.is_some() {
-            bail!("package directories and local crates require a starting directory");
+            bail!("package directories and local crates require a current directory");
         }
         None
     };
@@ -213,7 +216,6 @@ pub fn resolve_package(
     }
     let debcargo_version = check_debcargo_version()?;
 
-    // Prepare the packaging context and retain its Cargo identity as a registry fallback.
     let existing_root = match &target {
         Some(target) if target.existing => Some(target.destination.as_path()),
         _ => None,
@@ -237,21 +239,17 @@ pub fn resolve_package(
             .as_ref()
             .context("local crate resolution requires a package destination")?
             .destination;
-        let local_crate = if local_crate.is_absolute() {
-            local_crate.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .context("get current directory")?
-                .join(local_crate)
-        };
+        let local_crate = current_dir
+            .context("local crate resolution requires a current directory")?
+            .join(local_crate);
         validate_separate_trees(&local_crate, root)?;
         let source = local_crate
             .canonicalize()
             .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
-        let config = read_new_local_package_config(&source, root)?;
+        let config = get_new_local_package_config(&source, root)?;
         (config, None, None)
     } else {
-        (read_new_package_config()?, None, None)
+        (get_new_package_config()?, None, None)
     };
 
     // The effective configuration selects local input for both new and existing packages.
@@ -388,7 +386,10 @@ fn get_crate_source_name(crate_name: &str, semver_suffix: Option<&Version>) -> S
     source
 }
 
-/// Resolves the latest crate release with `debcargo extract` and reads its Cargo identity.
+/// Resolves the latest crate release using debcargo's version-selection logic.
+/// This is done by using `debcargo extract`. This technically does more than needed
+/// at this stage (it actually retrieves the crate), but it avoids us needing to
+/// duplicate the version-selection logic.
 fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelection> {
     let stage = tempfile::tempdir().context("create latest-version staging directory")?;
     fs::create_dir(stage.path().join("overlay"))?;
@@ -419,16 +420,51 @@ fn resolve_latest(crate_name: &str, config: &PackageConfig) -> Result<CrateSelec
 
 #[cfg(test)]
 mod tests {
+    use indoc::{formatdoc, indoc};
+
     use super::*;
 
+    /// Creates a minimal example crate at the requested version.
+    fn create_test_crate(root: &Path, version: &str) {
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            formatdoc! {r#"
+                [package]
+                name = "example"
+                version = "{version}"
+                edition = "2024"
+            "#},
+        )
+        .unwrap();
+    }
+
+    /// Creates existing packaging for an example package with the supplied configuration.
+    fn create_test_package(root: &Path, config: &str) {
+        create_test_crate(root, "0.4.0");
+        fs::create_dir(root.join("debian")).unwrap();
+        fs::write(get_package_config_path(root), config).unwrap();
+        fs::write(
+            root.join("debian/changelog"),
+            indoc! {r"
+                rust-example (0.4.0+dfsg-1) UNRELEASED; urgency=medium
+
+                  * Initial release.
+
+                 -- Example <example@example.com>  Thu, 17 Sep 2026 12:00:00 +0000
+            "},
+        )
+        .unwrap();
+    }
+
     #[test]
-    /// Resolves registry, local, and existing inputs while preserving existing package identity.
-    fn resolves_package_inputs() {
+    /// Resolves an exact registry release with or without a package destination.
+    fn resolves_registry_package_inputs() {
         let parent = tempfile::tempdir().unwrap();
-        let destination = parent.path().join("rust-example");
-        for start in [None, Some(parent.path())] {
+        for current_dir in [None, Some(parent.path())] {
             let resolved = resolve_package(
-                start,
+                current_dir,
                 None,
                 Some("Example_Crate"),
                 Some("1.2.3-alpha.1"),
@@ -441,14 +477,18 @@ mod tests {
             assert!(resolved.existing.is_none());
             assert_eq!(
                 resolved.destination,
-                start.map(|path| path.join("rust-example-crate"))
+                current_dir.map(|path| path.join("rust-example-crate"))
             );
         }
+    }
+
+    #[test]
+    /// Resolves a new local package without creating its destination.
+    fn resolves_new_local_package() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
         let local = parent.path().join("local");
-        fs::create_dir_all(local.join("src")).unwrap();
-        fs::write(local.join("src/lib.rs"), "").unwrap();
-        let manifest = "[package]\nname = \"example\"\nversion = \"0.4.0\"\nedition = \"2024\"\n";
-        fs::write(local.join("Cargo.toml"), manifest).unwrap();
+        create_test_crate(&local, "0.4.0");
         let resolved = resolve_package(
             Some(parent.path()),
             Some(&destination),
@@ -472,41 +512,72 @@ mod tests {
         );
         assert!(resolved.existing.is_none());
         assert!(!destination.exists());
+    }
 
-        fs::create_dir_all(destination.join("debian")).unwrap();
-        fs::create_dir(destination.join("src")).unwrap();
-        fs::write(destination.join("src/lib.rs"), "").unwrap();
-        fs::write(destination.join("Cargo.toml"), manifest).unwrap();
-        let config_path = get_package_config_path(&destination);
-        fs::write(&config_path, &resolved.config.original_contents).unwrap();
-        let changelog = "rust-example (0.4.0+dfsg-1) UNRELEASED; urgency=medium\n\n  * Initial release.\n\n -- Example <example@example.com>  Thu, 17 Sep 2026 12:00:00 +0000\n";
-        fs::write(destination.join("debian/changelog"), changelog).unwrap();
+    #[test]
+    /// Resolves relative local inputs against the supplied directory, independently of cwd.
+    fn resolves_relative_local_package_paths() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        let local = parent.path().join("local");
+        create_test_crate(&local, "0.4.0");
+        let relative = resolve_package(
+            Some(parent.path()),
+            Some(Path::new("rust-example")),
+            None,
+            None,
+            Some(Path::new("local")),
+        )
+        .unwrap();
+        assert_eq!(relative.destination.as_deref(), Some(destination.as_path()));
+        assert_eq!(
+            relative.config.resolved_crate_src_path.as_deref(),
+            Some(local.as_path())
+        );
+    }
 
+    #[test]
+    /// Rejects --local-crate when the destination already contains a source package.
+    fn rejects_local_crate_for_existing_package() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(&destination, "");
         assert!(
             resolve_package(
                 Some(parent.path()),
                 Some(&destination),
                 None,
                 None,
-                Some(&local)
+                Some(Path::new("local"))
             )
             .err()
             .unwrap()
             .to_string()
             .contains("--local-crate applies only")
         );
-        let nested = destination.join("nested");
-        fs::create_dir(&nested).unwrap();
-        let resolved = resolve_package(Some(&nested), None, None, None, None).unwrap();
-        assert_eq!(resolved.destination.as_deref(), Some(destination.as_path()));
-        assert_eq!(resolved.existing.unwrap().root, destination);
-        // Registry inspection needs no package destination or existing-package context.
+    }
+
+    #[test]
+    /// Inspects a registry release without a destination or existing-package context.
+    fn inspects_registry_without_package_context() {
         let resolved = resolve_package(None, None, Some("example"), Some("9.0.0"), None).unwrap();
         assert!(resolved.destination.is_none());
         assert!(resolved.existing.is_none());
         assert_eq!(resolved.crate_selection.version, "9.0.0");
+    }
 
-        fs::write(local.join("Cargo.toml"), manifest.replace("0.4.0", "0.4.1")).unwrap();
+    #[test]
+    /// Selects the local crate's version while retaining the existing package baseline.
+    fn resolves_existing_local_package_version() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_crate(&parent.path().join("local"), "0.4.1");
+        create_test_package(
+            &destination,
+            indoc! {r#"
+                crate_src_path = "../../local"
+            "#},
+        );
         let resolved =
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).unwrap();
         assert_eq!(resolved.crate_selection.version, "0.4.1");
@@ -515,6 +586,20 @@ mod tests {
         assert_eq!(existing.root, destination);
         assert_eq!(existing.top_changelog.upstream, "0.4.0+dfsg");
         assert!(!existing.patches_applied);
+    }
+
+    #[test]
+    /// Rejects a registry release request for a package configured to use local sources.
+    fn rejects_registry_release_for_local_package() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_crate(&parent.path().join("local"), "0.4.1");
+        create_test_package(
+            &destination,
+            indoc! {r#"
+                crate_src_path = "../../local"
+            "#},
+        );
         assert!(
             resolve_package(
                 Some(parent.path()),
@@ -525,19 +610,42 @@ mod tests {
             )
             .is_err()
         );
+    }
 
-        fs::write(&config_path, "").unwrap();
+    #[test]
+    /// Defaults an existing registry package to the version in its Cargo manifest.
+    fn resolves_existing_registry_package_version() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(&destination, "");
         let resolved =
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).unwrap();
         assert_eq!(resolved.crate_selection.version, "0.4.0");
         assert_eq!(resolved.upstream, "0.4.0");
-        // The old changelog identifies the baseline, not the next release's suffix.
+    }
+
+    #[test]
+    /// Uses the current configuration's repack suffix while retaining the changelog baseline.
+    fn resolves_configured_repack_suffix() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(&destination, "");
         for (contents, expected) in [
             ("", "0.4.2"),
-            ("excludes = [\"benches/**\"]\n", "0.4.2+ds"),
-            ("repack_suffix = \"custom\"\n", "0.4.2+custom"),
+            (
+                indoc! {r#"
+                    excludes = ["benches/**"]
+                "#},
+                "0.4.2+ds",
+            ),
+            (
+                indoc! {r#"
+                    repack_suffix = "custom"
+                "#},
+                "0.4.2+custom",
+            ),
         ] {
-            fs::write(&config_path, contents).unwrap();
+            fs::write(get_package_config_path(&destination), contents).unwrap();
             let resolved = resolve_package(
                 Some(parent.path()),
                 Some(&destination),
@@ -552,6 +660,14 @@ mod tests {
                 "0.4.0+dfsg"
             );
         }
+    }
+
+    #[test]
+    /// Rejects a crate whose Debian source name differs from the existing package.
+    fn rejects_existing_package_crate_change() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(&destination, "");
         assert!(
             resolve_package(
                 Some(parent.path()),
@@ -562,16 +678,33 @@ mod tests {
             )
             .is_err()
         );
-        fs::write(&config_path, "semver_suffix = true\n").unwrap();
+    }
+
+    #[test]
+    /// Rejects a semver suffix that changes the existing Debian source name.
+    fn rejects_existing_package_semver_suffix_change() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(
+            &destination,
+            indoc! {r"
+                semver_suffix = true
+            "},
+        );
         assert!(
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).is_err()
         );
-        fs::write(&config_path, "").unwrap();
-        fs::write(
-            destination.join("debian/changelog"),
-            changelog.replace("0.4.0", "9.0.0"),
-        )
-        .unwrap();
+    }
+
+    #[test]
+    /// Rejects a changelog baseline that disagrees with the package's Cargo version.
+    fn rejects_existing_package_changelog_mismatch() {
+        let parent = tempfile::tempdir().unwrap();
+        let destination = parent.path().join("rust-example");
+        create_test_package(&destination, "");
+        let changelog_path = destination.join("debian/changelog");
+        let changelog = fs::read_to_string(&changelog_path).unwrap();
+        fs::write(&changelog_path, changelog.replace("0.4.0", "9.0.0")).unwrap();
         assert!(
             resolve_package(Some(parent.path()), Some(&destination), None, None, None).is_err()
         );
@@ -645,7 +778,7 @@ mod tests {
         let occupied = clean.path().join("rust-example-crate");
         fs::create_dir_all(occupied.join("debian")).unwrap();
         fs::write(get_package_config_path(&occupied), "").unwrap();
-        // An occupied default destination must not silently turn creation into reconciliation.
+        // An occupied default destination errors, to avoid unintended overwriting of existing data.
         assert!(resolve_package_target(clean.path(), None, Some("Example_Crate"), None).is_err());
     }
 

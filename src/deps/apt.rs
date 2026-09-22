@@ -386,6 +386,8 @@ fn format_location(site: &str, release: &str, component: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use indoc::{indoc, writedoc};
+
     use super::*;
 
     #[test]
@@ -433,10 +435,26 @@ mod tests {
     #[test]
     /// Parses versioned virtual packages from an APT Packages paragraph.
     fn parses_package_candidates() {
-        let base = "Package: librust-serde-dev\nSource: rust-serde\nVersion: 1.0.219-1\nArchitecture: amd64\nProvides: librust-serde-1+derive-dev (= 1.0.219-1)\n";
-        let feature = "Package: librust-serde+std-dev\nSource: rust-serde\nVersion: 1.0.219-1\nArchitecture: amd64\nProvides: librust-serde-1+std-dev (= 1.0.219-1)\n";
+        let base = indoc! {r"
+            Package: librust-serde-dev
+            Source: rust-serde
+            Version: 1.0.219-1
+            Architecture: amd64
+            Provides: librust-serde-1+derive-dev (= 1.0.219-1)
+        "};
+        let feature = indoc! {r"
+            Package: librust-serde+std-dev
+            Source: rust-serde
+            Version: 1.0.219-1
+            Architecture: amd64
+            Provides: librust-serde-1+std-dev (= 1.0.219-1)
+        "};
         let mut packages = NamedTempFile::new().unwrap();
-        write!(packages, "{base}\n{feature}").unwrap();
+        writedoc! {packages, r"
+            {base}
+            {feature}"
+        }
+        .unwrap();
         let mut candidates = Vec::new();
         let mut indexes = BTreeMap::new();
         read_index(

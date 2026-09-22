@@ -212,8 +212,10 @@ fn is_expected_unmanaged_output(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
-    use crate::config::{get_package_config_path, read_new_package_config};
+    use crate::config::{get_new_package_config, get_package_config_path};
 
     #[test]
     /// Removes generated VCS fields without changing adjacent control fields.
@@ -223,13 +225,13 @@ mod tests {
         fs::create_dir_all(&debian).unwrap();
         fs::write(
             debian.join("control"),
-            concat!(
-                "Source: rust-example\n",
-                "Vcs-Git: https://salsa.debian.org/rust-team/debcargo-conf.git\n",
-                " [src/example]\n",
-                "Vcs-Browser: https://salsa.debian.org/rust-team/debcargo-conf/src/example\n",
-                "Homepage: https://example.com\n",
-            ),
+            indoc! {r"
+                Source: rust-example
+                Vcs-Git: https://salsa.debian.org/rust-team/debcargo-conf.git
+                 [src/example]
+                Vcs-Browser: https://salsa.debian.org/rust-team/debcargo-conf/src/example
+                Homepage: https://example.com
+            "},
         )
         .unwrap();
 
@@ -237,7 +239,10 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(debian.join("control")).unwrap(),
-            "Source: rust-example\nHomepage: https://example.com\n"
+            indoc! {r"
+                Source: rust-example
+                Homepage: https://example.com
+            "}
         );
     }
 
@@ -249,13 +254,19 @@ mod tests {
         fs::create_dir_all(root.path().join("debian/source")).unwrap();
         fs::write(root.path().join("debian/control"), "control").unwrap();
         fs::write(root.path().join("debian/changelog"), "changelog").unwrap();
-        fs::write(root.path().join("debian/source/format"), "3.0 (quilt)\n").unwrap();
+        fs::write(
+            root.path().join("debian/source/format"),
+            indoc! {r"
+                3.0 (quilt)
+            "},
+        )
+        .unwrap();
         fs::write(
             root.path().join("debian/patches/auto/change.patch"),
             "patch",
         )
         .unwrap();
-        let config = read_new_package_config().unwrap();
+        let config = get_new_package_config().unwrap();
         initialize_package(root.path(), &config).unwrap();
         assert_eq!(
             fs::read_to_string(get_package_config_path(root.path())).unwrap(),

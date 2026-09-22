@@ -182,6 +182,8 @@ fn is_provenance(lines: Vec<String>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use indoc::{formatdoc, indoc};
+
     use super::*;
 
     /// Parses changelog text and returns its top entry fields.
@@ -192,7 +194,9 @@ mod tests {
     #[test]
     /// Verifies top changelog parsing and Cargo-version validation with a repack suffix.
     fn validates_top_changelog_identity() {
-        let top = parse_text("rust-example (1.2.3+ds-0ubuntu1) noble; urgency=medium\n");
+        let top = parse_text(indoc! {r"
+            rust-example (1.2.3+ds-0ubuntu1) noble; urgency=medium
+        "});
         validate_top_changelog(&top, "1.2.3", "1.2.3").unwrap();
         assert_eq!(top.source, "rust-example");
         assert_eq!(top.upstream, "1.2.3+ds");
@@ -212,15 +216,24 @@ mod tests {
             let old_path = directory.path().join("old");
             let staged_path = directory.path().join("changelog");
             let old_top = distribution.map(|distribution| {
-                fs::write(&old_path, format!(
-                    "rust-example (1.0.0-0ubuntu1) {distribution}; urgency=medium\n\n  * Maintainer change.\n\n -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n"
-                )).unwrap();
+                fs::write(
+                    &old_path,
+                    formatdoc! {r"
+                        rust-example (1.0.0-0ubuntu1) {distribution}; urgency=medium
+
+                          * Maintainer change.
+
+                         -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000
+                    "},
+                )
+                .unwrap();
                 read_top_changelog(&old_path).unwrap()
             });
-            let provenance = format!(
-                "Package example {upstream} from crates.io.\n  Generated with debcargo 2.8.4 and ubucargo {}.",
+            let provenance = formatdoc! {r"
+                Package example {upstream} from crates.io.
+                  Generated with debcargo 2.8.4 and ubucargo {}.",
                 env!("CARGO_PKG_VERSION")
-            );
+            };
             prepare_changelog(
                 old_top.as_ref().map(|_| old_path),
                 &staged_path,
@@ -251,28 +264,30 @@ mod tests {
     #[test]
     /// Verifies provenance replacement.
     fn replaces_provenance_once() {
-        let old = concat!(
-            "rust-example (1.0.0-1) UNRELEASED; urgency=medium\n",
-            "\n",
-            "  * local change\n",
-            "  * Package example 0.9.0 from crates.io.\n",
-            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
-            "  * Package example 1.0.0 from crates.io.\n",
-            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
-            "\n",
-            " -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000\n",
-            "\n",
-            "rust-example (0.9.0-1) unstable; urgency=medium\n",
-            "\n",
-            "  * Package example 0.9.0 from crates.io.\n",
-            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0.\n",
-            "\n",
-            " -- B <b@example.com>  Sun, 31 Dec 2023 00:00:00 +0000\n"
-        );
+        let old = indoc! {r"
+            rust-example (1.0.0-1) UNRELEASED; urgency=medium
+
+              * local change
+              * Package example 0.9.0 from crates.io.
+                Generated with debcargo 2.8.4 and ubucargo 0.1.0.
+              * Package example 1.0.0 from crates.io.
+                Generated with debcargo 2.8.4 and ubucargo 0.1.0.
+
+             -- A <a@example.com>  Mon, 01 Jan 2024 00:00:00 +0000
+
+            rust-example (0.9.0-1) unstable; urgency=medium
+
+              * Package example 0.9.0 from crates.io.
+                Generated with debcargo 2.8.4 and ubucargo 0.1.0.
+
+             -- B <b@example.com>  Sun, 31 Dec 2023 00:00:00 +0000
+        "};
         let mut changelog: ChangeLog = old.parse().unwrap();
         normalize_top_entry(
             &mut changelog,
-            "Package example 1.0.0 from crates.io.\n  Generated with debcargo 2.8.4 and ubucargo 0.1.0.",
+            indoc! {r"
+                Package example 1.0.0 from crates.io.
+                  Generated with debcargo 2.8.4 and ubucargo 0.1.0."},
         )
         .unwrap();
         let new = changelog.to_string();
@@ -280,8 +295,10 @@ mod tests {
         assert!(new.contains("* Package example 0.9.0 from crates.io."));
         assert!(new.contains("  * local change"));
         assert!(new.contains(concat!(
-            "  * Package example 1.0.0 from crates.io.\n",
-            "    Generated with debcargo 2.8.4 and ubucargo 0.1.0."
+            "  ",
+            indoc! {r"
+                * Package example 1.0.0 from crates.io.
+                    Generated with debcargo 2.8.4 and ubucargo 0.1.0."}
         )));
     }
 }

@@ -73,6 +73,8 @@ pub fn read_root_package(root: &Path) -> Result<MetadataPackage> {
 mod tests {
     use std::fs;
 
+    use indoc::indoc;
+
     use super::*;
 
     #[test]
@@ -85,12 +87,24 @@ mod tests {
         fs::write(root.path().join("member/src/lib.rs"), "").unwrap();
         fs::write(
             root.path().join("Cargo.toml"),
-            "[package]\nname = \"z-root\"\nversion = \"1.0.0\"\nedition = \"2024\"\n[workspace]\nmembers = [\"member\"]\n",
+            indoc! {r#"
+                [package]
+                name = "z-root"
+                version = "1.0.0"
+                edition = "2024"
+                [workspace]
+                members = ["member"]
+            "#},
         )
         .unwrap();
         fs::write(
             root.path().join("member/Cargo.toml"),
-            "[package]\nname = \"a-member\"\nversion = \"2.0.0\"\nedition = \"2024\"\n",
+            indoc! {r#"
+                [package]
+                name = "a-member"
+                version = "2.0.0"
+                edition = "2024"
+            "#},
         )
         .unwrap();
 
@@ -105,7 +119,10 @@ mod tests {
 
         fs::write(
             root.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"member\"]\n",
+            indoc! {r#"
+                [workspace]
+                members = ["member"]
+            "#},
         )
         .unwrap();
         let error = read_root_package(root.path()).unwrap_err();

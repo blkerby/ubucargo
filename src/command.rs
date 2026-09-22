@@ -21,6 +21,8 @@ pub fn run_command(command: &mut Command, operation: &str) -> Result<Output> {
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
 
     #[test]
@@ -33,6 +35,11 @@ mod tests {
             "example command",
         )
         .unwrap_err();
-        assert_eq!(error.to_string(), "example command failed:\nstdoutstderr");
+        assert_eq!(
+            error.to_string(),
+            indoc! {r"
+                example command failed:
+                stdoutstderr"}
+        );
     }
 }

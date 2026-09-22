@@ -451,6 +451,7 @@ mod tests {
     use std::{collections::BTreeMap, fs};
 
     use debversion::Version;
+    use indoc::indoc;
 
     use super::*;
 
@@ -463,19 +464,42 @@ mod tests {
         fs::create_dir_all(output.join("debian/patches")).unwrap();
         fs::write(
             output.join("Cargo.toml"),
-            "[package]\nname = \"example\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nserde = \"1\"\n",
+            indoc! {r#"
+                [package]
+                name = "example"
+                version = "1.0.0"
+                edition = "2024"
+
+                [dependencies]
+                serde = "1"
+            "#},
         )
         .unwrap();
         fs::write(output.join("src/lib.rs"), "").unwrap();
         fs::write(
             output.join("debian/control"),
-            "Source: rust-example\nBuild-Depends: librust-serde-dev (>= 2)\n",
+            indoc! {r"
+                Source: rust-example
+                Build-Depends: librust-serde-dev (>= 2)
+            "},
         )
         .unwrap();
-        fs::write(output.join("debian/patches/series"), "version.patch\n").unwrap();
+        fs::write(
+            output.join("debian/patches/series"),
+            indoc! {r"
+                version.patch
+            "},
+        )
+        .unwrap();
         fs::write(
             output.join("debian/patches/version.patch"),
-            "--- a/Cargo.toml\n+++ b/Cargo.toml\n@@ -7 +7 @@\n-serde = \"1\"\n+serde = \"2\"\n",
+            indoc! {r#"
+                --- a/Cargo.toml
+                +++ b/Cargo.toml
+                @@ -7 +7 @@
+                -serde = "1"
+                +serde = "2"
+            "#},
         )
         .unwrap();
 
@@ -617,11 +641,11 @@ mod tests {
         ];
         assert_eq!(
             format_table(&rows, false),
-            concat!(
-                "DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT\n",
-                "serde       selected   noble/universe          1.0.219-1  ^1 +derive\n",
-                "            available  noble-updates/universe  1.0.217-1  ^1 +derive\n",
-            )
+            indoc! {r"
+                DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT
+                serde       selected   noble/universe          1.0.219-1  ^1 +derive
+                            available  noble-updates/universe  1.0.217-1  ^1 +derive
+            "}
         );
         let colored = format_table(&rows, true);
         assert!(colored.contains("\x1b[32mselected \x1b[0m"));

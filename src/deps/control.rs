@@ -203,6 +203,8 @@ pub fn parse_rust_package_name(package: &str) -> Option<(&str, Option<&str>)> {
 
 #[cfg(test)]
 mod tests {
+    use indoc::indoc;
+
     use super::*;
 
     /// Creates one Cargo metadata dependency for parser tests.
@@ -216,17 +218,18 @@ mod tests {
     #[test]
     /// Groups Debian requirements by feature and attaches Cargo requirements.
     fn extracts_rust_dependencies() {
-        let control = r#"Source: rust-example
-Build-Depends: debhelper-compat (= 13),
- librust-serde-1+derive-dev (>= 1.0.100-~~),
- librust-serde-1+std-dev,
- librust-syn-2-dev | librust-syn-dev,
- librust-disabled-1-dev [arm64]
+        let control = indoc! {r#"
+            Source: rust-example
+            Build-Depends: debhelper-compat (= 13),
+             librust-serde-1+derive-dev (>= 1.0.100-~~),
+             librust-serde-1+std-dev,
+             librust-syn-2-dev | librust-syn-dev,
+             librust-disabled-1-dev [arm64]
 
-Package: librust-example-dev
-Architecture: any
-Description: example
-"#;
+            Package: librust-example-dev
+            Architecture: any
+            Description: example
+        "#};
         let dependencies = parse_dependencies(
             control,
             "amd64",
@@ -247,13 +250,14 @@ Description: example
     #[test]
     /// Rejects alternatives that cannot belong to one Cargo feature.
     fn rejects_mixed_feature_alternatives() {
-        let control = r#"Source: rust-example
-Build-Depends: librust-serde+alloc-dev | librust-serde+std-dev
+        let control = indoc! {r#"
+            Source: rust-example
+            Build-Depends: librust-serde+alloc-dev | librust-serde+std-dev
 
-Package: librust-example-dev
-Architecture: any
-Description: example
-"#;
+            Package: librust-example-dev
+            Architecture: any
+            Description: example
+        "#};
         assert!(parse_dependencies(control, "amd64", &[cargo_dependency("serde", "^1")]).is_err());
     }
 
