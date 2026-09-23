@@ -50,30 +50,11 @@ pub fn validate_top_changelog(
 
 /// Prepares the resolved package's changelog with `dch`, then normalizes its top entry.
 pub fn prepare_changelog(package: &ResolvedPackage, staged_path: &Path) -> Result<()> {
-    let source = if package.config.resolved_crate_src_path.is_some() {
-        "local source"
-    } else {
-        "crates.io"
-    };
-    let provenance = format!(
-        "Package {} {} from {source}.\n  Generated with debcargo {} and ubucargo {}.",
-        package.crate_selection.crate_name,
-        package.crate_selection.version,
-        package.debcargo_version,
-        env!("CARGO_PKG_VERSION")
-    );
-    let source_name = package.source_name.as_str();
-    let upstream = package.upstream.as_str();
-    let old_top = package
-        .existing
-        .as_ref()
-        .map(|existing| &existing.top_changelog);
     if let Some(existing) = &package.existing {
         let old_path = existing.root.join("debian/changelog");
         fs::copy(&old_path, staged_path)
             .with_context(|| format!("copy {} to {}", old_path.display(), staged_path.display()))?;
     }
-    let initial_version = format!("{upstream}-0ubuntu1");
     let mut command = Command::new("dch");
     command
         .arg("--no-conf")
@@ -86,6 +67,13 @@ pub fn prepare_changelog(package: &ResolvedPackage, staged_path: &Path) -> Resul
         .arg("--distribution")
         .arg("UNRELEASED")
         .arg("--force-distribution");
+    let source_name = package.source_name.as_str();
+    let upstream = package.upstream.as_str();
+    let initial_version = format!("{upstream}-0ubuntu1");
+    let old_top = package
+        .existing
+        .as_ref()
+        .map(|existing| &existing.top_changelog);
     match old_top {
         None => {
             command
@@ -106,6 +94,18 @@ pub fn prepare_changelog(package: &ResolvedPackage, staged_path: &Path) -> Resul
             command.arg("--newversion").arg(&initial_version);
         }
     }
+    let source_kind = if package.config.resolved_crate_src_path.is_some() {
+        "local source"
+    } else {
+        "crates.io"
+    };
+    let provenance = format!(
+        "Package {} {} from {source_kind}.\n  Generated with debcargo {} and ubucargo {}.",
+        package.crate_selection.crate_name,
+        package.crate_selection.version,
+        package.debcargo_version,
+        env!("CARGO_PKG_VERSION")
+    );
     run_command(command.arg(&provenance), "dch")?;
 
     let mut changelog = ChangeLog::read_path(staged_path).context("read prepared changelog")?;
