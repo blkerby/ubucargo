@@ -80,11 +80,15 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
             None,
         ));
     };
-    let manifest: Manifest = serde_json::from_slice(&file.contents)
+    let value: serde_json::Value = serde_json::from_slice(&file.contents)
         .with_context(|| format!("parse {}", debian.join(MANIFEST_NAME).display()))?;
-    if manifest.version != 1 {
-        bail!("unsupported {MANIFEST_NAME} version: {}", manifest.version);
+    if let Some(version) = value.get("version").and_then(serde_json::Value::as_u64)
+        && version != 1
+    {
+        bail!("unsupported {MANIFEST_NAME} version: {version}");
     }
+    let manifest: Manifest = serde_json::from_value(value)
+        .with_context(|| format!("parse {}", debian.join(MANIFEST_NAME).display()))?;
     for (path, fingerprint) in &manifest.files {
         if path.split('/').any(|part| matches!(part, "" | "." | ".."))
             || !is_package_managed(Path::new(path))
@@ -762,6 +766,22 @@ mod tests {
                 contents
             );
         }
+    }
+
+    #[test]
+    /// Reports unsupported versions before validating the version 1 shape.
+    fn reports_unsupported_manifest_version() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join(MANIFEST_NAME),
+            r#"{"version":2,"new_field":true}"#,
+        )
+        .unwrap();
+        let error = read_manifest(directory.path()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unsupported ubucargo-state.json version: 2"
+        );
     }
 
     #[test]
