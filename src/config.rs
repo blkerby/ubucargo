@@ -217,16 +217,14 @@ mod tests {
     }
 
     #[test]
-    /// Persists a relative local source while staging its resolved absolute path.
-    fn configures_local_crate_source() {
+    /// Persists a canonical local source as a relative path and reloads it.
+    fn configures_new_local_crate_source() {
         let parent = tempfile::tempdir().unwrap();
         let crate_root = parent.path().join("example");
         let package_root = parent.path().join("rust-example");
         fs::create_dir(&crate_root).unwrap();
         let link = parent.path().join("source-link");
         std::os::unix::fs::symlink(&crate_root, &link).unwrap();
-        assert!(!has_debcargo_config(&package_root));
-        assert!(read_package_config(&package_root).is_err());
         let config = get_new_local_package_config(&link, &package_root).unwrap();
         assert!(!package_root.exists());
         assert_eq!(
@@ -236,7 +234,7 @@ mod tests {
         assert!(
             config
                 .original_contents
-                .contains("crate_src_path = \"../../example\"")
+                .contains(r#"crate_src_path = "../../example""#)
         );
 
         fs::create_dir_all(package_root.join("debian")).unwrap();
@@ -249,27 +247,28 @@ mod tests {
                 .as_deref(),
             Some(crate_root.as_path())
         );
+    }
 
-        let stage = tempfile::tempdir().unwrap();
-        write_staged_config(&config, stage.path()).unwrap();
-        let staged: DocumentMut = fs::read_to_string(stage.path().join("debcargo.toml"))
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(staged["crate_src_path"].as_str(), crate_root.to_str());
-
-        // Existing configurations retain their spelling, even when the path uses a symlink.
+    #[test]
+    /// Stages an absolute source path without changing the existing symlink spelling.
+    fn stages_existing_local_crate_source() {
+        let parent = tempfile::tempdir().unwrap();
+        let crate_root = parent.path().join("example");
+        let package_root = parent.path().join("rust-example");
+        fs::create_dir(&crate_root).unwrap();
+        fs::create_dir_all(package_root.join("debian")).unwrap();
+        std::os::unix::fs::symlink(&crate_root, parent.path().join("source-link")).unwrap();
         let contents = indoc! {r#"
             # Keep this relative path.
             crate_src_path = "../../source-link"
         "#};
         fs::write(get_package_config_path(&package_root), contents).unwrap();
         let config = read_package_config(&package_root).unwrap();
-        assert_eq!(config.original_contents, contents);
         assert_eq!(
             config.resolved_crate_src_path.as_deref(),
             Some(crate_root.as_path())
         );
+        let stage = tempfile::tempdir().unwrap();
         write_staged_config(&config, stage.path()).unwrap();
         assert_eq!(config.original_contents, contents);
         let staged: DocumentMut = fs::read_to_string(get_staged_config_path(stage.path()))
@@ -281,9 +280,18 @@ mod tests {
             fs::read_to_string(get_package_config_path(&package_root)).unwrap(),
             contents
         );
+    }
 
+    #[test]
+    /// Rejects absent package configuration and missing local crate sources.
+    fn rejects_missing_local_crate_source() {
+        let parent = tempfile::tempdir().unwrap();
+        let package_root = parent.path().join("rust-example");
+        assert!(!has_debcargo_config(&package_root));
+        assert!(read_package_config(&package_root).is_err());
         let missing = parent.path().join("missing");
         assert!(get_new_local_package_config(&missing, &package_root).is_err());
+        fs::create_dir_all(package_root.join("debian")).unwrap();
         fs::write(
             get_package_config_path(&package_root),
             indoc! {r#"
