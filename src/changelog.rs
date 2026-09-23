@@ -1,10 +1,10 @@
 //! Parses, validates, and prepares Debian changelog entries.
 
-use std::{fs, path::Path, path::PathBuf, process::Command};
+use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::{command::run_command, resolve::ResolvedPackage};
 use debian_changelog::ChangeLog;
 
 /// Parsed fields from the first Debian changelog entry.
@@ -48,16 +48,28 @@ pub fn validate_top_changelog(
     Ok(())
 }
 
-/// Prepares changelog with `dch`, then normalizes its top entry.
-pub fn prepare_changelog(
-    old_path: Option<PathBuf>,
-    staged_path: &Path,
-    old_top: Option<&TopChangelog>,
-    source_name: &str,
-    upstream: &str,
-    provenance: &str,
-) -> Result<()> {
-    if let Some(old_path) = old_path {
+/// Prepares the resolved package's changelog with `dch`, then normalizes its top entry.
+pub fn prepare_changelog(package: &ResolvedPackage, staged_path: &Path) -> Result<()> {
+    let source = if package.config.resolved_crate_src_path.is_some() {
+        "local source"
+    } else {
+        "crates.io"
+    };
+    let provenance = format!(
+        "Package {} {} from {source}.\n  Generated with debcargo {} and ubucargo {}.",
+        package.crate_selection.crate_name,
+        package.crate_selection.version,
+        package.debcargo_version,
+        env!("CARGO_PKG_VERSION")
+    );
+    let source_name = package.source_name.as_str();
+    let upstream = package.upstream.as_str();
+    let old_top = package
+        .existing
+        .as_ref()
+        .map(|existing| &existing.top_changelog);
+    if let Some(existing) = &package.existing {
+        let old_path = existing.root.join("debian/changelog");
         fs::copy(&old_path, staged_path)
             .with_context(|| format!("copy {} to {}", old_path.display(), staged_path.display()))?;
     }
@@ -94,7 +106,7 @@ pub fn prepare_changelog(
             command.arg("--newversion").arg(&initial_version);
         }
     }
-    run_command(command.arg(provenance), "dch")?;
+    run_command(command.arg(&provenance), "dch")?;
 
     let mut changelog = ChangeLog::read_path(staged_path).context("read prepared changelog")?;
     if let Some(old) = old_top
@@ -107,7 +119,7 @@ pub fn prepare_changelog(
             old.source
         ));
     }
-    normalize_top_entry(&mut changelog, provenance)?;
+    normalize_top_entry(&mut changelog, &provenance)?;
     changelog
         .write_to_path(staged_path)
         .context("write prepared changelog")?;
@@ -197,6 +209,10 @@ mod tests {
     use indoc::{formatdoc, indoc};
 
     use super::*;
+    use crate::{
+        config::get_new_package_config,
+        resolve::{CrateSelection, ExistingPackage},
+    };
 
     /// Parses changelog text and returns its top entry fields.
     fn parse_text(contents: &str) -> TopChangelog {
@@ -215,19 +231,33 @@ mod tests {
     }
 
     #[test]
-    /// Creates, increments, or updates entries while preserving existing changes.
+    /// Creates, increments, or updates entries, preserving changes and recording provenance.
     fn prepares_changelog_entries() {
-        for (distribution, upstream, version, entries) in [
-            (None, "1.0.0", "1.0.0-0ubuntu1", 1),
-            (Some("noble"), "1.0.0", "1.0.0-0ubuntu2", 2),
-            (Some("noble"), "2.0.0", "2.0.0-0ubuntu1", 2),
-            (Some("UNRELEASED"), "1.0.0", "1.0.0-0ubuntu1", 1),
-            (Some("UNRELEASED"), "2.0.0", "2.0.0-0ubuntu1", 1),
+        for (distribution, upstream, version, entries, source) in [
+            (None, "1.0.0", "1.0.0-0ubuntu1", 1, "crates.io"),
+            (None, "1.0.0", "1.0.0-0ubuntu1", 1, "local source"),
+            (Some("noble"), "1.0.0", "1.0.0-0ubuntu2", 2, "crates.io"),
+            (Some("noble"), "2.0.0", "2.0.0-0ubuntu1", 2, "crates.io"),
+            (
+                Some("UNRELEASED"),
+                "1.0.0",
+                "1.0.0-0ubuntu1",
+                1,
+                "crates.io",
+            ),
+            (
+                Some("UNRELEASED"),
+                "2.0.0",
+                "2.0.0-0ubuntu1",
+                1,
+                "crates.io",
+            ),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let old_path = directory.path().join("old");
+            fs::create_dir(directory.path().join("debian")).unwrap();
+            let old_path = directory.path().join("debian/changelog");
             let staged_path = directory.path().join("changelog");
-            let old_top = distribution.map(|distribution| {
+            let existing = distribution.map(|distribution| {
                 fs::write(
                     &old_path,
                     formatdoc! {r"
@@ -239,22 +269,29 @@ mod tests {
                     "},
                 )
                 .unwrap();
-                read_top_changelog(&old_path).unwrap()
+                ExistingPackage {
+                    root: directory.path().to_path_buf(),
+                    top_changelog: read_top_changelog(&old_path).unwrap(),
+                    patches_applied: false,
+                }
             });
-            let provenance = formatdoc! {r"
-                Package example {upstream} from crates.io.
-                  Generated with debcargo 2.8.4 and ubucargo {}.",
-                env!("CARGO_PKG_VERSION")
+            let mut config = get_new_package_config().unwrap();
+            if source == "local source" {
+                config.resolved_crate_src_path = Some(directory.path().to_path_buf());
+            }
+            let package = ResolvedPackage {
+                destination: Some(directory.path().to_path_buf()),
+                config,
+                crate_selection: CrateSelection {
+                    crate_name: "example".into(),
+                    version: upstream.into(),
+                },
+                source_name: "rust-example".into(),
+                upstream: upstream.into(),
+                debcargo_version: semver::Version::new(2, 8, 4),
+                existing,
             };
-            prepare_changelog(
-                old_top.as_ref().map(|_| old_path),
-                &staged_path,
-                old_top.as_ref(),
-                "rust-example",
-                upstream,
-                &provenance,
-            )
-            .unwrap();
+            prepare_changelog(&package, &staged_path).unwrap();
             let changelog = ChangeLog::read_path(&staged_path).unwrap();
             let top = parse_top_changelog(&changelog).unwrap();
             assert_eq!(top.version, version);
@@ -267,7 +304,16 @@ mod tests {
                     .count(),
                 1
             );
-            if old_top.is_some() {
+            assert!(
+                changelog
+                    .to_string()
+                    .contains(&format!("Package example {upstream} from {source}."))
+            );
+            assert!(changelog.to_string().contains(&format!(
+                "Generated with debcargo 2.8.4 and ubucargo {}.",
+                env!("CARGO_PKG_VERSION")
+            )));
+            if package.existing.is_some() {
                 assert!(changelog.to_string().contains("Maintainer change."));
             }
         }
@@ -281,7 +327,8 @@ mod tests {
             ("noble", "1.0.0-0ubuntu4", 2),
         ] {
             let directory = tempfile::tempdir().unwrap();
-            let old_path = directory.path().join("old");
+            fs::create_dir(directory.path().join("debian")).unwrap();
+            let old_path = directory.path().join("debian/changelog");
             let staged_path = directory.path().join("changelog");
             let old = formatdoc! {r"
                 rust-example (1.0.0-0ubuntu3) {distribution}; urgency=medium
@@ -291,16 +338,23 @@ mod tests {
                  -- Example <example@example.com>  Mon, 01 Jan 2024 00:00:00 +0000
             "};
             fs::write(&old_path, &old).unwrap();
-            let old_top = read_top_changelog(&old_path).unwrap();
-            prepare_changelog(
-                Some(old_path),
-                &staged_path,
-                Some(&old_top),
-                "rust-example-1",
-                "1.0.0",
-                "Generated package.",
-            )
-            .unwrap();
+            let package = ResolvedPackage {
+                destination: Some(directory.path().to_path_buf()),
+                config: get_new_package_config().unwrap(),
+                crate_selection: CrateSelection {
+                    crate_name: "example".into(),
+                    version: "1.0.0".into(),
+                },
+                source_name: "rust-example-1".into(),
+                upstream: "1.0.0".into(),
+                debcargo_version: semver::Version::new(2, 8, 4),
+                existing: Some(ExistingPackage {
+                    root: directory.path().to_path_buf(),
+                    top_changelog: read_top_changelog(&old_path).unwrap(),
+                    patches_applied: false,
+                }),
+            };
+            prepare_changelog(&package, &staged_path).unwrap();
             let changelog = ChangeLog::read_path(&staged_path).unwrap();
             let top = parse_top_changelog(&changelog).unwrap();
             assert_eq!(top.source, "rust-example-1");

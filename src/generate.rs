@@ -47,32 +47,7 @@ pub fn generate_package(package: &ResolvedPackage, keep_staging: bool) -> Result
         }
     }
     write_staged_config(&package.config, stage.path())?;
-    let source = if package.config.resolved_crate_src_path.is_some() {
-        "local source"
-    } else {
-        "crates.io"
-    };
-    let provenance = format!(
-        "Package {} {} from {source}.\n  Generated with debcargo {} and ubucargo {}.",
-        package.crate_selection.crate_name,
-        package.crate_selection.version,
-        package.debcargo_version,
-        env!("CARGO_PKG_VERSION")
-    );
-    prepare_changelog(
-        package
-            .existing
-            .as_ref()
-            .map(|existing| existing.root.join("debian/changelog")),
-        &overlay.join("changelog"),
-        package
-            .existing
-            .as_ref()
-            .map(|existing| &existing.top_changelog),
-        &package.source_name,
-        &package.upstream,
-        &provenance,
-    )?;
+    prepare_changelog(package, &overlay.join("changelog"))?;
     run_debcargo(stage.path(), &package.crate_selection)?;
     validate_debcargo_output(
         stage,
