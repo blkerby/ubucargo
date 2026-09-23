@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use crate::command::run_command;
+use crate::util::run_command;
 
 /// Relevant package records returned by `cargo metadata`.
 #[derive(Deserialize)]

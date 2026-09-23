@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::tree::files_differ;
+use crate::util::files_differ;
 use anyhow::{Context, Result, bail};
 
 /// Regular file metadata and its backing path on disk.

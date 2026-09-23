@@ -13,10 +13,9 @@ use tempfile::TempDir;
 use crate::{
     cargo::read_root_package,
     changelog::prepare_changelog,
-    command::run_command,
     config::{get_staged_config_path, write_staged_config},
     resolve::{CrateSelection, ResolvedPackage, normalize_crate_name},
-    tree::copy_tree,
+    util::{copy_tree, run_command},
 };
 
 /// Validated files and identities produced by final debcargo generation.
@@ -56,6 +55,27 @@ pub fn generate_package(package: &ResolvedPackage, keep_staging: bool) -> Result
         &package.crate_selection.crate_name,
         &package.crate_selection.version,
     )
+}
+
+/// Runs final debcargo generation for one exact selected release.
+fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
+    let mut command = Command::new("debcargo");
+    command
+        .arg("package")
+        .arg("--config")
+        .arg(get_staged_config_path(stage))
+        .arg("--directory")
+        .arg(stage.join("output"))
+        .arg("--no-overlay-write-back")
+        .arg("--changelog-ready")
+        .arg(&crate_selection.crate_name)
+        .arg(&crate_selection.version)
+        .current_dir(stage)
+        // Set CARGO_TARGET_DIR to a unique staging directory, to work around
+        // github.com/rust-lang/cargo/issues/16683:
+        .env("CARGO_TARGET_DIR", stage.join("cargo-target"));
+    run_command(&mut command, "debcargo package")?;
+    Ok(())
 }
 
 /// Validates staged source identity, Cargo identity, essential packaging, and orig naming.
@@ -121,25 +141,4 @@ fn validate_debcargo_output(
         source,
         orig,
     })
-}
-
-/// Runs final debcargo generation for one exact selected release.
-fn run_debcargo(stage: &Path, crate_selection: &CrateSelection) -> Result<()> {
-    let mut command = Command::new("debcargo");
-    command
-        .arg("package")
-        .arg("--config")
-        .arg(get_staged_config_path(stage))
-        .arg("--directory")
-        .arg(stage.join("output"))
-        .arg("--no-overlay-write-back")
-        .arg("--changelog-ready")
-        .arg(&crate_selection.crate_name)
-        .arg(&crate_selection.version)
-        .current_dir(stage)
-        // Set CARGO_TARGET_DIR to a unique staging directory, to work around
-        // github.com/rust-lang/cargo/issues/16683:
-        .env("CARGO_TARGET_DIR", stage.join("cargo-target"));
-    run_command(&mut command, "debcargo package")?;
-    Ok(())
 }

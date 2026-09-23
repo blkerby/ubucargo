@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::util::run_command;
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::lossy::apt::Package;
 use debversion::Version;

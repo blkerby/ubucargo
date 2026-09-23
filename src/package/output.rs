@@ -10,8 +10,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    command::run_command,
     config::{PackageConfig, write_package_config},
+    util::run_command,
 };
 use debian_control::lossless::control::Control;
 

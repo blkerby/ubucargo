@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::command::run_command;
+use crate::util::run_command;
 use tempfile::TempDir;
 
 use crate::changelog::TopChangelog;

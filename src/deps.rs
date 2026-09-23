@@ -14,7 +14,7 @@ use std::{
 use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{cargo, command::run_command, generate, resolve};
+use crate::{cargo, generate, resolve, util::run_command};
 
 use self::{
     apt::PackageCandidate,

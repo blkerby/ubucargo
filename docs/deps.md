@@ -41,9 +41,15 @@ not account for configuration or patches that a maintainer might add later.
 
 The command reads the source paragraph's generated `Build-Depends` and reports
 its direct Rust library dependencies, represented by `librust-*-dev` package
-expressions. The generated control file is authoritative because it reflects
+expressions. The report uses a freshly generated control file, which reflects
 debcargo configuration, enabled features, development dependencies, target
 conditions, and patches.
+
+In source-package mode, `deps` does not read the existing `debian/control` or
+its `.debcargo.hint` file. Manual `Build-Depends` edits in `debian/control` are
+therefore ignored, so the report can differ from the dependencies used to build
+the actual source package. Overrides in `debian/debcargo.toml` and changes made
+through the patch stack are reflected in the report.
 
 The report shows each dependency and its candidates:
 
@@ -72,8 +78,8 @@ capability; it does not forbid a candidate from providing that capability.
 Other features remain explicit. The default-feature relation, or the base
 relation when no default is required, supplies the version color. The generated
 Debian relations remain authoritative for enabled features and candidate
-availability, including any maintainer changes that differ from the Cargo
-requirement.
+availability, including dependency overrides in `debian/debcargo.toml` that
+differ from the Cargo requirement.
 
 Statuses have the following meanings:
 

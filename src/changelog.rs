@@ -4,7 +4,7 @@ use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 
-use crate::{command::run_command, resolve::ResolvedPackage};
+use crate::{resolve::ResolvedPackage, util::run_command};
 use debian_changelog::ChangeLog;
 
 /// Parsed fields from the first Debian changelog entry.

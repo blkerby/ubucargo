@@ -14,7 +14,7 @@ use crate::{
     config::PackageConfig,
     generate::{GeneratedPackage, generate_package},
     resolve::{ExistingPackage, resolve_package},
-    tree::{copy_tree, extract_tree, files_differ, require_absent},
+    util::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
 use self::{

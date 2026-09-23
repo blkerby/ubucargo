@@ -13,13 +13,12 @@ use semver::{Version, VersionReq};
 use crate::{
     cargo::{MetadataPackage, read_root_package},
     changelog::{TopChangelog, read_top_changelog, validate_top_changelog},
-    command::run_command,
     config::{
         PackageConfig, get_new_local_package_config, get_new_package_config,
         get_package_config_path, get_staged_config_path, has_debcargo_config, read_package_config,
         write_staged_config,
     },
-    tree::require_absent,
+    util::{require_absent, run_command},
 };
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
