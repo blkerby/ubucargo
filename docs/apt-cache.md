@@ -24,7 +24,7 @@
 
 The root is `$XDG_CACHE_HOME/ubucargo/apt` when `XDG_CACHE_HOME` is set. `status` and `preferences` are empty files; `sourceparts/` and `preferences.d/` are empty directories. They are created when missing and otherwise left untouched. These files are generated cache state, not user configuration.
 
-`sources.sources` is replaced atomically only when its generated contents change. Before replacement, Ubucargo removes `pkgcache.bin` so selection changes invalidate the binary cache even within one filesystem timestamp tick. Unchanged invocations preserve source and status modification times.
+`sources.sources` is written only when its generated contents change, while the shared view is locked. Unchanged invocations preserve source and status modification times. APT decides whether the binary cache remains valid after a selection change.
 
 `apt-get update` receives `pkgCacheFile::Generate=false` to preserve the binary cache while refreshing repository metadata. This override applies only to `update`; `indextargets` validates and reuses `pkgcache.bin`, rebuilding it when needed. `srcpkgcache.bin` remains disabled because the installed-package status is always empty.
 

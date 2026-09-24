@@ -224,18 +224,7 @@ fn prepare_view(
         Err(error) => return Err(error).context("read cached APT sources"),
     };
     if previous != sources.as_bytes() {
-        let mut temporary = NamedTempFile::new_in(&cache)?;
-        temporary.write_all(sources.as_bytes())?;
-        // Invalidate before replacement, including changes within one timestamp tick.
-        match fs::remove_file(cache.join("pkgcache.bin")) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("invalidate APT binary cache"),
-        }
-        temporary
-            .persist(&source_path)
-            .map_err(|error| error.error)
-            .context("replace cached APT sources")?;
+        fs::write(&source_path, sources).context("write cached APT sources")?;
     }
     Ok(AptView {
         root: cache,
@@ -482,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    /// Preserves an unchanged view, locks it, and invalidates changed selections.
+    /// Preserves an unchanged view, locks it, and updates changed selections.
     fn maintains_persistent_view() {
         let cache = tempfile::tempdir().unwrap();
         let normal = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
@@ -527,9 +516,8 @@ mod tests {
             ("stonking", "arm64", true),
             ("noble", "amd64", false),
         ] {
-            fs::write(&binary, "cached").unwrap();
             let _view = prepare_view(cache.path(), series, architecture, proposed, &[]).unwrap();
-            assert!(!binary.exists());
+            assert_eq!(fs::read(&binary).unwrap(), b"cached");
             let contents = fs::read_to_string(&sources).unwrap();
             assert!(contents.contains(&format!("Suites: {series} {series}-updates")));
             assert!(contents.contains(&format!("Architectures: {architecture}\n")));
