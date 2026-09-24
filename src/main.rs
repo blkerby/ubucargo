@@ -57,6 +57,7 @@ mod tests {
     /// Accepts registry, local, and dependency command forms.
     fn parses_command_arguments() {
         for arguments in [
+            vec!["deps", "--local-crate", "../example", "--series", "noble"],
             vec![
                 "package",
                 "serde",
@@ -95,6 +96,32 @@ mod tests {
     /// Rejects argument combinations before attempting filesystem or network work.
     fn rejects_conflicting_targets() {
         for arguments in [
+            vec![
+                "deps",
+                "serde",
+                "--local-crate",
+                "../example",
+                "--series",
+                "noble",
+            ],
+            vec![
+                "deps",
+                "serde",
+                "1.0.0",
+                "--local-crate",
+                "../example",
+                "--series",
+                "noble",
+            ],
+            vec![
+                "deps",
+                "--package-dir",
+                "rust-example",
+                "--local-crate",
+                "../example",
+                "--series",
+                "noble",
+            ],
             vec!["package", "--local-crate", "../example"],
             vec![
                 "package",

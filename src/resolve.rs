@@ -51,7 +51,7 @@ pub struct ExistingPackage {
 
 /// Validated inputs for generating one exact crate release.
 pub struct ResolvedPackage {
-    /// Source-package destination, or none when only inspecting a registry crate.
+    /// Source-package destination, or none when only inspecting a crate.
     pub destination: Option<PathBuf>,
     /// Effective debcargo configuration.
     pub config: PackageConfig,
@@ -178,7 +178,8 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
 
 /// Resolves a destination, configuration, and exact version to use for a package.
 /// `current_dir` is the canonical working directory used for relative paths and
-/// parent-package discovery. `None` selects registry inspection without a destination.
+/// parent-package discovery. `None` selects crate inspection without a destination;
+/// relative local paths then resolve against the process working directory.
 /// - Local sources (`local_crate` for new packages or configured `crate_src_path`
 ///   for existing packages) use the local source's Cargo.toml version.
 /// - Without `local_crate` or a configured `crate_src_path`, the source is
@@ -194,6 +195,9 @@ pub fn resolve_package(
     requested_version: Option<&str>,
     local_crate: Option<&Path>,
 ) -> Result<ResolvedPackage> {
+    if local_crate.is_some() && (requested_name.is_some() || requested_version.is_some()) {
+        bail!("CRATE and VERSION may not be used with --local-crate");
+    }
     if let Some(version) = requested_version {
         parse_exact_version(version)?;
     }
@@ -205,8 +209,8 @@ pub fn resolve_package(
             local_crate,
         )?)
     } else {
-        if package_dir.is_some() || local_crate.is_some() {
-            bail!("package directories and local crates require a current directory");
+        if package_dir.is_some() {
+            bail!("package directories require a current directory");
         }
         None
     };
@@ -234,14 +238,11 @@ pub fn resolve_package(
         };
         (config, Some(current_package), Some(existing))
     } else if let Some(local_crate) = local_crate {
-        let root = &target
-            .as_ref()
-            .context("local crate resolution requires a package destination")?
-            .destination;
-        let local_crate = current_dir
-            .context("local crate resolution requires a current directory")?
-            .join(local_crate);
-        validate_separate_trees(&local_crate, root)?;
+        let root = target.as_ref().map(|target| target.destination.as_path());
+        let local_crate = current_dir.unwrap_or(Path::new("")).join(local_crate);
+        if let Some(root) = root {
+            validate_separate_trees(&local_crate, root)?;
+        }
         let source = local_crate
             .canonicalize()
             .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
@@ -565,6 +566,38 @@ mod tests {
         assert!(resolved.destination.is_none());
         assert!(resolved.existing.is_none());
         assert_eq!(resolved.crate_selection.version, "9.0.0");
+    }
+
+    #[test]
+    /// Inspects local sources without a destination, including relative paths.
+    fn inspects_local_without_package_context() {
+        let parent = tempfile::tempdir().unwrap();
+        let local = parent.path().join("local");
+        create_test_crate(&local, "0.4.0");
+        let relative = pathdiff::diff_paths(&local, std::env::current_dir().unwrap()).unwrap();
+        for path in [&local, &relative] {
+            let resolved = resolve_package(None, None, None, None, Some(path)).unwrap();
+            assert!(resolved.destination.is_none());
+            assert!(resolved.existing.is_none());
+            assert_eq!(resolved.crate_selection.crate_name, "example");
+            assert_eq!(resolved.crate_selection.version, "0.4.0");
+            assert_eq!(
+                resolved.config.resolved_crate_src_path.as_deref(),
+                Some(local.as_path())
+            );
+            write_staged_config(&resolved.config, parent.path()).unwrap();
+            let config: toml_edit::DocumentMut =
+                fs::read_to_string(get_staged_config_path(parent.path()))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+            assert_eq!(config["crate_src_path"].as_str(), local.to_str());
+        }
+        assert!(!local.join("debian").exists());
+        assert!(
+            resolve_package(None, None, None, None, Some(&parent.path().join("missing"))).is_err()
+        );
+        assert!(resolve_package(None, None, Some("example"), None, Some(&local)).is_err());
     }
 
     #[test]

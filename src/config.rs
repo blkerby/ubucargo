@@ -60,20 +60,17 @@ pub fn get_new_package_config() -> Result<PackageConfig> {
     parse_package_config(&document.to_string(), Path::new(""), None)
 }
 
-/// Creates the persisted configuration for a new package built from a local crate.
+/// Configures a local crate, using a relative source path when a destination is given.
 pub fn get_new_local_package_config(
     crate_root: &Path,
-    package_root: &Path,
+    package_root: Option<&Path>,
 ) -> Result<PackageConfig> {
     let mut document = DocumentMut::new();
     document["maintainer"] = value(UBUNTU_MAINTAINER);
     document["crate_src_path"] = value(require_utf8_path(crate_root)?);
+    let config_dir = package_root.map(|root| root.join("debian"));
     // Resolve the source before making its path relative to a destination that may not exist.
-    parse_package_config(
-        &document.to_string(),
-        Path::new(""),
-        Some(&package_root.join("debian")),
-    )
+    parse_package_config(&document.to_string(), Path::new(""), config_dir.as_deref())
 }
 
 /// Parses configuration and resolves its effective values before creating a snapshot.
@@ -168,7 +165,7 @@ mod tests {
         fs::create_dir_all(package_root.join("debian")).unwrap();
         for config in [
             get_new_package_config().unwrap(),
-            get_new_local_package_config(&crate_root, &package_root).unwrap(),
+            get_new_local_package_config(&crate_root, Some(&package_root)).unwrap(),
         ] {
             write_staged_config(&config, stage.path()).unwrap();
             let initial = fs::read_to_string(stage.path().join("debcargo.toml")).unwrap();
@@ -225,7 +222,7 @@ mod tests {
         fs::create_dir(&crate_root).unwrap();
         let link = parent.path().join("source-link");
         std::os::unix::fs::symlink(&crate_root, &link).unwrap();
-        let config = get_new_local_package_config(&link, &package_root).unwrap();
+        let config = get_new_local_package_config(&link, Some(&package_root)).unwrap();
         assert!(!package_root.exists());
         assert_eq!(
             config.resolved_crate_src_path.as_deref(),
@@ -290,7 +287,7 @@ mod tests {
         assert!(!has_debcargo_config(&package_root));
         assert!(read_package_config(&package_root).is_err());
         let missing = parent.path().join("missing");
-        assert!(get_new_local_package_config(&missing, &package_root).is_err());
+        assert!(get_new_local_package_config(&missing, Some(&package_root)).is_err());
         fs::create_dir_all(package_root.join("debian")).unwrap();
         fs::write(
             get_package_config_path(&package_root),

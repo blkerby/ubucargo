@@ -5,14 +5,19 @@
 ```console
 ubucargo deps [CRATE [VERSION]] [--package-dir DIR] --series SERIES \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
+ubucargo deps --local-crate DIR --series SERIES \
+  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-With no `CRATE` or `--package-dir`, `deps` uses the nearest parent source package.
+With no `CRATE`, `--local-crate`, or `--package-dir`, `deps` uses the nearest parent source package.
 `--package-dir` selects an existing source package explicitly. `CRATE` instead
 selects a crate from crates.io; `VERSION` selects an exact release, while an
 omitted version selects the latest release using the same rules as
 [`package`](package.md#target-and-version-selection). `CRATE` and `--package-dir`
 may not be combined.
+`--local-crate` selects a local crate's current contents and reads its name and
+version from Cargo metadata. Relative paths resolve against the working directory.
+It may not be combined with `CRATE`, `VERSION`, or `--package-dir`.
 
 ```console
 # Inspect the nearest source package.
@@ -26,13 +31,16 @@ ubucargo deps serde --series noble
 
 # Inspect an exact serde release from crates.io.
 ubucargo deps serde 1.0.220 --series noble
+
+# Inspect a local checkout without creating a source package.
+ubucargo deps --local-crate ../serde --series noble
 ```
 
 Source-package mode uses its `debian/debcargo.toml` and patch stack. When that
 configuration contains `crate_src_path`, `deps` reads the local crate selected
 by that path.
-Crates.io mode generates a temporary package with the default debcargo
-configuration and leaves no source package behind. Its results therefore do
+Crates.io and explicit local-crate modes generate a temporary package with the
+default debcargo configuration and leave no source package behind. Their results do
 not account for configuration or patches that a maintainer might add later.
 
 `--series` selects an Ubuntu release. Ubucargo queries its release, updates, and security pockets from `main` and `universe`. `--proposed` additionally includes the release's proposed pocket with normal candidate consideration. Each `--ppa` adds a public Launchpad PPA's `main` component for the same series; private PPAs are not supported. `--architecture` defaults to `dpkg --print-architecture`.

@@ -42,6 +42,10 @@ pub struct DepArgs {
     #[arg(long = "package-dir", value_name = "DIR")]
     pub package_dir: Option<PathBuf>,
 
+    /// Local crate to inspect using the default debcargo configuration.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version", "package_dir"])]
+    pub local_crate: Option<PathBuf>,
+
     /// Ubuntu series to query.
     #[arg(long, value_name = "SERIES")]
     pub series: String,
@@ -110,7 +114,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let current = if args.crate_name.is_some() {
+    let current = if args.crate_name.is_some() || args.local_crate.is_some() {
         None
     } else {
         Some(
@@ -125,7 +129,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
         args.package_dir.as_deref(),
         args.crate_name.as_deref(),
         args.version.as_deref(),
-        None,
+        args.local_crate.as_deref(),
     )?;
     let generated = generate::generate_package(&resolved, false)?;
     let dependencies = read_staged_dependencies(&generated.source, &architecture)?;
