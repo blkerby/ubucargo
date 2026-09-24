@@ -1,6 +1,11 @@
 //! Extracts Rust dependency requirements from generated Debian control files.
 
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    path::Path,
+    process::Command,
+};
 
 use anyhow::{Context, Result, bail};
 use debian_control::{
@@ -34,25 +39,18 @@ pub struct Dependency {
     pub debian_requirements: FeatureRequirements,
 }
 
-/// Reads direct Rust dependencies from generated control and Cargo metadata.
+/// Reads and groups direct Rust dependencies from generated control and Cargo metadata.
 pub fn read_dependencies(
-    path: &Path,
+    control_path: &Path,
     architecture: &str,
     cargo_dependencies: &[MetadataDependency],
 ) -> Result<Vec<Dependency>> {
-    let contents = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    parse_dependencies(&contents, architecture, cargo_dependencies)
-        .with_context(|| format!("parse Rust dependencies from {}", path.display()))
-}
-
-/// Parses and groups direct Rust dependencies by crate and feature.
-fn parse_dependencies(
-    contents: &str,
-    architecture: &str,
-    cargo_dependencies: &[MetadataDependency],
-) -> Result<Vec<Dependency>> {
-    let source = contents.split("\n\n").next().unwrap_or(contents);
-    let control: Control = source.parse().map_err(anyhow::Error::msg)?;
+    let contents = fs::read_to_string(control_path)
+        .with_context(|| format!("read {}", control_path.display()))?;
+    let control: Control = contents
+        .parse()
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("parse {}", control_path.display()))?;
     let mut grouped = BTreeMap::new();
     for relations in [
         control.source.build_depends,
@@ -62,28 +60,32 @@ fn parse_dependencies(
     .into_iter()
     .flatten()
     {
-        collect_dependencies(&relations, architecture, &mut grouped)?;
+        collect_dependencies(&relations, architecture, &mut grouped)
+            .with_context(|| format!("parse Rust dependencies from {}", control_path.display()))?;
+    }
+
+    let mut cargo_by_name: HashMap<String, &MetadataDependency> = HashMap::new();
+    for dependency in cargo_dependencies {
+        let name = normalize_crate_name(&dependency.name);
+        if !grouped.contains_key(&name) {
+            continue;
+        }
+        if cargo_by_name
+            .insert(name.clone(), dependency)
+            .is_some_and(|existing| existing.req != dependency.req)
+        {
+            bail!("Cargo has multiple version requirements for dependency {name}");
+        }
     }
 
     let mut dependencies = Vec::new();
     for (name, debian_requirements) in grouped {
-        let mut cargo_requirement = None;
-        for dependency in cargo_dependencies {
-            if normalize_crate_name(&dependency.name) != name {
-                continue;
-            }
-            if cargo_requirement
-                .as_ref()
-                .is_some_and(|existing| existing != &dependency.req)
-            {
-                bail!("Cargo has multiple version requirements for dependency {name}");
-            }
-            cargo_requirement = Some(dependency.req.clone());
-        }
+        let cargo_dependency = cargo_by_name
+            .get(&name)
+            .with_context(|| format!("Cargo metadata has no dependency {name}"))?;
         dependencies.push(Dependency {
-            name: name.clone(),
-            cargo_requirement: cargo_requirement
-                .with_context(|| format!("Cargo metadata has no dependency {name}"))?,
+            name,
+            cargo_requirement: cargo_dependency.req.clone(),
             debian_requirements,
         });
     }
@@ -230,8 +232,10 @@ mod tests {
             Architecture: any
             Description: example
         "#};
-        let dependencies = parse_dependencies(
-            control,
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), control).unwrap();
+        let dependencies = read_dependencies(
+            file.path(),
             "amd64",
             &[
                 cargo_dependency("serde", "^1.0.100"),
@@ -248,6 +252,40 @@ mod tests {
     }
 
     #[test]
+    /// Matches normalized names and rejects conflicting requirements only for selected crates.
+    fn indexes_cargo_dependencies() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            file.path(),
+            "Source: rust-example\nBuild-Depends: librust-serde-json-dev\n",
+        )
+        .unwrap();
+        let mut cargo = vec![
+            cargo_dependency("Serde_Json", "^1"),
+            cargo_dependency("serde-json", "^1"),
+            cargo_dependency("unused", "^1"),
+            cargo_dependency("unused", "^2"),
+        ];
+        let dependencies = read_dependencies(file.path(), "amd64", &cargo).unwrap();
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].name, "serde-json");
+        assert_eq!(dependencies[0].cargo_requirement, "^1");
+        cargo[1].req = "^2".to_owned();
+        assert!(
+            read_dependencies(file.path(), "amd64", &cargo)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple version requirements for dependency serde-json")
+        );
+        assert!(
+            read_dependencies(file.path(), "amd64", &[])
+                .unwrap_err()
+                .to_string()
+                .contains("Cargo metadata has no dependency serde-json")
+        );
+    }
+
+    #[test]
     /// Rejects alternatives that cannot belong to one Cargo feature.
     fn rejects_mixed_feature_alternatives() {
         let control = indoc! {r#"
@@ -258,7 +296,11 @@ mod tests {
             Architecture: any
             Description: example
         "#};
-        assert!(parse_dependencies(control, "amd64", &[cargo_dependency("serde", "^1")]).is_err());
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), control).unwrap();
+        assert!(
+            read_dependencies(file.path(), "amd64", &[cargo_dependency("serde", "^1")]).is_err()
+        );
     }
 
     #[test]
