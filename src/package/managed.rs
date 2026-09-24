@@ -10,9 +10,9 @@ use std::{
     process::{Command, Stdio},
 };
 
+use crate::util::write_file;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use tempfile;
 
 use super::output::is_package_managed;
 
@@ -465,22 +465,7 @@ pub fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     match state {
         Some(state) => {
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-            let mut temporary = tempfile::Builder::new()
-                .tempfile_in(parent)
-                .with_context(|| format!("create temporary file in {}", parent.display()))?;
-            temporary
-                .write_all(&state.contents)
-                .with_context(|| format!("write temporary file for {}", path.display()))?;
-            if let Some(mode) = state.mode {
-                temporary
-                    .as_file()
-                    .set_permissions(fs::Permissions::from_mode(mode))
-                    .with_context(|| format!("set mode for {}", path.display()))?;
-            }
-            temporary
-                .persist(path)
-                .map_err(|error| error.error)
-                .with_context(|| format!("replace {}", path.display()))?;
+            write_file(path, &state.contents, state.mode)?;
         }
         None => match fs::remove_file(path) {
             Ok(()) => {}

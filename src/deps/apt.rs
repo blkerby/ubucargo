@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::util::run_command;
+use crate::util::{run_command, write_file};
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::{lossy::apt::Package, relations::VersionConstraint};
 use debversion::Version;
@@ -240,7 +240,7 @@ fn prepare_view(
     // Only rewrite the sources file if it has changed, to avoid an updated
     // modification time which would trigger `apt` to rebuild its package cache.
     if previous != sources.as_bytes() {
-        fs::write(&source_path, sources).context("write cached APT sources")?;
+        write_file(&source_path, sources.as_bytes(), None).context("write cached APT sources")?;
     }
 
     Ok(AptView {
@@ -331,7 +331,7 @@ fn get_ppa_key(owner: &str, name: &str, key_directory: &Path) -> Result<PathBuf>
         &format!("download PPA signing key {fingerprint}"),
     )?;
     verify_key(&output.stdout, &fingerprint)?;
-    fs::write(&destination, &output.stdout)
+    write_file(&destination, &output.stdout, None)
         .with_context(|| format!("cache PPA signing key at {}", destination.display()))?;
     Ok(destination)
 }
