@@ -137,7 +137,7 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
         primary_after: read_state(&stage.join("output/debian/patches/series"))?,
         hint_after: None,
         overridden: false,
-        ambiguous: false,
+        unresolved: false,
     })
 }
 

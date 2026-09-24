@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use tempfile::Builder;
+use tempfile;
 
 use super::output::is_package_managed;
 
@@ -34,7 +34,7 @@ struct Manifest {
     files: BTreeMap<String, Option<Fingerprint>>,
 }
 
-/// Hashes captured bytes through sha256sum, without rereading a changing working file.
+/// Hashes captured bytes through sha256sum, without rereading the file.
 fn compute_fingerprint(state: &FileState) -> Result<Fingerprint> {
     let mut child = Command::new("sha256sum")
         .stdin(Stdio::piped())
@@ -146,8 +146,8 @@ pub struct PathPlan {
     pub hint_after: Option<FileState>,
     /// Whether the resulting primary differs from the latest generated state.
     pub overridden: bool,
-    /// Whether missing or conflicting baselines require an explicit decision.
-    pub ambiguous: bool,
+    /// Whether this path requires an explicit decision that has not been supplied.
+    pub unresolved: bool,
 }
 
 impl PathPlan {
@@ -193,7 +193,7 @@ impl Plan {
     pub fn collect_ambiguities(&self) -> Vec<&Path> {
         let mut ambiguities = Vec::new();
         for path in &self.paths {
-            if path.ambiguous {
+            if path.unresolved {
                 ambiguities.push(path.path.as_path());
             }
         }
@@ -234,10 +234,13 @@ impl Plan {
     /// Applies primary changes first and writes generated baselines last.
     pub fn apply(&self) -> Result<()> {
         if !self.collect_ambiguities().is_empty() {
-            bail!("unresolved generated-file ambiguities");
+            bail!("unresolved ambiguities");
         }
-        // Install new generated files before changing references such as the
-        // patch series, then remove obsolete files and update hints last.
+        // Install files (including the new patch series) before removing obsolete
+        // files, so an interruption cannot leave the series naming a missing patch.
+        // Update hints after primaries, and write the manifest last: in case of
+        // an interrupted run, a rerun must see the old baseline until the planned
+        // file changes are complete.
         for path in &self.paths {
             if path.has_primary_changed() && path.primary_after.is_some() {
                 install_state(
@@ -267,6 +270,25 @@ impl Plan {
 }
 
 /// Compares previous output, working files, and new candidates without modifying the package.
+///
+/// All paths in the collections are relative to the package root and start with `debian/`.
+///
+/// - `debian`: Existing Debian packaging directory from which to read primary files,
+///   hints, and `ubucargo-state.json`, and to which the returned plan will apply changes.
+/// - `managed`: Paths to reconcile, augmented with any paths retained in the manifest.
+/// - `generated`: Latest generated contents. A managed path missing from
+///   this map represents generated absence, so an unmodified primary may be removed.
+/// - `inferred_bases`: Candidate baselines used only when both a manifest entry and a
+///   hint are missing, and only if the primary matches the candidate's contents and
+///   executable status. This allows ubucargo to recognize a raw debcargo 'debian/control'
+///   output (before Ubuntu-specific changes to 'Maintainers' and VCS fields), allowing it
+///   to be smoothly migrated without needing a manual '--keep' or '--replace' decision.
+/// - `keep`: Ambiguous paths for which to preserve the current primary, including absence.
+/// - `replace`: Ambiguous paths for which to adopt the latest generated state, including
+///   absence. A path cannot appear in both `keep` and `replace`; decisions for paths
+///   that are not ambiguous are rejected.
+///
+/// Ambiguities without a decision remain in the returned plan and prevent it from being applied.
 pub fn build_plan(
     debian: &Path,
     managed: &BTreeSet<PathBuf>,
@@ -290,10 +312,14 @@ pub fn build_plan(
         let name = path.to_str().context("managed path is not UTF-8")?;
         let old_fingerprint = old.as_ref().map(compute_fingerprint).transpose()?;
         let hint_fingerprint = hint_before.as_ref().map(compute_fingerprint).transpose()?;
-        // Some(None) is a known absence; None is an unknown baseline.
+        // Some(None) is a known absence; None is an unknown baseline:
         let recorded = manifest.files.get(name);
-        let conflict =
-            recorded.is_some_and(|base| hint_before.is_some() && *base != hint_fingerprint);
+        // An existing hint should agree with the manifest; otherwise it means one of the
+        // two was modified in an abnormal way, requiring manual resolution:
+        let conflict = match recorded {
+            Some(base) => hint_before.is_some() && *base != hint_fingerprint,
+            None => false,
+        };
         let mut effective_base = recorded.cloned();
         if effective_base.is_none() {
             if hint_before.is_some() {
@@ -305,9 +331,16 @@ pub fn build_plan(
                 effective_base = Some(old_fingerprint.clone());
             }
         }
-        let ambiguous = conflict
-            || (effective_base.is_none()
-                && matches!((&old, &new), (Some(old), Some(new)) if old != new));
+        let ambiguous = if conflict {
+            true
+        } else if effective_base.is_some() {
+            false
+        } else {
+            match (&old, &new) {
+                (Some(old), Some(new)) => old != new,
+                _ => false,
+            }
+        };
         let decision_replace = if ambiguous {
             match (keep.contains(path), replace.contains(path)) {
                 (true, false) => {
@@ -363,7 +396,7 @@ pub fn build_plan(
             primary_after,
             hint_after,
             overridden,
-            ambiguous: unresolved,
+            unresolved,
         });
     }
 
@@ -432,8 +465,7 @@ pub fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     match state {
         Some(state) => {
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-            let mut temporary = Builder::new()
-                .permissions(fs::Permissions::from_mode(state.mode.unwrap_or(0o666)))
+            let mut temporary = tempfile::Builder::new()
                 .tempfile_in(parent)
                 .with_context(|| format!("create temporary file in {}", parent.display()))?;
             temporary
@@ -884,7 +916,7 @@ mod tests {
             &BTreeSet::new(),
         )
         .unwrap();
-        assert!(!plan.paths[0].ambiguous);
+        assert!(!plan.paths[0].unresolved);
         assert_eq!(plan.paths[0].primary_after, Some(make_state("new")));
         assert_eq!(plan.paths[0].hint_after, None);
 
@@ -908,7 +940,7 @@ mod tests {
             &BTreeSet::new(),
         )
         .unwrap();
-        assert!(!plan.paths[0].ambiguous);
+        assert!(!plan.paths[0].unresolved);
         assert_eq!(plan.paths[0].primary_after, Some(make_state("maintainer")));
         assert_eq!(plan.paths[0].hint_after, Some(make_state("new")));
 
@@ -1006,7 +1038,7 @@ mod tests {
             .unwrap();
             assert_eq!(plan.paths[0].primary_after, old.or(new).map(make_state));
             assert_eq!(plan.paths[0].hint_after, None);
-            assert!(!plan.paths[0].ambiguous);
+            assert!(!plan.paths[0].unresolved);
             assert_eq!(plan.paths[0].overridden, old.is_some() && new.is_none());
         }
     }

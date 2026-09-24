@@ -151,6 +151,9 @@ fn reconcile_existing(
 ) -> Result<bool> {
     let root = &existing.root;
     let debian = root.join("debian");
+    // Recognize an unchanged debcargo control file before applying Ubuntu adjustments.
+    // Without a manifest entry or hint, an exact match lets us apply these adjustments
+    // without requiring a one-time --replace debian/control decision.
     let raw_control = read_state(&generated.stage.path().join("output/debian/control"))?;
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;

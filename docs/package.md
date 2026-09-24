@@ -221,8 +221,8 @@ Copied files and trees retain their source permissions. Atomic writes of generat
 
 When `base` is known, including recorded absence, an override exists when `old != base`.
 
-| Condition     | Meaning                   | Behavior                                    |
-| ------------- | ------------------------- | ------------------------------------------- |
+| Condition | Meaning | Behavior |
+| --- | --- | --- |
 | `old == base` | Unmodified generated file | Take `new` as primary; remove any hint |
 | `old != base` | Maintainer override | Preserve `old`; write a hint if `new` exists and differs from `old` |
 
@@ -248,13 +248,13 @@ Without either baseline, `package` initializes only cases that cannot overwrite 
 
 | `old`   | `new`                | Behavior when `base` is absent                        |
 | ------- | -------------------- | ----------------------------------------------------- |
-| absent  | absent               | Record generated absence |
-| absent  | present              | Write `new` and record its fingerprint; no hint |
-| present | equal to `old`       | Record the fingerprint; no hint |
+| absent  | absent               | Record generated absence                              |
+| absent  | present              | Write `new` and record its fingerprint; no hint       |
+| present | equal to `old`       | Record the fingerprint; no hint                       |
 | present | different from `old` | Stop without writing; require `--keep` or `--replace` |
-| present | absent               | Preserve the primary and record generated absence |
+| present | absent               | Preserve the primary and record generated absence     |
 
-The exact-match inference for raw Debian control output remains available when neither a manifest entry nor a hint exists.
+When neither a manifest entry nor a hint exists, ubucargo also checks whether the existing `debian/control` exactly matches debcargo's freshly generated control output before Ubuntu maintainer adjustments and VCS-field removal. This establishes generator ownership so those adjustments can be applied without requiring a one-time `--replace debian/control` decision solely because ubucargo changes those fields. If the existing file does not match the raw output, this inference supplies no baseline and the rules above apply.
 
 For an ambiguous path, the user may disambiguate by supplying a `--keep` or `--replace` option using a package-relative path:
 
