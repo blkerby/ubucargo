@@ -12,20 +12,19 @@ use anyhow::{Context, Result, bail};
 
 use crate::util::run_command;
 use deb822_fast::{Deb822, FromDeb822Paragraph};
-use debian_control::lossy::apt::Package;
+use debian_control::{lossy::apt::Package, relations::VersionConstraint};
 use debversion::Version;
 use indoc::formatdoc;
 use serde::Deserialize;
-use tempfile::NamedTempFile;
 
 const UBUNTU_KEYRING: &str = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
 
-/// One binary package version from one configured repository location.
+/// One source package version from one configured repository location.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageCandidate {
-    /// Debian binary package version.
+    /// Debian source package version.
     pub version: Version,
-    /// Virtual package names and versions supplied by this binary package.
+    /// Concrete and virtual package names and versions supplied by its Rust binary packages.
     pub provides: BTreeMap<String, Option<Version>>,
     /// Compact repository location displayed to the user.
     pub location: String,
@@ -120,12 +119,26 @@ pub fn load_candidates(
     let mut candidate_indexes = BTreeMap::new();
     for line in String::from_utf8(output.stdout)?.lines() {
         let fields: Vec<_> = line.split('|').collect();
-        if fields.len() != 6 || fields[5] != "Packages" || fields[4] != architecture {
+        let [
+            filename,
+            site,
+            release,
+            component,
+            index_architecture,
+            identifier,
+        ] = fields.as_slice()
+        else {
+            bail!(
+                "unexpected apt-get indextargets row: expected 6 fields, got {}: {line:?}",
+                fields.len()
+            );
+        };
+        if *identifier != "Packages" || *index_architecture != architecture {
             continue;
         }
-        let location = format_location(fields[1], fields[2], fields[3]);
+        let location = format_location(site, release, component);
         read_index(
-            Path::new(fields[0]),
+            Path::new(filename),
             &location,
             &mut candidates,
             &mut candidate_indexes,
@@ -223,9 +236,13 @@ fn prepare_view(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error).context("read cached APT sources"),
     };
+
+    // Only rewrite the sources file if it has changed, to avoid an updated
+    // modification time which would trigger `apt` to rebuild its package cache.
     if previous != sources.as_bytes() {
         fs::write(&source_path, sources).context("write cached APT sources")?;
     }
+
     Ok(AptView {
         root: cache,
         _lock: lock,
@@ -285,7 +302,7 @@ fn parse_ppa(ppa: &str) -> Result<(&str, &str)> {
 
 /// Retrieves, validates, and caches the signing key for one public PPA.
 fn get_ppa_key(owner: &str, name: &str, key_directory: &Path) -> Result<PathBuf> {
-    let api = format!("https://api.launchpad.net/1.0/~{owner}/+archive/ubuntu/{name}");
+    let api = format!("https://api.launchpad.net/devel/~{owner}/+archive/ubuntu/{name}");
     let output = run_command(
         Command::new("curl").args(["--fail", "--silent", "--show-error", "--location", &api]),
         &format!("query Launchpad for ppa:{owner}/{name}"),
@@ -314,11 +331,7 @@ fn get_ppa_key(owner: &str, name: &str, key_directory: &Path) -> Result<PathBuf>
         &format!("download PPA signing key {fingerprint}"),
     )?;
     verify_key(&output.stdout, &fingerprint)?;
-    let mut temporary = NamedTempFile::new_in(key_directory)?;
-    temporary.write_all(&output.stdout)?;
-    temporary
-        .persist(&destination)
-        .map_err(|error| error.error)
+    fs::write(&destination, &output.stdout)
         .with_context(|| format!("cache PPA signing key at {}", destination.display()))?;
     Ok(destination)
 }
@@ -376,19 +389,19 @@ fn read_index(
             .is_some_and(|name| name.starts_with("librust-"))
         {
             let package = Package::from_paragraph(&paragraph).map_err(anyhow::Error::msg)?;
-            add_package(package, location, candidates, candidate_indexes);
+            add_package(package, location, candidates, candidate_indexes)?;
         }
     }
     Ok(())
 }
 
-/// Adds one Rust binary package to the candidate set.
+/// Adds one Rust binary package, rejecting non-equality version constraints in Provides.
 fn add_package(
     package: Package,
     location: &str,
     candidates: &mut Vec<PackageCandidate>,
     candidate_indexes: &mut BTreeMap<(String, Version, String), usize>,
-) {
+) -> Result<()> {
     let (source, source_version) = match package.source {
         Some(source) => (
             source.name,
@@ -416,11 +429,19 @@ fn add_package(
     if let Some(relations) = package.provides {
         for entry in relations.0 {
             for relation in entry {
-                let version = relation.version.map(|(_, version)| version);
+                let version = match relation.version {
+                    None => None,
+                    Some((VersionConstraint::Equal, version)) => Some(version),
+                    Some((constraint, version)) => bail!(
+                        "invalid Provides for {} in {location}: expected '=', got {constraint} {version}",
+                        relation.name
+                    ),
+                };
                 candidate.provides.insert(relation.name, version);
             }
         }
     }
+    Ok(())
 }
 
 /// Formats repository metadata as the documented compact location.
@@ -438,6 +459,7 @@ fn format_location(site: &str, release: &str, component: &str) -> String {
 #[cfg(test)]
 mod tests {
     use indoc::{indoc, writedoc};
+    use tempfile::NamedTempFile;
 
     use super::*;
 
@@ -534,7 +556,7 @@ mod tests {
             Source: rust-serde
             Version: 1.0.219-1
             Architecture: amd64
-            Provides: librust-serde-1+derive-dev (= 1.0.219-1)
+            Provides: librust-serde-1+derive-dev (= 1.0.219-1), librust-serde-dev-unversioned
         "};
         let feature = indoc! {r"
             Package: librust-serde+std-dev
@@ -567,5 +589,9 @@ mod tests {
             "1.0.219-1"
         );
         assert!(candidates[0].provides["librust-serde-1+std-dev"].is_some());
+        assert_eq!(
+            candidates[0].provides["librust-serde-dev-unversioned"],
+            None
+        );
     }
 }

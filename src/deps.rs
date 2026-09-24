@@ -132,7 +132,13 @@ pub fn run(args: DepArgs) -> Result<bool> {
         args.local_crate.as_deref(),
     )?;
     let generated = generate::generate_package(&resolved, false)?;
-    let dependencies = read_staged_dependencies(&generated.source, &architecture)?;
+    apply_staged_patches(&generated.source)?;
+    let cargo_dependencies = cargo::read_root_package(&generated.source)?.dependencies;
+    let dependencies = control::read_dependencies(
+        &generated.source.join("debian/control"),
+        &architecture,
+        &cargo_dependencies,
+    )?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -142,8 +148,8 @@ pub fn run(args: DepArgs) -> Result<bool> {
         .any(|row| matches!(row.status, "incompatible" | "missing")))
 }
 
-/// Applies staged quilt patches and reads Cargo and Debian dependency requirements.
-fn read_staged_dependencies(source: &Path, architecture: &str) -> Result<Vec<Dependency>> {
+/// Applies quilt patches to the staged source when a patch series is present.
+fn apply_staged_patches(source: &Path) -> Result<()> {
     if source.join("debian/patches/series").is_file() {
         run_command(
             Command::new("quilt")
@@ -153,12 +159,7 @@ fn read_staged_dependencies(source: &Path, architecture: &str) -> Result<Vec<Dep
             "apply staged quilt patches",
         )?;
     }
-    let cargo_dependencies = cargo::read_root_package(source)?.dependencies;
-    control::read_dependencies(
-        &source.join("debian/control"),
-        architecture,
-        &cargo_dependencies,
-    )
+    Ok(())
 }
 
 /// Classifies all candidates for each dependency in deterministic order.
@@ -507,7 +508,17 @@ mod tests {
         )
         .unwrap();
 
-        let dependencies = read_staged_dependencies(&output, "amd64").unwrap();
+        let unpatched = cargo::read_root_package(&output).unwrap();
+        assert_eq!(unpatched.dependencies[0].req, "^1");
+
+        apply_staged_patches(&output).unwrap();
+        let cargo_dependencies = cargo::read_root_package(&output).unwrap().dependencies;
+        let dependencies = control::read_dependencies(
+            &output.join("debian/control"),
+            "amd64",
+            &cargo_dependencies,
+        )
+        .unwrap();
 
         assert_eq!(dependencies.len(), 1);
         assert_eq!(dependencies[0].name, "serde");
