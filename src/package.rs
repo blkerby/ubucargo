@@ -18,14 +18,14 @@ use crate::{
 };
 
 use self::{
-    managed::{FileState, build_plan, install_state, read_state},
+    managed::{FileState, ManagedPlan, build_plan, install_state, read_state},
     orig::acquire_old_orig,
     output::{
         build_patch_series_plan, collect_managed_paths, generated_patch_changes,
         initialize_package, read_generated_candidates, remove_generated_vcs_fields,
         update_staged_maintainer,
     },
-    source::{build_source_plan, scan_tree, trees_match},
+    source::{SourcePlan, build_source_plan, scan_tree, trees_match},
 };
 
 mod managed;
@@ -161,6 +161,37 @@ fn reconcile_existing(
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<bool> {
+    let plan = build_reconciliation_plan(
+        existing,
+        base,
+        generated,
+        raw_control,
+        args.force,
+        keep,
+        replace,
+    )?;
+    plan.print_report();
+    if existing.patches_applied && generated_patch_changes(&plan.managed) && !args.check {
+        bail!("pop the real quilt stack before applying generated patch changes");
+    }
+    let changed = plan.has_changes();
+    if args.check || !changed {
+        return Ok(changed);
+    }
+    plan.apply()?;
+    Ok(false)
+}
+
+/// Builds source and packaging changes against the old orig without modifying the package.
+fn build_reconciliation_plan(
+    existing: &ExistingPackage,
+    base: &Path,
+    generated: &GeneratedPackage,
+    raw_control: Option<FileState>,
+    force: bool,
+    keep: &BTreeSet<PathBuf>,
+    replace: &BTreeSet<PathBuf>,
+) -> Result<ReconciliationPlan> {
     let root = &existing.root;
     let debian = root.join("debian");
     let base_tree = scan_tree(base)?;
@@ -169,7 +200,7 @@ fn reconcile_existing(
     if !trees_match(&base_tree, &new_tree) && existing.patches_applied {
         bail!("pop the complete quilt stack before reconciling changed upstream source");
     }
-    let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, args.force)?;
+    let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
 
     let generated_candidates = read_generated_candidates(&generated.source)?;
     let managed = collect_managed_paths(&debian, &generated_candidates)?;
@@ -221,53 +252,83 @@ fn reconcile_existing(
     let prepared_changelog = read_state(&generated.stage.path().join("overlay/changelog"))?
         .context("staged changelog is missing")?;
     let old_changelog = read_state(&debian.join("changelog"))?;
-    let changelog_changed = old_changelog.as_ref() != Some(&prepared_changelog);
     let orig_destination = root.parent().context("package root has no parent")?.join(
         generated
             .orig
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    let orig_changed = files_differ(&generated.orig, &orig_destination)?;
+    Ok(ReconciliationPlan {
+        root: root.clone(),
+        orig: if files_differ(&generated.orig, &orig_destination)? {
+            Some((generated.orig.clone(), orig_destination))
+        } else {
+            None
+        },
+        source: source_plan,
+        managed: generated_plan,
+        changelog: if old_changelog.as_ref() != Some(&prepared_changelog) {
+            Some(prepared_changelog)
+        } else {
+            None
+        },
+    })
+}
 
-    if orig_changed {
-        println!("create {}", orig_destination.display());
-    }
-    source_plan.print_report();
-    generated_plan.print_report();
-    if changelog_changed {
-        println!("update debian/changelog");
+/// Complete changes to an existing package; staged source files must remain until applied.
+struct ReconciliationPlan {
+    root: PathBuf,
+    /// Staged orig and destination paths, or None when the tarball already matches.
+    orig: Option<(PathBuf, PathBuf)>,
+    source: SourcePlan,
+    managed: ManagedPlan,
+    /// Updated changelog, or None when the current changelog already matches.
+    changelog: Option<FileState>,
+}
+
+impl ReconciliationPlan {
+    /// Reports whether any part of the package needs updating.
+    fn has_changes(&self) -> bool {
+        self.orig.is_some()
+            || self.source.has_changes()
+            || self.managed.has_changes()
+            || self.changelog.is_some()
     }
 
-    let generated_changed = generated_plan.has_changes();
-    if existing.patches_applied && generated_patch_changes(&generated_plan) && !args.check {
-        bail!("pop the real quilt stack before applying generated patch changes");
-    }
-    let changed =
-        orig_changed || source_plan.has_changes() || generated_changed || changelog_changed;
-    if !changed {
-        println!("clean");
-    }
-    if args.check || !changed {
-        return Ok(changed);
+    /// Prints orig, source, managed-file, and changelog changes, or reports a clean package.
+    fn print_report(&self) {
+        if let Some((_, destination)) = &self.orig {
+            println!("create {}", destination.display());
+        }
+        self.source.print_report();
+        self.managed.print_report();
+        if self.changelog.is_some() {
+            println!("update debian/changelog");
+        }
+        if !self.has_changes() {
+            println!("clean");
+        }
     }
 
-    if orig_changed {
-        fs::copy(&generated.orig, &orig_destination)
-            .with_context(|| format!("install {}", orig_destination.display()))?;
-    }
-    source_plan
-        .apply(root)
-        .context("package may be partially updated; rerun `ubucargo package`")?;
-    if generated_changed {
-        generated_plan
-            .apply()
+    /// Installs the orig, source, managed files, and changelog in that order.
+    fn apply(&self) -> Result<()> {
+        if let Some((source, destination)) = &self.orig {
+            fs::copy(source, destination)
+                .with_context(|| format!("install {}", destination.display()))?;
+        }
+        self.source
+            .apply(&self.root)
             .context("package may be partially updated; rerun `ubucargo package`")?;
+        if self.managed.has_changes() {
+            self.managed
+                .apply()
+                .context("package may be partially updated; rerun `ubucargo package`")?;
+        }
+        if let Some(changelog) = &self.changelog {
+            install_state(&self.root.join("debian/changelog"), Some(changelog))?;
+        }
+        Ok(())
     }
-    if changelog_changed {
-        install_state(&debian.join("changelog"), Some(&prepared_changelog))?;
-    }
-    Ok(false)
 }
 
 /// Initializes and installs the generated package at the resolved destination.

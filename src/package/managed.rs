@@ -162,8 +162,8 @@ impl PathPlan {
     }
 }
 
-/// Complete, validated set of filesystem changes for one package operation.
-pub struct Plan {
+/// Planned managed-file, hint, and ownership-manifest changes.
+pub struct ManagedPlan {
     /// Resolved directory containing the package's Debian files.
     debian: PathBuf,
     /// Per-path reconciliation results in deterministic order.
@@ -174,7 +174,7 @@ pub struct Plan {
     manifest_after: FileState,
 }
 
-impl Plan {
+impl ManagedPlan {
     /// Reports whether the ownership manifest needs installation.
     fn has_manifest_changed(&self) -> bool {
         self.manifest_before.as_ref() != Some(&self.manifest_after)
@@ -296,7 +296,7 @@ pub fn build_plan(
     inferred_bases: &BTreeMap<PathBuf, FileState>,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
-) -> Result<Plan> {
+) -> Result<ManagedPlan> {
     let mut paths = Vec::new();
     let mut used_decisions = BTreeSet::new();
     let (mut manifest, manifest_before) = read_manifest(debian)?;
@@ -419,7 +419,7 @@ pub fn build_plan(
 
     let mut contents = serde_json::to_vec_pretty(&manifest)?;
     contents.push(b'\n');
-    Ok(Plan {
+    Ok(ManagedPlan {
         debian: debian.to_path_buf(),
         paths,
         manifest_before,
@@ -514,7 +514,7 @@ mod tests {
     use super::*;
 
     /// Plans a generation using filesystem discovery and the persisted manifest.
-    fn plan_generation(debian: &Path, generated: &BTreeMap<PathBuf, FileState>) -> Plan {
+    fn plan_generation(debian: &Path, generated: &BTreeMap<PathBuf, FileState>) -> ManagedPlan {
         build_plan(
             debian,
             &collect_managed_paths(debian, generated).unwrap(),

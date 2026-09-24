@@ -53,7 +53,7 @@ pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
 }
 
 /// Reports whether generated automatic patches or their series change.
-pub fn generated_patch_changes(plan: &super::managed::Plan) -> bool {
+pub fn generated_patch_changes(plan: &super::managed::ManagedPlan) -> bool {
     for path in &plan.paths {
         let generated_patch_changed =
             path.path == Path::new("debian/patches/series") || is_auto_patch(&path.path);
