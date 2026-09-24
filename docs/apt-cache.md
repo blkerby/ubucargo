@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`deps` constructs temporary APT sources from its command-line arguments. APT refreshes and queries those sources using one shared, user-writable cache. Ubucargo has no persistent Archive configuration and does not create a separate cache for each combination of series and PPAs.
+`deps` generates APT sources from its command-line arguments and stores the current selection in one shared, user-writable cache. It reuses the same configuration paths and binary package cache across invocations rather than creating a separate cache for each combination of series and PPAs.
 
 `deps` requests only binary `Packages` indexes. Translations, DEP-11 data, icons, command-not-found data, source indexes, and unrelated architectures are disabled.
 
@@ -10,14 +10,27 @@
 
 ```text
 ~/.cache/ubucargo/apt/
+  view.lock
+  sources.sources
+  sourceparts/
+  status
+  preferences
+  preferences.d/
+  pkgcache.bin
   lists/
     partial/
   keys/
 ```
 
-APT's `pkgcache.bin` and `srcpkgcache.bin` files are disabled. It builds any in-memory cache needed for the current query from the downloaded indexes.
+The root is `$XDG_CACHE_HOME/ubucargo/apt` when `XDG_CACHE_HOME` is set. `status` and `preferences` are empty files; `sourceparts/` and `preferences.d/` are empty directories. They are created when missing and otherwise left untouched. These files are generated cache state, not user configuration.
 
-All invocations share `lists/`. APT list cleanup is disabled so changing the requested series or PPAs does not delete indexes needed by later invocations. The temporary source configuration determines which files APT loads; cached indexes from unrelated origins do not enter candidate selection.
+`sources.sources` is replaced atomically only when its generated contents change. Before replacement, Ubucargo removes `pkgcache.bin` so selection changes invalidate the binary cache even within one filesystem timestamp tick. Unchanged invocations preserve source and status modification times.
+
+`apt-get update` receives `pkgCacheFile::Generate=false` to preserve the binary cache while refreshing repository metadata. This override applies only to `update`; `indextargets` validates and reuses `pkgcache.bin`, rebuilding it when needed. `srcpkgcache.bin` remains disabled because the installed-package status is always empty.
+
+Ubucargo holds an exclusive `view.lock` from source preparation through update, query, and index parsing. Concurrent invocations wait for that lock so they cannot replace each other's configuration or indexes during a query. The operating system releases the lock when the file is closed or the process exits.
+
+All invocations share `lists/`. APT list cleanup is disabled so changing the requested series or PPAs does not delete indexes needed by later invocations. The current source configuration determines which files APT loads; cached indexes from unrelated origins do not enter candidate selection.
 
 ## Sources
 
@@ -50,16 +63,16 @@ Every source uses `Signed-By`. Ubucargo does not enable unsigned repositories or
 
 Ubucargo runs `apt-get update` with command-line configuration that supplies:
 
-- the temporary source file and an empty source-parts directory;
+- the generated persistent source file and an empty source-parts directory;
 - `~/.cache/ubucargo/apt/lists` as the list directory;
 - an empty dpkg status file;
-- empty preferences and preferences-parts paths, with no default release;
-- no persistent APT package-cache files;
+- empty preferences and preferences-parts paths;
+- a persistent `pkgcache.bin`, with `srcpkgcache.bin` disabled;
 - no list cleanup; and
 - no translation downloads.
 
 APT updates the selected indexes on every invocation. It reuses unchanged files and may apply index deltas, so Ubucargo needs no freshness policy or per-view cache identity.
 
-Queries use the same source file and list directory. APT supplies candidate policy, Debian version ordering, architecture filtering, and `Provides` handling. `apt-get indextargets` supplies index filenames and signed repository metadata such as origin, suite, component, and architecture.
+Queries use the same source file and list directory. `apt-get indextargets` identifies the selected package indexes and their repository locations. Ubucargo reads those `Packages` files itself, extracts Rust package versions and `Provides`, and classifies candidates against the dependency requirements using Debian version ordering.
 
 Only metadata operations run. Ubucargo never asks this configuration to install, upgrade, remove, or configure packages, and it does not modify the host's APT lists or dpkg status.
