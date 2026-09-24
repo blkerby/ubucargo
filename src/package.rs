@@ -18,7 +18,7 @@ use crate::{
 };
 
 use self::{
-    managed::{build_plan, install_state, read_state},
+    managed::{FileState, build_plan, install_state, read_state},
     orig::acquire_old_orig,
     output::{
         build_patch_series_plan, collect_managed_paths, generated_patch_changes,
@@ -91,21 +91,32 @@ pub fn run(args: PackageArgs) -> Result<bool> {
     if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
         bail!("--keep and --replace apply only to existing packages");
     }
-    if let Some(existing) = &resolved.existing {
+    let baseline = if let Some(existing) = &resolved.existing {
         let old_orig = acquire_old_orig(&existing.root, &existing.top_changelog)?;
         let base = tempfile::tempdir().context("create old-source extraction directory")?;
         extract_tree(&old_orig.path, base.path())?;
-        let generated = generate_package(&resolved, args.keep_staging)?;
+        Some((existing, base))
+    } else {
+        None
+    };
+    let generated = generate_package(&resolved, args.keep_staging)?;
+    // Capture debcargo's raw control before Ubuntu adjustments so an unchanged
+    // existing control can establish ownership without a manifest entry or hint.
+    let raw_control = read_state(&generated.source.join("debian/control"))?;
+    remove_generated_vcs_fields(generated.stage.path())?;
+    update_staged_maintainer(generated.stage.path())?;
+
+    if let Some((existing, base)) = &baseline {
         reconcile_existing(
             existing,
             base.path(),
             &generated,
+            raw_control,
             &args,
             &keep_paths,
             &replace_paths,
         )
     } else {
-        let generated = generate_package(&resolved, args.keep_staging)?;
         create_new(
             resolved
                 .destination
@@ -145,19 +156,13 @@ fn reconcile_existing(
     existing: &ExistingPackage,
     base: &Path,
     generated: &GeneratedPackage,
+    raw_control: Option<FileState>,
     args: &PackageArgs,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<bool> {
     let root = &existing.root;
     let debian = root.join("debian");
-    // Recognize an unchanged debcargo control file before applying Ubuntu adjustments.
-    // Without a manifest entry or hint, an exact match lets us apply these adjustments
-    // without requiring a one-time --replace debian/control decision.
-    let raw_control = read_state(&generated.stage.path().join("output/debian/control"))?;
-    remove_generated_vcs_fields(generated.stage.path())?;
-    update_staged_maintainer(generated.stage.path())?;
-
     let base_tree = scan_tree(base)?;
     let old_tree = scan_tree(root)?;
     let new_tree = scan_tree(&generated.source)?;
@@ -206,7 +211,7 @@ fn reconcile_existing(
             let source = control.source().and_then(|source| source.name());
             if source.as_deref() != Some(prepared_top.source.as_str()) {
                 eprintln!(
-                    "warning: debian/control Source is missing or does not match {}; the package will not build until reconciled with debian/control.debcargo.hint (written when applying changes)",
+                    "warning: debian/control Source does not match {}; the package will not build until reconciled with debian/control.debcargo.hint",
                     prepared_top.source
                 );
             }
@@ -240,15 +245,11 @@ fn reconcile_existing(
     }
     let changed =
         orig_changed || source_plan.has_changes() || generated_changed || changelog_changed;
-    if args.check {
-        if !changed {
-            println!("clean");
-        }
-        return Ok(changed);
-    }
     if !changed {
         println!("clean");
-        return Ok(false);
+    }
+    if args.check || !changed {
+        return Ok(changed);
     }
 
     if orig_changed {
@@ -277,8 +278,6 @@ fn create_new(
     check: bool,
 ) -> Result<bool> {
     let parent = root.parent().context("package root has no parent")?;
-    remove_generated_vcs_fields(generated.stage.path())?;
-    update_staged_maintainer(generated.stage.path())?;
     initialize_package(&generated.source, config)?;
 
     require_absent(root)?;
@@ -303,4 +302,89 @@ fn create_new(
     }
     copy_tree(&generated.source, root)?;
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Checks creation, upgrades, dry-run isolation, and convergence using a local crate.
+    fn creates_and_reconciles_local_package() {
+        let temporary = tempfile::tempdir().unwrap();
+        let local = temporary.path().join("local");
+        let root = temporary.path().join("packages/rust-example");
+        fs::create_dir_all(local.join("src")).unwrap();
+        fs::write(local.join("src/lib.rs"), "// Example library.\n").unwrap();
+        let manifest = local.join("Cargo.toml");
+        for (version, check, expected_change) in [
+            ("1.0.0", true, true),
+            ("1.0.0", false, false),
+            ("1.0.0", true, false),
+            ("1.0.1", true, true),
+            ("1.0.1", false, false),
+            ("1.0.1", true, false),
+        ] {
+            let contents = indoc::formatdoc! {r#"
+                [package]
+                name = "example"
+                version = "{version}"
+                edition = "2021"
+                license = "MIT"
+                description = "Example library"
+            "#};
+            fs::write(&manifest, contents).unwrap();
+            let creating = !root.exists();
+            let orig = root
+                .parent()
+                .unwrap()
+                .join(format!("rust-example_{version}.orig.tar.gz"));
+            let tracked = [
+                root.join("Cargo.toml"),
+                root.join("debian/control"),
+                root.join("debian/changelog"),
+                root.join("debian/ubucargo-state.json"),
+                orig.clone(),
+            ];
+            let mut before = Vec::new();
+            for path in &tracked {
+                before.push(fs::read(path).ok());
+            }
+            let changed = run(PackageArgs {
+                crate_name: None,
+                version: None,
+                package_dir: Some(root.clone()),
+                local_crate: if creating { Some(local.clone()) } else { None },
+                check,
+                force: false,
+                keep_staging: false,
+                keep: Vec::new(),
+                replace: Vec::new(),
+            })
+            .unwrap();
+            assert_eq!(changed, expected_change, "{version}, check={check}");
+            if check {
+                for (path, contents) in tracked.iter().zip(before) {
+                    assert_eq!(fs::read(path).ok(), contents, "{}", path.display());
+                }
+                if creating {
+                    assert!(!root.parent().unwrap().exists());
+                }
+            } else {
+                assert!(orig.is_file());
+                assert_eq!(
+                    read_top_changelog(&root.join("debian/changelog"))
+                        .unwrap()
+                        .upstream,
+                    version
+                );
+                assert!(root.join("debian/debcargo.toml").is_file());
+                assert!(root.join("debian/source/format").is_file());
+                let control = fs::read_to_string(root.join("debian/control")).unwrap();
+                assert!(control.contains("Maintainer: Ubuntu Developers"));
+                assert!(!control.contains("Vcs-Git:"));
+                assert!(!control.contains("Vcs-Browser:"));
+            }
+        }
+    }
 }
