@@ -493,18 +493,10 @@ mod tests {
     }
 
     #[test]
-    /// Preserves an unchanged view, locks it, and updates changed selections.
-    fn maintains_persistent_view() {
+    /// Holds the shared lock until the view is dropped.
+    fn locks_persistent_view() {
         let cache = tempfile::tempdir().unwrap();
-        let normal = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
-        let sources = cache.path().join("sources.sources");
-        let status = cache.path().join("status");
-        let binary = cache.path().join("pkgcache.bin");
-        assert!(
-            !fs::read_to_string(&sources)
-                .unwrap()
-                .contains("noble-proposed")
-        );
+        let view = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
         let competing = fs::File::options()
             .write(true)
             .open(cache.path().join("view.lock"))
@@ -513,6 +505,18 @@ mod tests {
             competing.try_lock(),
             Err(std::fs::TryLockError::WouldBlock)
         ));
+        drop(view);
+        competing.try_lock().unwrap();
+    }
+
+    #[test]
+    /// Preserves timestamps and the binary cache when the selection is unchanged.
+    fn preserves_unchanged_view() {
+        let cache = tempfile::tempdir().unwrap();
+        let normal = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
+        let sources = cache.path().join("sources.sources");
+        let status = cache.path().join("status");
+        let binary = cache.path().join("pkgcache.bin");
         let timestamp = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
         for path in [&sources, &status] {
             fs::File::options()
@@ -522,17 +526,26 @@ mod tests {
                 .set_modified(timestamp)
                 .unwrap();
         }
+        // Sentinel contents: this checks file preservation without invoking APT.
         fs::write(&binary, "cached").unwrap();
         drop(normal);
 
-        let unchanged = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
+        let _unchanged = prepare_view(cache.path(), "noble", "amd64", false, &[]).unwrap();
         for path in [&sources, &status] {
             assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), timestamp);
         }
         assert_eq!(fs::read(&binary).unwrap(), b"cached");
-        drop(unchanged);
+    }
 
+    #[test]
+    /// Updates repository selections while leaving binary-cache validation to APT.
+    fn updates_source_selection() {
+        let cache = tempfile::tempdir().unwrap();
+        let sources = cache.path().join("sources.sources");
+        let binary = cache.path().join("pkgcache.bin");
+        fs::write(&binary, "cached").unwrap();
         for (series, architecture, proposed) in [
+            ("noble", "amd64", false),
             ("noble", "amd64", true),
             ("noble", "arm64", true),
             ("stonking", "arm64", true),
@@ -545,7 +558,6 @@ mod tests {
             assert!(contents.contains(&format!("Architectures: {architecture}\n")));
             assert_eq!(contents.contains(&format!("{series}-proposed")), proposed);
         }
-        competing.try_lock().unwrap();
     }
 
     #[test]
