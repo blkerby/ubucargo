@@ -14,6 +14,7 @@ use crate::util::run_command;
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::lossy::apt::Package;
 use debversion::Version;
+use indoc::formatdoc;
 use serde::Deserialize;
 use tempfile::NamedTempFile;
 
@@ -166,10 +167,19 @@ fn prepare_view(
     for ppa in ppas {
         let (owner, name) = parse_ppa(ppa)?;
         let key = get_ppa_key(owner, name, &cache.join("keys"))?;
-        sources.push_str(&format!(
-            "Types: deb\nURIs: https://ppa.launchpadcontent.net/{owner}/{name}/ubuntu\nSuites: {series}\nComponents: main\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {}\n\n",
+        sources.push_str(&formatdoc! {
+            "
+            Types: deb
+            URIs: https://ppa.launchpadcontent.net/{owner}/{name}/ubuntu
+            Suites: {series}
+            Components: main
+            Architectures: {architecture}
+            Targets: Packages
+            Signed-By: {}
+
+            ",
             key.display()
-        ));
+        });
     }
 
     let ports = !matches!(architecture, "amd64" | "i386");
@@ -188,9 +198,25 @@ fn prepare_view(
     } else {
         String::new()
     };
-    sources.push_str(&format!(
-        "Types: deb\nURIs: {archive}\nSuites: {series} {series}-updates{proposed_suite}\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n\nTypes: deb\nURIs: {security}\nSuites: {series}-security\nComponents: main universe\nArchitectures: {architecture}\nTargets: Packages\nSigned-By: {UBUNTU_KEYRING}\n"
-    ));
+    sources.push_str(&formatdoc! {
+        "
+        Types: deb
+        URIs: {archive}
+        Suites: {series} {series}-updates{proposed_suite}
+        Components: main universe
+        Architectures: {architecture}
+        Targets: Packages
+        Signed-By: {UBUNTU_KEYRING}
+
+        Types: deb
+        URIs: {security}
+        Suites: {series}-security
+        Components: main universe
+        Architectures: {architecture}
+        Targets: Packages
+        Signed-By: {UBUNTU_KEYRING}
+        "
+    });
     let source_path = cache.join("sources.sources");
     let previous = match fs::read(&source_path) {
         Ok(contents) => contents,
