@@ -1,4 +1,4 @@
-//! Reads Cargo package identities and direct dependency metadata.
+//! Reads Cargo package identities.
 
 use std::{
     path::{Path, PathBuf},
@@ -17,27 +17,15 @@ struct Metadata {
     packages: Vec<MetadataPackage>,
 }
 
-/// Cargo package identity and direct dependencies.
+/// Cargo package identity.
 #[derive(Clone, Debug, Deserialize)]
 pub struct MetadataPackage {
     /// Cargo package name.
     pub name: String,
     /// Exact Cargo package version.
     pub version: String,
-    /// Direct Cargo dependencies declared by the package.
-    #[serde(default)]
-    pub dependencies: Vec<MetadataDependency>,
     /// Manifest used to distinguish the root package from workspace members.
     manifest_path: PathBuf,
-}
-
-/// Direct dependency fields used by dependency inspection.
-#[derive(Clone, Debug, Deserialize)]
-pub struct MetadataDependency {
-    /// Canonical package name, independent of any local rename.
-    pub name: String,
-    /// Cargo semantic-version requirement.
-    pub req: String,
 }
 
 /// Uses Cargo to identify the package defined by the root manifest.
@@ -111,7 +99,6 @@ mod tests {
         let package = read_root_package(root.path()).unwrap();
         assert_eq!(package.name, "z-root");
         assert_eq!(package.version, "1.0.0");
-        assert!(package.dependencies.is_empty());
         assert_eq!(
             read_root_package(&root.path().join("member")).unwrap().name,
             "a-member"

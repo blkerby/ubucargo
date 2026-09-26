@@ -1,20 +1,14 @@
 //! Extracts Rust dependency requirements from generated Debian control files.
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 use debian_control::{
-    lossy::{Control, Relation, Relations},
+    lossless::control::Control,
+    lossy::{Relation, Relations},
     relations::{BuildProfile, VersionConstraint},
 };
 use debversion::Version;
-
-use crate::{cargo::MetadataDependency, resolve::normalize_crate_name};
 
 /// One Debian package alternative in a dependency expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,66 +20,50 @@ pub struct PackageRequirement {
 }
 
 /// Debian requirements grouped by Cargo feature, with `None` for the base crate.
+/// Each outer-vector entry is a required dependency group (comma-separated AND).
+/// Each inner vector contains alternatives for that group (`|`-separated OR).
 pub type FeatureRequirements = BTreeMap<Option<String>, Vec<Vec<PackageRequirement>>>;
 
-/// Cargo and Debian requirements belonging to one direct Rust crate.
+/// Debian requirements belonging to one Rust crate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dependency {
     /// Normalized Cargo crate name.
     pub name: String,
-    /// Cargo semantic-version requirement from the patch-applied manifest.
-    pub cargo_requirement: String,
     /// Debian package requirements used for availability and feature checks.
     pub debian_requirements: FeatureRequirements,
 }
 
-/// Reads and groups direct Rust dependencies from generated control and Cargo metadata.
-pub fn read_dependencies(
-    control_path: &Path,
-    architecture: &str,
-    cargo_dependencies: &[MetadataDependency],
-) -> Result<Vec<Dependency>> {
+/// Reads and groups Rust dependencies from generated Debian control metadata.
+pub fn read_dependencies(control_path: &Path, architecture: &str) -> Result<Vec<Dependency>> {
     let contents = fs::read_to_string(control_path)
         .with_context(|| format!("read {}", control_path.display()))?;
+    // We use the lossless (i.e. less strongly typed) parser at the top level for Control,
+    // since the lossy parser would fail to parse substitutions (e.g. "${misc:Depends}")
+    // in parts that we don't need to look at.
     let control: Control = contents
         .parse()
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("parse {}", control_path.display()))?;
+    let source = control
+        .source()
+        .context("control file has no source paragraph")?;
     let mut grouped = BTreeMap::new();
-    for relations in [
-        control.source.build_depends,
-        control.source.build_depends_arch,
-        control.source.build_depends_indep,
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for field in ["Build-Depends", "Build-Depends-Arch", "Build-Depends-Indep"] {
+        let Some(value) = source.get(field) else {
+            continue;
+        };
+        let relations: Relations = value
+            .parse()
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("parse {field} in {}", control_path.display()))?;
         collect_dependencies(&relations, architecture, &mut grouped)
             .with_context(|| format!("parse Rust dependencies from {}", control_path.display()))?;
     }
 
-    let mut cargo_by_name: HashMap<String, &MetadataDependency> = HashMap::new();
-    for dependency in cargo_dependencies {
-        let name = normalize_crate_name(&dependency.name);
-        if !grouped.contains_key(&name) {
-            continue;
-        }
-        if cargo_by_name
-            .insert(name.clone(), dependency)
-            .is_some_and(|existing| existing.req != dependency.req)
-        {
-            bail!("Cargo has multiple version requirements for dependency {name}");
-        }
-    }
-
     let mut dependencies = Vec::new();
     for (name, debian_requirements) in grouped {
-        let cargo_dependency = cargo_by_name
-            .get(&name)
-            .with_context(|| format!("Cargo metadata has no dependency {name}"))?;
         dependencies.push(Dependency {
             name,
-            cargo_requirement: cargo_dependency.req.clone(),
             debian_requirements,
         });
     }
@@ -105,13 +83,12 @@ fn collect_dependencies(
             if !relation_applies(relation, architecture)? {
                 continue;
             }
+            // Only consider dependencies having the form of a Rust library package
+            // (Other dependencies are not in scope of the `ubucargo deps` report.)
             let Some((name, feature)) = parse_rust_package_name(&relation.name) else {
                 continue;
             };
-            if identity
-                .as_ref()
-                .is_some_and(|existing| existing != &(name, feature))
-            {
+            if identity.is_some() && identity != Some((name, feature)) {
                 bail!("Rust dependency alternatives refer to different features: {entry:?}");
             }
             identity = Some((name, feature));
@@ -153,22 +130,12 @@ fn relation_applies(relation: &Relation, architecture: &str) -> Result<bool> {
             return Ok(false);
         }
     }
-    if relation.profiles.is_empty() {
-        return Ok(true);
-    }
-    for group in &relation.profiles {
-        let mut matches = true;
-        for profile in group {
-            match profile {
-                BuildProfile::Enabled(_) => matches = false,
-                BuildProfile::Disabled(_) => {}
-            }
-        }
-        if matches {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let profile_valid = relation.profiles.is_empty() || relation.profiles.iter().any(|group| {
+        group
+            .iter()
+            .all(|profile| matches!(profile, BuildProfile::Disabled(_)))
+    });
+    Ok(profile_valid)
 }
 
 /// Matches one Debian architecture against an architecture restriction.
@@ -209,16 +176,8 @@ mod tests {
 
     use super::*;
 
-    /// Creates one Cargo metadata dependency for parser tests.
-    fn cargo_dependency(name: &str, requirement: &str) -> MetadataDependency {
-        MetadataDependency {
-            name: name.to_owned(),
-            req: requirement.to_owned(),
-        }
-    }
-
     #[test]
-    /// Groups Debian requirements by feature and attaches Cargo requirements.
+    /// Groups Debian requirements by crate and feature without requiring Cargo metadata.
     fn extracts_rust_dependencies() {
         let control = indoc! {r#"
             Source: rust-example
@@ -230,59 +189,34 @@ mod tests {
 
             Package: librust-example-dev
             Architecture: any
+            Provides: librust-example-1-dev (= ${binary:Version}), ${cargo:Provides}
+            Depends: ${misc:Depends}, ${cargo:Depends}
             Description: example
         "#};
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), control).unwrap();
-        let dependencies = read_dependencies(
-            file.path(),
-            "amd64",
-            &[
-                cargo_dependency("serde", "^1.0.100"),
-                cargo_dependency("syn", "^2"),
-            ],
-        )
-        .unwrap();
+        let dependencies = read_dependencies(file.path(), "amd64").unwrap();
 
         assert_eq!(dependencies.len(), 2);
-        assert_eq!(dependencies[0].cargo_requirement, "^1.0.100");
+        assert_eq!(dependencies[0].name, "serde");
         assert_eq!(dependencies[0].debian_requirements.len(), 2);
-        assert_eq!(dependencies[1].cargo_requirement, "^2");
+        assert_eq!(dependencies[1].name, "syn");
         assert_eq!(dependencies[1].debian_requirements[&None][0].len(), 2);
     }
 
     #[test]
-    /// Matches normalized names and rejects conflicting requirements only for selected crates.
-    fn indexes_cargo_dependencies() {
+    /// Rejects malformed dependencies in each source Build-Depends field.
+    fn rejects_invalid_source_dependencies() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(
-            file.path(),
-            "Source: rust-example\nBuild-Depends: librust-serde-json-dev\n",
-        )
-        .unwrap();
-        let mut cargo = vec![
-            cargo_dependency("Serde_Json", "^1"),
-            cargo_dependency("serde-json", "^1"),
-            cargo_dependency("unused", "^1"),
-            cargo_dependency("unused", "^2"),
-        ];
-        let dependencies = read_dependencies(file.path(), "amd64", &cargo).unwrap();
-        assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0].name, "serde-json");
-        assert_eq!(dependencies[0].cargo_requirement, "^1");
-        cargo[1].req = "^2".to_owned();
-        assert!(
-            read_dependencies(file.path(), "amd64", &cargo)
-                .unwrap_err()
-                .to_string()
-                .contains("multiple version requirements for dependency serde-json")
-        );
-        assert!(
-            read_dependencies(file.path(), "amd64", &[])
-                .unwrap_err()
-                .to_string()
-                .contains("Cargo metadata has no dependency serde-json")
-        );
+        for field in ["Build-Depends", "Build-Depends-Arch", "Build-Depends-Indep"] {
+            fs::write(
+                file.path(),
+                format!("Source: rust-example\n{field}: librust-serde-dev (>= )\n"),
+            )
+            .unwrap();
+            let error = read_dependencies(file.path(), "amd64").unwrap_err();
+            assert!(error.to_string().contains(&format!("parse {field}")));
+        }
     }
 
     #[test]
@@ -298,9 +232,7 @@ mod tests {
         "#};
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), control).unwrap();
-        assert!(
-            read_dependencies(file.path(), "amd64", &[cargo_dependency("serde", "^1")]).is_err()
-        );
+        assert!(read_dependencies(file.path(), "amd64").is_err());
     }
 
     #[test]

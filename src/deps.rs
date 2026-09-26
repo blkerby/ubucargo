@@ -7,14 +7,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     io::{self, IsTerminal},
-    path::{Path, PathBuf},
-    process::Command,
+    path::PathBuf,
 };
 
 use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{cargo, generate, resolve, util::run_command};
+use crate::{generate, resolve};
 
 use self::{
     apt::PackageCandidate,
@@ -74,7 +73,7 @@ enum RequirementStatus {
     Missing,
 }
 
-/// One independently colored component of a Cargo-style requirement.
+/// One independently colored component of a compact Debian requirement.
 #[derive(Debug, Eq, PartialEq)]
 struct RequirementPart {
     /// Semver expression or feature name, including its `+` prefix.
@@ -132,13 +131,8 @@ pub fn run(args: DepArgs) -> Result<bool> {
         args.local_crate.as_deref(),
     )?;
     let generated = generate::generate_package(&resolved, false)?;
-    apply_staged_patches(&generated.source)?;
-    let cargo_dependencies = cargo::read_root_package(&generated.source)?.dependencies;
-    let dependencies = control::read_dependencies(
-        &generated.source.join("debian/control"),
-        &architecture,
-        &cargo_dependencies,
-    )?;
+    let dependencies =
+        control::read_dependencies(&generated.source.join("debian/control"), &architecture)?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let rows = classify(&dependencies, &candidates);
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
@@ -146,20 +140,6 @@ pub fn run(args: DepArgs) -> Result<bool> {
     Ok(rows
         .iter()
         .any(|row| matches!(row.status, "incompatible" | "missing")))
-}
-
-/// Applies quilt patches to the staged source when a patch series is present.
-fn apply_staged_patches(source: &Path) -> Result<()> {
-    if source.join("debian/patches/series").is_file() {
-        run_command(
-            Command::new("quilt")
-                .args(["push", "-a", "--quiltrc=-"])
-                .env("QUILT_PATCHES", "debian/patches")
-                .current_dir(source),
-            "apply staged quilt patches",
-        )?;
-    }
-    Ok(())
 }
 
 /// Classifies all candidates for each dependency in deterministic order.
@@ -228,7 +208,7 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
     rows
 }
 
-/// Builds independently classified semver and feature display components.
+/// Factors identical Debian version expressions out of feature display components.
 fn make_requirement(
     dependency: &Dependency,
     candidate: Option<&PackageCandidate>,
@@ -255,18 +235,17 @@ fn make_requirement(
         }
         RequirementKind::Base
     } else {
-        let mut alternatives = Vec::new();
-        for feature in dependency.debian_requirements.values() {
+        if let Some(feature) = dependency.debian_requirements.values().next() {
             for entry in feature {
-                alternatives.extend(entry);
+                requirements.push(entry.iter().collect());
             }
         }
-        requirements.push(alternatives);
         RequirementKind::Any
     };
     let version_status = classify_requirement(&requirements, candidate, &dependency.name, kind);
+    let version_text = format_version_requirements(&dependency.name, &requirements);
     output.push(RequirementPart {
-        text: dependency.cargo_requirement.clone(),
+        text: version_text.clone(),
         status: version_status,
     });
 
@@ -287,8 +266,13 @@ fn make_requirement(
         for alternatives in feature_requirements {
             requirements.push(alternatives.iter().collect());
         }
+        let feature_text = format_version_requirements(&dependency.name, &requirements);
         output.push(RequirementPart {
-            text: format!("+{feature}"),
+            text: if feature_text == version_text {
+                format!("+{feature}")
+            } else {
+                format!("+{feature}({feature_text})")
+            },
             status: classify_requirement(
                 &requirements,
                 candidate,
@@ -298,6 +282,76 @@ fn make_requirement(
         });
     }
     output
+}
+
+/// Formats package-name version suffixes and Debian bounds, preserving AND/OR groups.
+fn format_version_requirements(
+    crate_name: &str,
+    requirements: &[Vec<&PackageRequirement>],
+) -> String {
+    let prefix = format!("librust-{crate_name}");
+    let mut groups = BTreeSet::new();
+    let mut lines = BTreeSet::new();
+    for alternatives in requirements {
+        let mut group = BTreeSet::new();
+        for requirement in alternatives {
+            // The collector has already validated the crate and feature identity.
+            let body = requirement.name.strip_suffix("-dev").unwrap();
+            let base = body.split('+').next().unwrap();
+            let line = base
+                .strip_prefix(&prefix)
+                .unwrap()
+                .strip_prefix('-')
+                .unwrap_or("*");
+            let bound = match &requirement.version {
+                Some((constraint, version)) => format!("{constraint}{version}"),
+                None => String::new(),
+            };
+            lines.insert(line);
+            group.insert((line, bound));
+        }
+        groups.insert(group);
+    }
+    let shared_line = if lines.len() == 1 {
+        lines.first().copied()
+    } else {
+        None
+    };
+    let multiple_groups = groups.len() > 1;
+    let mut expressions = Vec::new();
+    for group in groups {
+        let mut alternatives = Vec::new();
+        let mut unrestricted = false;
+        for (line, bound) in group {
+            if shared_line.is_some() {
+                if bound.is_empty() {
+                    unrestricted = true;
+                    break;
+                }
+                alternatives.push(bound);
+            } else if bound.is_empty() {
+                alternatives.push(line.to_owned());
+            } else {
+                alternatives.push(format!("{line} ({bound})"));
+            }
+        }
+        if unrestricted {
+            continue;
+        }
+        let expression = alternatives.join(" | ");
+        expressions.push(if alternatives.len() > 1 && multiple_groups {
+            format!("({expression})")
+        } else {
+            expression
+        });
+    }
+    let expression = expressions.join(", ");
+    match shared_line {
+        Some(line) if expression.is_empty() => line.to_owned(),
+        Some(line) => format!("{line} ({expression})"),
+        None if expression.is_empty() => "*".to_owned(),
+        None => expression,
+    }
 }
 
 /// Classifies one visible requirement component against a package candidate.
@@ -453,77 +507,12 @@ fn format_table(rows: &[Row], color: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::collections::BTreeMap;
 
     use debversion::Version;
     use indoc::indoc;
 
     use super::*;
-
-    #[test]
-    /// Reads dependency requirements after applying staged quilt patches.
-    fn reads_patched_dependency_metadata() {
-        let stage = tempfile::tempdir().unwrap();
-        let output = stage.path().join("output");
-        fs::create_dir_all(output.join("src")).unwrap();
-        fs::create_dir_all(output.join("debian/patches")).unwrap();
-        fs::write(
-            output.join("Cargo.toml"),
-            indoc! {r#"
-                [package]
-                name = "example"
-                version = "1.0.0"
-                edition = "2024"
-
-                [dependencies]
-                serde = "1"
-            "#},
-        )
-        .unwrap();
-        fs::write(output.join("src/lib.rs"), "").unwrap();
-        fs::write(
-            output.join("debian/control"),
-            indoc! {r"
-                Source: rust-example
-                Build-Depends: librust-serde-dev (>= 2)
-            "},
-        )
-        .unwrap();
-        fs::write(
-            output.join("debian/patches/series"),
-            indoc! {r"
-                version.patch
-            "},
-        )
-        .unwrap();
-        fs::write(
-            output.join("debian/patches/version.patch"),
-            indoc! {r#"
-                --- a/Cargo.toml
-                +++ b/Cargo.toml
-                @@ -7 +7 @@
-                -serde = "1"
-                +serde = "2"
-            "#},
-        )
-        .unwrap();
-
-        let unpatched = cargo::read_root_package(&output).unwrap();
-        assert_eq!(unpatched.dependencies[0].req, "^1");
-
-        apply_staged_patches(&output).unwrap();
-        let cargo_dependencies = cargo::read_root_package(&output).unwrap().dependencies;
-        let dependencies = control::read_dependencies(
-            &output.join("debian/control"),
-            "amd64",
-            &cargo_dependencies,
-        )
-        .unwrap();
-
-        assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0].name, "serde");
-        assert_eq!(dependencies[0].cargo_requirement, "^2");
-    }
 
     /// Creates one candidate with a set of versioned virtual packages.
     fn candidate(version: &str, location: &str, provides: &[&str]) -> PackageCandidate {
@@ -545,7 +534,6 @@ mod tests {
         let dependencies = [
             Dependency {
                 name: "serde".to_owned(),
-                cargo_requirement: "^1".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     Some("derive".to_owned()),
                     vec![vec![PackageRequirement {
@@ -556,7 +544,6 @@ mod tests {
             },
             Dependency {
                 name: "serde".to_owned(),
-                cargo_requirement: "^2".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     None,
                     vec![vec![PackageRequirement {
@@ -567,7 +554,6 @@ mod tests {
             },
             Dependency {
                 name: "missing".to_owned(),
-                cargo_requirement: "^1".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     None,
                     vec![vec![PackageRequirement {
@@ -628,7 +614,7 @@ mod tests {
                 version: "1.0.219-1".to_owned(),
                 requirement: vec![
                     RequirementPart {
-                        text: "^1".to_owned(),
+                        text: "1".to_owned(),
                         status: RequirementStatus::Satisfied,
                     },
                     RequirementPart {
@@ -644,7 +630,7 @@ mod tests {
                 version: "1.0.217-1".to_owned(),
                 requirement: vec![
                     RequirementPart {
-                        text: "^1".to_owned(),
+                        text: "1".to_owned(),
                         status: RequirementStatus::Satisfied,
                     },
                     RequirementPart {
@@ -658,8 +644,8 @@ mod tests {
             format_table(&rows, false),
             indoc! {r"
                 DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT
-                serde       selected   noble/universe          1.0.219-1  ^1 +derive
-                            available  noble-updates/universe  1.0.217-1  ^1 +derive
+                serde       selected   noble/universe          1.0.219-1  1 +derive
+                            available  noble-updates/universe  1.0.217-1  1 +derive
             "}
         );
         let colored = format_table(&rows, true);
@@ -667,7 +653,61 @@ mod tests {
         assert!(colored.contains("\x1b[90mavailable\x1b[0m"));
         rows[0].requirement[0].status = RequirementStatus::Incompatible;
         rows[0].requirement[1].status = RequirementStatus::Missing;
-        assert!(format_table(&rows, true).contains("\x1b[33m^1\x1b[0m \x1b[31m+derive\x1b[0m"));
+        assert!(format_table(&rows, true).contains("\x1b[33m1\x1b[0m \x1b[31m+derive\x1b[0m"));
+    }
+
+    #[test]
+    /// Compacts real control relations without losing feature exceptions or alternatives.
+    fn formats_debian_requirements() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for (relations, expected) in [
+            (
+                "librust-foo-1+default-dev (>= 1.0.100-~~), librust-foo-1+derive-dev (>= 1.0.100-~~), librust-foo-1+std-dev (>= 1.0.100-~~)",
+                "1 (>=1.0.100-~~) +derive +std",
+            ),
+            (
+                "librust-foo-1-dev, librust-foo-1+derive-dev (>= 1.0.200-~~)",
+                "1 -default +derive(1 (>=1.0.200-~~))",
+            ),
+            (
+                "librust-foo-1+default-dev (>= 1), librust-foo-1+default-dev (<< 2), librust-foo-1+derive-dev (<< 2), librust-foo-1+derive-dev (>= 1)",
+                "1 (<<2, >=1) +derive",
+            ),
+            (
+                "librust-foo-1-dev | librust-foo-2-dev, librust-foo-1+derive-dev | librust-foo-2+derive-dev",
+                "1 | 2 -default +derive",
+            ),
+            (
+                "librust-foo-dev (>= 1:1.0-2~ubuntu1), librust-foo+derive-dev (>= 1:1.0-2~ubuntu1)",
+                "* (>=1:1.0-2~ubuntu1) -default +derive",
+            ),
+            (
+                "librust-foo-1+alloc-dev, librust-foo-2+derive-dev",
+                "1 -default +alloc +derive(2)",
+            ),
+            ("librust-foo-dev | librust-foo-1-dev", "* | 1 -default"),
+            (
+                "librust-foo-1-dev (>= 1) | librust-foo-2-dev (>= 2), librust-foo-1-dev (<< 3)",
+                "1 (<<3), (1 (>=1) | 2 (>=2)) -default",
+            ),
+            (
+                "librust-foo-1-dev, librust-foo-1+default-dev, librust-foo-1+derive-dev",
+                "1 +derive",
+            ),
+        ] {
+            std::fs::write(
+                file.path(),
+                format!("Source: rust-example\nBuild-Depends: {relations}\n"),
+            )
+            .unwrap();
+            let dependencies = control::read_dependencies(file.path(), "amd64").unwrap();
+            let parts = make_requirement(&dependencies[0], None);
+            let mut texts = Vec::new();
+            for part in parts {
+                texts.push(part.text);
+            }
+            assert_eq!(texts.join(" "), expected, "{relations}");
+        }
     }
 
     #[test]
@@ -675,7 +715,6 @@ mod tests {
     fn classifies_requirement_components() {
         let dependency = Dependency {
             name: "serde".to_owned(),
-            cargo_requirement: "^1".to_owned(),
             debian_requirements: BTreeMap::from([
                 (
                     None,
@@ -721,10 +760,10 @@ mod tests {
         );
         let parts = make_requirement(&dependency, Some(&candidate));
         for (part, (text, status)) in parts.iter().zip([
-            ("^1", RequirementStatus::Satisfied),
+            ("1", RequirementStatus::Satisfied),
             ("-default", RequirementStatus::Satisfied),
             ("+alloc", RequirementStatus::Missing),
-            ("+derive", RequirementStatus::Incompatible),
+            ("+derive(1 (>=1.0.200-~~))", RequirementStatus::Incompatible),
             ("+std", RequirementStatus::Incompatible),
         ]) {
             assert_eq!((part.text.as_str(), part.status), (text, status));
@@ -737,7 +776,6 @@ mod tests {
     fn colors_implicit_default_markers() {
         let default_dependency = Dependency {
             name: "foo".to_owned(),
-            cargo_requirement: "^1".to_owned(),
             debian_requirements: BTreeMap::from([
                 (
                     Some("default".to_owned()),
@@ -777,7 +815,6 @@ mod tests {
 
         let no_default_dependency = Dependency {
             name: "foo".to_owned(),
-            cargo_requirement: "^0.3".to_owned(),
             debian_requirements: BTreeMap::from([(
                 Some("formatting".to_owned()),
                 vec![vec![PackageRequirement {
@@ -803,7 +840,6 @@ mod tests {
     fn checks_all_feature_bounds() {
         let dependency = Dependency {
             name: "foo".to_owned(),
-            cargo_requirement: "^1".to_owned(),
             debian_requirements: BTreeMap::from([
                 (
                     Some("default".to_owned()),

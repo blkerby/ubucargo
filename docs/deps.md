@@ -63,10 +63,10 @@ The report shows each dependency and its candidates:
 
 ```text
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
-serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    ^1 +derive
-            available     noble-updates/universe              1.0.217-1    ^1 +derive
-syn         incompatible  noble/universe                      1.0.109-2    ^2 -default
-foo         missing       -                                   -            ^3
+serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    1 +derive
+            available     noble-updates/universe              1.0.217-1    1 +derive
+syn         incompatible  noble/universe                      1.0.109-2    2 -default
+foo         missing       -                                   -            3
 ```
 
 The dependency appears on the first row for a dependency; additional candidates
@@ -75,30 +75,49 @@ candidate independently. `REQUIREMENT` is last so a long, sorted feature list
 may extend beyond the nominal column width without disturbing the other columns.
 Requirements are not truncated or wrapped by ubucargo.
 
-The displayed version requirement comes directly from `cargo metadata` run on
-the staged crate after its quilt patches are applied. It therefore retains the
-Cargo requirement instead of reconstructing one from Debian package names and
-version constraints.
+The displayed requirement comes entirely from the generated Debian relations.
+A leading version such as `1` denotes the package-name suffix in
+`librust-serde-1-dev`, not a Cargo semver expression. `*` denotes an unsuffixed
+package name; matching still requires that actual name or a corresponding
+`Provides`. Explicit bounds follow in parentheses, with Debian epochs, revisions,
+and tildes retained verbatim.
+
+Identical expressions are factored out across features, for example:
+
+```text
+1 (>=1.0.100-~~) +derive +std
+```
+
+A feature with different requirements displays its full expression explicitly:
+
+```text
+1 (>=1.0.100-~~) +derive(1 (>=1.0.200-~~)) +std
+```
+
+Commas join required constraints (AND); `|` joins alternatives (OR), with
+parentheses preserving grouping. Formatting removes repeated expressions but
+does not convert Debian bounds into Cargo ranges. Compatibility always uses the
+original Debian relations, including dependencies absent from Cargo metadata.
 
 Default features are implicit in the report. `-default` means that the
 generated Debian dependency does not require the crate's `+default-dev`
 capability; it does not forbid a candidate from providing that capability.
-Other features remain explicit. The default-feature relation, or the base
-relation when no default is required, supplies the version color. The generated
-Debian relations remain authoritative for enabled features and candidate
-availability, including dependency overrides in `debian/debcargo.toml` that
-differ from the Cargo requirement.
+Other features remain explicit. The leading expression combines base and default
+requirements when present, otherwise uses the base requirements, or the first
+feature alphabetically when neither group exists. Other features show their own
+expression only when it differs from the leading expression. Each component is
+colored using its corresponding Debian relations.
 
 Statuses have the following meanings:
 
-- `selected`: APT's selected package satisfies the complete dependency expression;
-- `available`: another version or origin also satisfies it but was not selected by APT;
-- `incompatible`: packages for the crate exist, but none satisfy the required semver line and features; and
+- `selected`: the first compatible candidate in descending version order;
+- `available`: another version or origin also satisfies the dependency;
+- `incompatible`: packages for the crate exist, but none satisfy the required Debian version constraints and features; and
 - `missing`: no package for the crate exists in the selected sources.
 
 When standard output is a terminal, statuses are colored green for `selected`,
 gray for `available`, yellow for `incompatible`, and red for `missing`. The
-semver expression and each `+feature` in `REQUIREMENT` are colored independently:
+version expression and each `+feature` in `REQUIREMENT` are colored independently:
 yellow when a corresponding package exists but is incompatible, and red when it
 is missing. A hidden default-feature requirement is reflected in the version
 color. `-default` has the same color as the version because it is contextual
@@ -113,7 +132,7 @@ to be selected or available.
 Ubuntu Archive locations use `suite/component`. PPA locations use
 `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.
 
-APT selects candidates using the temporary sources constructed from the command arguments. The result predicts a build configured with the same series and PPAs; `sbuild` remains authoritative, and Archive changes may change the result.
+Ubucargo classifies candidates from the APT sources constructed from the command arguments. The result predicts a build configured with the same series and PPAs; `sbuild` remains authoritative, and Archive changes may change the result.
 
 To build against the same staging repositories, pass them to `sbuild` with `--extra-repository` and `--extra-repository-key` as appropriate.
 
