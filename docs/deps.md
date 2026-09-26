@@ -128,6 +128,10 @@ status. Set `NO_COLOR` to disable colors; redirected output is always plain text
 APT alternatives are satisfied when any alternative resolves. When a dependency
 requires multiple feature packages, all of them must resolve for the dependency
 to be selected or available.
+After architecture and build-profile filtering, alternatives involving Rust
+libraries must all refer to the same crate and feature; different version
+suffixes are allowed. Mixed Rust/non-Rust alternatives are rejected, while
+wholly non-Rust groups are ignored.
 
 Ubuntu Archive locations use `suite/component`. PPA locations use
 `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.

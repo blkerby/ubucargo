@@ -79,17 +79,19 @@ fn collect_dependencies(
     for entry in relations.iter() {
         let mut alternatives = Vec::new();
         let mut identity = None;
+        let mut has_non_rust_alternative = false;
         for relation in &entry {
             if !relation_applies(relation, architecture)? {
                 continue;
             }
-            // Only consider dependencies having the form of a Rust library package
-            // (Other dependencies are not in scope of the `ubucargo deps` report.)
             let Some((name, feature)) = parse_rust_package_name(&relation.name) else {
+                has_non_rust_alternative = true;
                 continue;
             };
             if identity.is_some() && identity != Some((name, feature)) {
-                bail!("Rust dependency alternatives refer to different features: {entry:?}");
+                bail!(
+                    "Dependency alternatives must refer to the same Rust crate and feature: {entry:?}"
+                );
             }
             identity = Some((name, feature));
             alternatives.push(PackageRequirement {
@@ -98,6 +100,11 @@ fn collect_dependencies(
             });
         }
         if let Some((name, feature)) = identity {
+            if has_non_rust_alternative {
+                bail!(
+                    "Dependency alternatives are not expected to mix Rust crates with other dependencies: {entry:?}"
+                );
+            }
             grouped
                 .entry(name.to_owned())
                 .or_default()
@@ -130,11 +137,12 @@ fn relation_applies(relation: &Relation, architecture: &str) -> Result<bool> {
             return Ok(false);
         }
     }
-    let profile_valid = relation.profiles.is_empty() || relation.profiles.iter().any(|group| {
-        group
-            .iter()
-            .all(|profile| matches!(profile, BuildProfile::Disabled(_)))
-    });
+    let profile_valid = relation.profiles.is_empty()
+        || relation.profiles.iter().any(|group| {
+            group
+                .iter()
+                .all(|profile| matches!(profile, BuildProfile::Disabled(_)))
+        });
     Ok(profile_valid)
 }
 
@@ -220,19 +228,61 @@ mod tests {
     }
 
     #[test]
-    /// Rejects alternatives that cannot belong to one Cargo feature.
-    fn rejects_mixed_feature_alternatives() {
-        let control = indoc! {r#"
-            Source: rust-example
-            Build-Depends: librust-serde+alloc-dev | librust-serde+std-dev
-
-            Package: librust-example-dev
-            Architecture: any
-            Description: example
-        "#};
+    /// Rejects applicable alternatives mixing Rust crates, features, or package kinds.
+    fn rejects_mixed_alternatives() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), control).unwrap();
-        assert!(read_dependencies(file.path(), "amd64").is_err());
+        for relations in [
+            "librust-serde+alloc-dev | librust-serde+std-dev",
+            "librust-serde-dev | librust-syn-dev",
+            "librust-serde-dev | other-package",
+            "other-package | librust-serde-dev",
+        ] {
+            fs::write(
+                file.path(),
+                format!("Source: rust-example\nBuild-Depends: {relations}\n"),
+            )
+            .unwrap();
+            let error = read_dependencies(file.path(), "amd64").unwrap_err();
+            assert!(
+                format!("{error:#}").contains("same Rust crate and feature"),
+                "{relations}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    /// Ignores non-Rust groups and filters alternatives before checking their identities.
+    fn accepts_applicable_alternatives() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for (relations, expected_alternatives) in [
+            ("other-package | another-package", 0),
+            ("librust-serde-1-dev | librust-serde-2-dev", 2),
+            ("librust-serde-dev | other-package [arm64]", 1),
+            ("other-package [arm64] | librust-serde-dev", 1),
+            ("librust-serde-dev | other-package <stage1>", 1),
+            ("other-package <stage1> | librust-serde-dev", 1),
+            ("librust-serde-dev [arm64] | other-package", 0),
+            ("other-package | librust-serde-dev <stage1>", 0),
+            ("librust-serde-dev [arm64] | other-package <stage1>", 0),
+        ] {
+            fs::write(
+                file.path(),
+                format!("Source: rust-example\nBuild-Depends: {relations}\n"),
+            )
+            .unwrap();
+            let dependencies = read_dependencies(file.path(), "amd64").unwrap();
+            if expected_alternatives == 0 {
+                assert!(dependencies.is_empty(), "{relations}");
+            } else {
+                assert_eq!(dependencies.len(), 1, "{relations}");
+                assert_eq!(dependencies[0].name, "serde", "{relations}");
+                assert_eq!(
+                    dependencies[0].debian_requirements[&None][0].len(),
+                    expected_alternatives,
+                    "{relations}"
+                );
+            }
+        }
     }
 
     #[test]
