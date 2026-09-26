@@ -60,6 +60,10 @@ pub struct DepArgs {
     /// Debian architecture; defaults to dpkg --print-architecture.
     #[arg(long, value_name = "ARCH")]
     pub architecture: Option<String>,
+
+    /// Retain the temporary debcargo staging directory for inspection.
+    #[arg(long)]
+    pub keep_staging: bool,
 }
 
 /// Availability of one displayed requirement component.
@@ -130,7 +134,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
         args.version.as_deref(),
         args.local_crate.as_deref(),
     )?;
-    let generated = generate::generate_package(&resolved, false)?;
+    let generated = generate::generate_package(&resolved, args.keep_staging)?;
     let dependencies =
         control::read_dependencies(&generated.source.join("debian/control"), &architecture)?;
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;

@@ -86,6 +86,7 @@ mod tests {
                 "ppa:example/rust-staging",
                 "--architecture",
                 "arm64",
+                "--keep-staging",
             ],
         ] {
             Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments)).unwrap();
