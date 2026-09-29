@@ -30,7 +30,7 @@ pub fn read_top_changelog(path: &Path) -> Result<TopChangelog> {
 /// Requires the top changelog upstream to describe the current root Cargo release.
 pub fn validate_top_changelog(
     top: &TopChangelog,
-    cargo: &str,
+    cargo_version: &str,
     cargo_upstream: &str,
 ) -> Result<()> {
     if top.upstream != cargo_upstream
