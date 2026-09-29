@@ -100,7 +100,7 @@ pub fn load_candidates(
 
     let mut update = Command::new("apt-get");
     view.configure(&mut update);
-    // Let indextargets validate and reuse the binary cache, rebuilding if needed.
+    // Retain any existing package cache, to be validated and reused below by indextargets if possible.
     update.args(["-o", "pkgCacheFile::Generate=false"]);
     run_command(update.arg("update"), "apt-get update")?;
 
@@ -147,7 +147,7 @@ pub fn load_candidates(
     Ok(candidates)
 }
 
-/// Locks the shared view and replaces its sources only when their contents change.
+/// Locks the shared APT view, replacing its sources only when their contents change.
 fn prepare_view(
     cache: &Path,
     series: &str,
@@ -163,7 +163,6 @@ fn prepare_view(
         .read(true)
         .write(true)
         .open(cache.join("view.lock"))?;
-    // ponytail: serialize shared-view queries; separate views if concurrency matters.
     lock.lock().context("lock shared APT view")?;
     for directory in ["sourceparts", "preferences.d", "lists/partial", "keys"] {
         fs::create_dir_all(cache.join(directory))?;

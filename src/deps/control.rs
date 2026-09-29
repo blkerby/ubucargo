@@ -231,11 +231,23 @@ mod tests {
     /// Rejects applicable alternatives mixing Rust crates, features, or package kinds.
     fn rejects_mixed_alternatives() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        for relations in [
-            "librust-serde+alloc-dev | librust-serde+std-dev",
-            "librust-serde-dev | librust-syn-dev",
-            "librust-serde-dev | other-package",
-            "other-package | librust-serde-dev",
+        for (relations, expected_error) in [
+            (
+                "librust-serde+alloc-dev | librust-serde+std-dev",
+                "same Rust crate and feature",
+            ),
+            (
+                "librust-serde-dev | librust-syn-dev",
+                "same Rust crate and feature",
+            ),
+            (
+                "librust-serde-dev | other-package",
+                "not expected to mix Rust crates with other dependencies",
+            ),
+            (
+                "other-package | librust-serde-dev",
+                "not expected to mix Rust crates with other dependencies",
+            ),
         ] {
             fs::write(
                 file.path(),
@@ -244,7 +256,7 @@ mod tests {
             .unwrap();
             let error = read_dependencies(file.path(), "amd64").unwrap_err();
             assert!(
-                format!("{error:#}").contains("same Rust crate and feature"),
+                format!("{error:#}").contains(expected_error),
                 "{relations}: {error:#}"
             );
         }

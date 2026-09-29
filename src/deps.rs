@@ -107,7 +107,7 @@ struct Row {
     location: String,
     /// Debian package version.
     version: String,
-    /// Cargo-style requirement components classified for this candidate.
+    /// Version and feature requirement components classified for this candidate.
     requirement: Vec<RequirementPart>,
 }
 
@@ -399,21 +399,13 @@ fn classify_requirement(
 
 /// Reports whether one binary package satisfies every entry for a dependency.
 fn satisfies(dependency: &Dependency, candidate: &PackageCandidate) -> bool {
-    for feature in dependency.debian_requirements.values() {
-        for alternatives in feature {
-            let mut entry_satisfied = false;
-            for requirement in alternatives {
-                if satisfies_package(requirement, candidate) {
-                    entry_satisfied = true;
-                    break;
-                }
-            }
-            if !entry_satisfied {
-                return false;
-            }
-        }
-    }
-    true
+    dependency.debian_requirements.values().all(|feature| {
+        feature.iter().all(|alternatives| {
+            alternatives.iter().any(|requirement| {
+                satisfies_package(requirement, candidate)
+            })
+        })
+    })
 }
 
 /// Reports whether one candidate satisfies one concrete or virtual package relation.
