@@ -88,8 +88,6 @@ struct RequirementPart {
 
 /// Feature identity used to recognize a related package with the wrong relation.
 enum RequirementKind<'a> {
-    /// Any package for the crate when no featureless relation was generated.
-    Any,
     /// A package relation without a feature component.
     Base,
     /// A package relation for the named Cargo feature.
@@ -224,39 +222,42 @@ fn make_requirement(
     let base = dependency.debian_requirements.get(&None);
     let mut requirements = Vec::new();
     let kind = if let Some(default) = default {
-        for alternatives in default {
-            requirements.push(alternatives.iter().collect());
-        }
+        requirements.extend_from_slice(default);
         if let Some(base) = base {
-            for alternatives in base {
-                requirements.push(alternatives.iter().collect());
-            }
+            requirements.extend_from_slice(base);
         }
         RequirementKind::Feature("default")
     } else if let Some(base) = base {
-        for alternatives in base {
-            requirements.push(alternatives.iter().collect());
-        }
+        requirements.extend_from_slice(base);
         RequirementKind::Base
     } else {
-        if let Some(feature) = dependency.debian_requirements.values().next() {
-            for entry in feature {
-                requirements.push(entry.iter().collect());
+        // Debcargo feature packages depend on the bare library from the same source,
+        // so feature-only relations imply the same relations on the bare library.
+        for feature in dependency.debian_requirements.values() {
+            for requirement in feature {
+                // The collector has already validated the crate and feature identity.
+                let body = requirement.name.strip_suffix("-dev").unwrap();
+                let base = body.split('+').next().unwrap();
+                requirements.push(PackageRequirement {
+                    name: format!("{base}-dev"),
+                    version: requirement.version.clone(),
+                });
             }
         }
-        RequirementKind::Any
+        RequirementKind::Base
     };
-    let version_status = classify_requirement(&requirements, candidate, &dependency.name, kind);
-    let version_text = format_version_requirements(&dependency.name, &requirements);
+    let base_version_status =
+        classify_requirement(&requirements, candidate, &dependency.name, kind);
+    let base_version_text = format_version_requirements(&dependency.name, &requirements);
     output.push(RequirementPart {
-        text: version_text.clone(),
-        status: version_status,
+        text: base_version_text.clone(),
+        status: base_version_status,
     });
 
     if default.is_none() {
         output.push(RequirementPart {
             text: "-default".to_owned(),
-            status: version_status,
+            status: base_version_status,
         });
     }
     for (feature, feature_requirements) in &dependency.debian_requirements {
@@ -266,19 +267,16 @@ fn make_requirement(
         if feature == "default" {
             continue;
         }
-        let mut requirements = Vec::new();
-        for alternatives in feature_requirements {
-            requirements.push(alternatives.iter().collect());
-        }
-        let feature_text = format_version_requirements(&dependency.name, &requirements);
+        let feature_version_text =
+            format_version_requirements(&dependency.name, feature_requirements);
         output.push(RequirementPart {
-            text: if feature_text == version_text {
+            text: if feature_version_text == base_version_text {
                 format!("+{feature}")
             } else {
-                format!("+{feature}({feature_text})")
+                format!("+{feature}({feature_version_text})")
             },
             status: classify_requirement(
-                &requirements,
+                feature_requirements,
                 candidate,
                 &dependency.name,
                 RequirementKind::Feature(feature),
@@ -288,79 +286,54 @@ fn make_requirement(
     output
 }
 
-/// Formats package-name version suffixes and Debian bounds, preserving AND/OR groups.
-fn format_version_requirements(
-    crate_name: &str,
-    requirements: &[Vec<&PackageRequirement>],
-) -> String {
+/// Formats package-name version suffixes and Debian bounds as a comma-separated AND list.
+fn format_version_requirements(crate_name: &str, requirements: &[PackageRequirement]) -> String {
     let prefix = format!("librust-{crate_name}");
-    let mut groups = BTreeSet::new();
+    let mut relations = BTreeSet::new();
     let mut lines = BTreeSet::new();
-    for alternatives in requirements {
-        let mut group = BTreeSet::new();
-        for requirement in alternatives {
-            // The collector has already validated the crate and feature identity.
-            let body = requirement.name.strip_suffix("-dev").unwrap();
-            let base = body.split('+').next().unwrap();
-            let line = base
-                .strip_prefix(&prefix)
-                .unwrap()
-                .strip_prefix('-')
-                .unwrap_or("*");
-            let bound = match &requirement.version {
-                Some((constraint, version)) => format!("{constraint}{version}"),
-                None => String::new(),
-            };
-            lines.insert(line);
-            group.insert((line, bound));
-        }
-        groups.insert(group);
+    for requirement in requirements {
+        // The collector has already validated the crate and feature identity.
+        let body = requirement.name.strip_suffix("-dev").unwrap();
+        let base = body.split('+').next().unwrap();
+        let line = base
+            .strip_prefix(&prefix)
+            .unwrap()
+            .strip_prefix('-')
+            .unwrap_or("*");
+        let bound = match &requirement.version {
+            Some((constraint, version)) => format!("{constraint}{version}"),
+            None => String::new(),
+        };
+        lines.insert(line);
+        relations.insert((line, bound));
     }
-    let shared_line = if lines.len() == 1 {
-        lines.first().copied()
-    } else {
-        None
-    };
-    let multiple_groups = groups.len() > 1;
-    let mut expressions = Vec::new();
-    for group in groups {
-        let mut alternatives = Vec::new();
-        let mut unrestricted = false;
-        for (line, bound) in group {
-            if shared_line.is_some() {
-                if bound.is_empty() {
-                    unrestricted = true;
-                    break;
-                }
-                alternatives.push(bound);
-            } else if bound.is_empty() {
-                alternatives.push(line.to_owned());
-            } else {
-                alternatives.push(format!("{line} ({bound})"));
+    if let [line] = Vec::from_iter(lines).as_slice() {
+        // Factor out the shared line; an unbounded relation adds nothing beyond it.
+        let mut bounds = Vec::new();
+        for (_, bound) in relations {
+            if !bound.is_empty() {
+                bounds.push(bound);
             }
         }
-        if unrestricted {
-            continue;
+        if bounds.is_empty() {
+            return (*line).to_owned();
         }
-        let expression = alternatives.join(" | ");
-        expressions.push(if alternatives.len() > 1 && multiple_groups {
-            format!("({expression})")
+        return format!("{line} ({})", bounds.join(", "));
+    }
+    let mut expressions = Vec::new();
+    for (line, bound) in relations {
+        if bound.is_empty() {
+            expressions.push(line.to_owned());
         } else {
-            expression
-        });
+            expressions.push(format!("{line} ({bound})"));
+        }
     }
-    let expression = expressions.join(", ");
-    match shared_line {
-        Some(line) if expression.is_empty() => line.to_owned(),
-        Some(line) => format!("{line} ({expression})"),
-        None if expression.is_empty() => "*".to_owned(),
-        None => expression,
-    }
+    expressions.join(", ")
 }
 
 /// Classifies one visible requirement component against a package candidate.
 fn classify_requirement(
-    requirements: &[Vec<&PackageRequirement>],
+    requirements: &[PackageRequirement],
     candidate: Option<&PackageCandidate>,
     crate_name: &str,
     kind: RequirementKind<'_>,
@@ -368,17 +341,10 @@ fn classify_requirement(
     let Some(candidate) = candidate else {
         return RequirementStatus::Missing;
     };
-    let mut satisfied = !requirements.is_empty();
-    for alternatives in requirements {
-        if !alternatives
-            .iter()
-            .any(|requirement| satisfies_package(requirement, candidate))
-        {
-            satisfied = false;
-            break;
-        }
-    }
-    if satisfied {
+    if requirements
+        .iter()
+        .all(|requirement| satisfies_package(requirement, candidate))
+    {
         return RequirementStatus::Satisfied;
     }
     for provided in candidate.provides.keys() {
@@ -386,7 +352,6 @@ fn classify_requirement(
             continue;
         };
         let related = match kind {
-            RequirementKind::Any => true,
             RequirementKind::Base => provided_feature.is_none(),
             RequirementKind::Feature(feature) => provided_feature == Some(feature),
         };
@@ -400,11 +365,9 @@ fn classify_requirement(
 /// Reports whether one binary package satisfies every entry for a dependency.
 fn satisfies(dependency: &Dependency, candidate: &PackageCandidate) -> bool {
     dependency.debian_requirements.values().all(|feature| {
-        feature.iter().all(|alternatives| {
-            alternatives.iter().any(|requirement| {
-                satisfies_package(requirement, candidate)
-            })
-        })
+        feature
+            .iter()
+            .all(|requirement| satisfies_package(requirement, candidate))
     })
 }
 
@@ -532,30 +495,30 @@ mod tests {
                 name: "serde".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     Some("derive".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-1+derive-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 )]),
             },
             Dependency {
                 name: "serde".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     None,
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-2-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 )]),
             },
             Dependency {
                 name: "missing".to_owned(),
                 debian_requirements: BTreeMap::from([(
                     None,
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-missing-1-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 )]),
             },
         ];
@@ -574,13 +537,13 @@ mod tests {
             candidate(
                 "1.0.219-1",
                 "ppa:example/rust-staging (noble)",
-                &["librust-serde-1+derive-dev"],
+                &["librust-serde-1-dev", "librust-serde-1+derive-dev"],
             ),
             duplicate,
             candidate(
                 "1.0.217-1",
                 "noble-updates/universe",
-                &["librust-serde-1+derive-dev"],
+                &["librust-serde-1-dev", "librust-serde-1+derive-dev"],
             ),
         ];
         let rows = classify(&dependencies, &candidates);
@@ -653,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    /// Compacts real control relations without losing feature exceptions or alternatives.
+    /// Compacts real control relations without losing feature exceptions.
     fn formats_debian_requirements() {
         let file = tempfile::NamedTempFile::new().unwrap();
         for (relations, expected) in [
@@ -670,21 +633,16 @@ mod tests {
                 "1 (<<2, >=1) +derive",
             ),
             (
-                "librust-foo-1-dev | librust-foo-2-dev, librust-foo-1+derive-dev | librust-foo-2+derive-dev",
-                "1 | 2 -default +derive",
-            ),
-            (
                 "librust-foo-dev (>= 1:1.0-2~ubuntu1), librust-foo+derive-dev (>= 1:1.0-2~ubuntu1)",
                 "* (>=1:1.0-2~ubuntu1) -default +derive",
             ),
             (
                 "librust-foo-1+alloc-dev, librust-foo-2+derive-dev",
-                "1 -default +alloc +derive(2)",
+                "1, 2 -default +alloc(1) +derive(2)",
             ),
-            ("librust-foo-dev | librust-foo-1-dev", "* | 1 -default"),
             (
-                "librust-foo-1-dev (>= 1) | librust-foo-2-dev (>= 2), librust-foo-1-dev (<< 3)",
-                "1 (<<3), (1 (>=1) | 2 (>=2)) -default",
+                "librust-foo-1-dev (>= 1.2), librust-foo-2-dev (<< 2.5)",
+                "1 (>=1.2), 2 (<<2.5) -default",
             ),
             (
                 "librust-foo-1-dev, librust-foo-1+default-dev, librust-foo-1+derive-dev",
@@ -714,34 +672,34 @@ mod tests {
             debian_requirements: BTreeMap::from([
                 (
                     None,
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-1-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 ),
                 (
                     Some("alloc".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-1+alloc-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 ),
                 (
                     Some("derive".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-1+derive-dev".to_owned(),
                         version: Some((
                             VersionConstraint::GreaterThanEqual,
                             "1.0.200-~~".parse().unwrap(),
                         )),
-                    }]],
+                    }],
                 ),
                 (
                     Some("std".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-serde-1+std-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 ),
             ]),
         };
@@ -776,25 +734,25 @@ mod tests {
                 (
                     Some("default".to_owned()),
                     vec![
-                        vec![PackageRequirement {
+                        PackageRequirement {
                             name: "librust-foo-1+default-dev".to_owned(),
                             version: Some((
                                 VersionConstraint::GreaterThanEqual,
                                 "1.0.0".parse().unwrap(),
                             )),
-                        }],
-                        vec![PackageRequirement {
+                        },
+                        PackageRequirement {
                             name: "librust-foo-1+default-dev".to_owned(),
                             version: Some((VersionConstraint::LessThan, "2.0.0".parse().unwrap())),
-                        }],
+                        },
                     ],
                 ),
                 (
                     Some("special".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-foo-1+special-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 ),
             ]),
         };
@@ -813,10 +771,10 @@ mod tests {
             name: "foo".to_owned(),
             debian_requirements: BTreeMap::from([(
                 Some("formatting".to_owned()),
-                vec![vec![PackageRequirement {
+                vec![PackageRequirement {
                     name: "librust-foo-0.3+formatting-dev".to_owned(),
                     version: None,
-                }]],
+                }],
             )]),
         };
         let no_default_parts = make_requirement(
@@ -824,11 +782,23 @@ mod tests {
             Some(&candidate(
                 "0.2.0",
                 "noble/universe",
-                &["librust-foo-0.2+formatting-dev"],
+                &["librust-foo-0.2-dev", "librust-foo-0.2+formatting-dev"],
             )),
         );
         assert_eq!(no_default_parts[0].status, RequirementStatus::Incompatible);
         assert_eq!(no_default_parts[1].status, no_default_parts[0].status);
+
+        // A missing feature package does not make the implied bare-library version incompatible.
+        let feature_parts = make_requirement(
+            &no_default_dependency,
+            Some(&candidate(
+                "0.3.1",
+                "noble/universe",
+                &["librust-foo-0.3-dev"],
+            )),
+        );
+        assert_eq!(feature_parts[0].status, RequirementStatus::Satisfied);
+        assert_eq!(feature_parts[2].status, RequirementStatus::Missing);
     }
 
     #[test]
@@ -839,25 +809,25 @@ mod tests {
             debian_requirements: BTreeMap::from([
                 (
                     Some("default".to_owned()),
-                    vec![vec![PackageRequirement {
+                    vec![PackageRequirement {
                         name: "librust-foo-1+default-dev".to_owned(),
                         version: None,
-                    }]],
+                    }],
                 ),
                 (
                     Some("special".to_owned()),
                     vec![
-                        vec![PackageRequirement {
+                        PackageRequirement {
                             name: "librust-foo-1+special-dev".to_owned(),
                             version: Some((
                                 VersionConstraint::GreaterThanEqual,
                                 "1.0.0".parse().unwrap(),
                             )),
-                        }],
-                        vec![PackageRequirement {
+                        },
+                        PackageRequirement {
                             name: "librust-foo-1+special-dev".to_owned(),
                             version: Some((VersionConstraint::LessThan, "1.5.0".parse().unwrap())),
-                        }],
+                        },
                     ],
                 ),
             ]),

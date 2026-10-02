@@ -10,7 +10,7 @@ use debian_control::{
 };
 use debversion::Version;
 
-/// One Debian package alternative in a dependency expression.
+/// One Debian package relation in a dependency expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageRequirement {
     /// Binary or virtual package name.
@@ -20,9 +20,8 @@ pub struct PackageRequirement {
 }
 
 /// Debian requirements grouped by Cargo feature, with `None` for the base crate.
-/// Each outer-vector entry is a required dependency group (comma-separated AND).
-/// Each inner vector contains alternatives for that group (`|`-separated OR).
-pub type FeatureRequirements = BTreeMap<Option<String>, Vec<Vec<PackageRequirement>>>;
+/// Every relation in a vector is required (comma-separated AND).
+pub type FeatureRequirements = BTreeMap<Option<String>, Vec<PackageRequirement>>;
 
 /// Debian requirements belonging to one Rust crate.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,48 +69,40 @@ pub fn read_dependencies(control_path: &Path, architecture: &str) -> Result<Vec<
     Ok(dependencies)
 }
 
-/// Adds applicable Rust relations to their crate and feature groups.
+/// Adds applicable Rust relations to their crate and feature groups,
+/// rejecting `|` alternatives involving Rust packages, which debcargo never generates.
 fn collect_dependencies(
     relations: &Relations,
     architecture: &str,
     grouped: &mut BTreeMap<String, FeatureRequirements>,
 ) -> Result<()> {
     for entry in relations.iter() {
-        let mut alternatives = Vec::new();
-        let mut identity = None;
-        let mut has_non_rust_alternative = false;
+        let mut applicable = Vec::new();
         for relation in &entry {
-            if !relation_applies(relation, architecture)? {
-                continue;
+            if relation_applies(relation, architecture)? {
+                applicable.push(relation);
             }
-            let Some((name, feature)) = parse_rust_package_name(&relation.name) else {
-                has_non_rust_alternative = true;
-                continue;
-            };
-            if identity.is_some() && identity != Some((name, feature)) {
-                bail!(
-                    "Dependency alternatives must refer to the same Rust crate and feature: {entry:?}"
-                );
+        }
+        let [relation] = applicable.as_slice() else {
+            for relation in &applicable {
+                if parse_rust_package_name(&relation.name).is_some() {
+                    bail!("Rust dependency alternatives are not supported: {entry:?}");
+                }
             }
-            identity = Some((name, feature));
-            alternatives.push(PackageRequirement {
+            continue;
+        };
+        let Some((name, feature)) = parse_rust_package_name(&relation.name) else {
+            continue;
+        };
+        grouped
+            .entry(name.to_owned())
+            .or_default()
+            .entry(feature.map(str::to_owned))
+            .or_default()
+            .push(PackageRequirement {
                 name: relation.name.clone(),
                 version: relation.version.clone(),
             });
-        }
-        if let Some((name, feature)) = identity {
-            if has_non_rust_alternative {
-                bail!(
-                    "Dependency alternatives are not expected to mix Rust crates with other dependencies: {entry:?}"
-                );
-            }
-            grouped
-                .entry(name.to_owned())
-                .or_default()
-                .entry(feature.map(str::to_owned))
-                .or_default()
-                .push(alternatives);
-        }
     }
     Ok(())
 }
@@ -192,7 +183,7 @@ mod tests {
             Build-Depends: debhelper-compat (= 13),
              librust-serde-1+derive-dev (>= 1.0.100-~~),
              librust-serde-1+std-dev,
-             librust-syn-2-dev | librust-syn-dev,
+             librust-syn-2-dev,
              librust-disabled-1-dev [arm64]
 
             Package: librust-example-dev
@@ -209,7 +200,7 @@ mod tests {
         assert_eq!(dependencies[0].name, "serde");
         assert_eq!(dependencies[0].debian_requirements.len(), 2);
         assert_eq!(dependencies[1].name, "syn");
-        assert_eq!(dependencies[1].debian_requirements[&None][0].len(), 2);
+        assert_eq!(dependencies[1].debian_requirements[&None].len(), 1);
     }
 
     #[test]
@@ -228,26 +219,15 @@ mod tests {
     }
 
     #[test]
-    /// Rejects applicable alternatives mixing Rust crates, features, or package kinds.
-    fn rejects_mixed_alternatives() {
+    /// Rejects applicable alternatives involving Rust packages.
+    fn rejects_rust_alternatives() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        for (relations, expected_error) in [
-            (
-                "librust-serde+alloc-dev | librust-serde+std-dev",
-                "same Rust crate and feature",
-            ),
-            (
-                "librust-serde-dev | librust-syn-dev",
-                "same Rust crate and feature",
-            ),
-            (
-                "librust-serde-dev | other-package",
-                "not expected to mix Rust crates with other dependencies",
-            ),
-            (
-                "other-package | librust-serde-dev",
-                "not expected to mix Rust crates with other dependencies",
-            ),
+        for relations in [
+            "librust-serde-1-dev | librust-serde-2-dev",
+            "librust-serde+alloc-dev | librust-serde+std-dev",
+            "librust-serde-dev | librust-syn-dev",
+            "librust-serde-dev | other-package",
+            "other-package | librust-serde-dev",
         ] {
             fs::write(
                 file.path(),
@@ -256,26 +236,25 @@ mod tests {
             .unwrap();
             let error = read_dependencies(file.path(), "amd64").unwrap_err();
             assert!(
-                format!("{error:#}").contains(expected_error),
+                format!("{error:#}").contains("alternatives are not supported"),
                 "{relations}: {error:#}"
             );
         }
     }
 
     #[test]
-    /// Ignores non-Rust groups and filters alternatives before checking their identities.
+    /// Ignores non-Rust groups and drops inapplicable alternatives before rejecting the rest.
     fn accepts_applicable_alternatives() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        for (relations, expected_alternatives) in [
-            ("other-package | another-package", 0),
-            ("librust-serde-1-dev | librust-serde-2-dev", 2),
-            ("librust-serde-dev | other-package [arm64]", 1),
-            ("other-package [arm64] | librust-serde-dev", 1),
-            ("librust-serde-dev | other-package <stage1>", 1),
-            ("other-package <stage1> | librust-serde-dev", 1),
-            ("librust-serde-dev [arm64] | other-package", 0),
-            ("other-package | librust-serde-dev <stage1>", 0),
-            ("librust-serde-dev [arm64] | other-package <stage1>", 0),
+        for (relations, expected_rust) in [
+            ("other-package | another-package", false),
+            ("librust-serde-dev | other-package [arm64]", true),
+            ("other-package [arm64] | librust-serde-dev", true),
+            ("librust-serde-dev | other-package <stage1>", true),
+            ("other-package <stage1> | librust-serde-dev", true),
+            ("librust-serde-dev [arm64] | other-package", false),
+            ("other-package | librust-serde-dev <stage1>", false),
+            ("librust-serde-dev [arm64] | other-package <stage1>", false),
         ] {
             fs::write(
                 file.path(),
@@ -283,16 +262,16 @@ mod tests {
             )
             .unwrap();
             let dependencies = read_dependencies(file.path(), "amd64").unwrap();
-            if expected_alternatives == 0 {
-                assert!(dependencies.is_empty(), "{relations}");
-            } else {
+            if expected_rust {
                 assert_eq!(dependencies.len(), 1, "{relations}");
                 assert_eq!(dependencies[0].name, "serde", "{relations}");
                 assert_eq!(
-                    dependencies[0].debian_requirements[&None][0].len(),
-                    expected_alternatives,
+                    dependencies[0].debian_requirements[&None].len(),
+                    1,
                     "{relations}"
                 );
+            } else {
+                assert!(dependencies.is_empty(), "{relations}");
             }
         }
     }
