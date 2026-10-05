@@ -50,11 +50,32 @@ in all modes, including when generation fails. Its path is printed to standard e
 
 ## Output
 
-The command reads the source paragraph's generated `Build-Depends` and reports
-its direct Rust library dependencies, represented by `librust-*-dev` package
-expressions. The report uses a freshly generated control file, which reflects
-debcargo configuration, enabled features, development dependencies, target
-conditions, and patches.
+The command reports the direct Rust library dependencies, represented by
+`librust-*-dev` package relations, that the generated package needs to build,
+install every binary package, and run its autopkgtests. It reads a freshly
+generated `debian/control` and `debian/tests/control`, which reflect debcargo
+configuration, features, development dependencies, target conditions, and patches.
+
+The report contains one table for each of these, in order, omitting empty tables:
+
+- `Package: NAME`: the `Depends` of each binary package, in control-file order;
+- `Source: NAME`: the source paragraph's `Build-Depends`, `Build-Depends-Arch`, and
+  `Build-Depends-Indep`; and
+- `Tests: NAME`: the `Depends` of all autopkgtests, which contain the crate's
+  development dependencies.
+
+The `Source` and `Tests` tables show only relations that no earlier table lists
+identically. For a library crate, the default build's relations already appear in
+its binary packages, so the `Source` table usually lists only binaries'
+dependencies and manual `build_depends` overrides. Relations to the package's own 
+binaries, substitution variables such as `${misc:Depends}`, and autopkgtest's `@`
+are not reported. Test `Architecture` restrictions are not applied, so every test's
+dependencies are reported.
+
+When features are collapsed, as debcargo does by default, one binary package lists
+the dependencies of all features. Otherwise, each feature package lists the
+dependencies that its feature adds directly; dependencies of features it enables
+appear in those features' tables.
 
 In source-package mode, `deps` does not read the existing `debian/control` or
 its `.debcargo.hint` file. Manual `Build-Depends` edits in `debian/control` are
@@ -65,15 +86,23 @@ through the patch stack are reflected in the report.
 The report shows each dependency and its candidates:
 
 ```text
+Package: librust-example-dev
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
 serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    1 +derive
             available     noble-updates/universe              1.0.217-1    1 +derive
 syn         incompatible  noble/universe                      1.0.109-2    2 -default
 foo         missing       -                                   -            3
+
+Tests: rust-example
+DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
+criterion   missing       -                                   -            0.5
 ```
 
+Columns are aligned across all tables.
 The dependency appears on the first row for a dependency; additional candidates
-leave it blank. The requirement is repeated because its colors describe each
+leave it blank. Each semver line of a crate is a separate dependency, so a
+package that requires both `librust-rand-0.8-dev` and `librust-rand-0.9-dev` has
+two `rand` rows, distinguished by their requirements. The requirement is repeated because its colors describe each
 candidate independently. `REQUIREMENT` is last so a long, sorted feature list
 may extend beyond the nominal column width without disturbing the other columns.
 Requirements are not truncated or wrapped by ubucargo.
@@ -97,8 +126,7 @@ A feature with different requirements displays its full expression explicitly:
 1 (>=1.0.100-~~) +derive(1 (>=1.0.200-~~)) +std
 ```
 
-Commas join required constraints (AND); `|` joins alternatives (OR), with
-parentheses preserving grouping. Formatting removes repeated expressions but
+Commas join required constraints (AND). Formatting removes repeated expressions but
 does not convert Debian bounds into Cargo ranges. Compatibility always uses the
 original Debian relations, including dependencies absent from Cargo metadata.
 
@@ -106,8 +134,10 @@ Default features are implicit in the report. `-default` means that the
 generated Debian dependency does not require the crate's `+default-dev`
 capability; it does not forbid a candidate from providing that capability.
 Other features remain explicit. The leading expression combines base and default
-requirements when present, otherwise uses the base requirements, or the first
-feature alphabetically when neither group exists. Other features show their own
+requirements when present, otherwise uses the base requirements. When neither
+group exists, it uses every feature's requirements with the feature removed from
+the package name, because each debcargo feature package depends on the base package
+from the same source. Other features show their own
 expression only when it differs from the leading expression. Each component is
 colored using its corresponding Debian relations.
 
@@ -128,13 +158,11 @@ information rather than a requirement that candidates must satisfy. Satisfied
 components remain neutral on every row, reserving green for the `selected`
 status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
 
-APT alternatives are satisfied when any alternative resolves. When a dependency
-requires multiple feature packages, all of them must resolve for the dependency
-to be selected or available.
-After architecture and build-profile filtering, alternatives involving Rust
-libraries must all refer to the same crate and feature; different version
-suffixes are allowed. Mixed Rust/non-Rust alternatives are rejected, while
-wholly non-Rust groups are ignored.
+When a dependency requires multiple feature packages, all of them must resolve
+from one candidate for the dependency to be selected or available.
+After architecture and build-profile filtering, `|` alternatives involving Rust
+libraries are rejected because debcargo does not generate them, while wholly
+non-Rust groups are ignored.
 
 Ubuntu Archive locations use `suite/component`. PPA locations use
 `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.
@@ -165,5 +193,5 @@ Every invocation asks APT to update the selected indexes. APT reuses unchanged f
 ## Exit status
 
 `deps` exits 0 when every dependency is satisfiable, 1 when at least one
-dependency is incompatible or missing, and 2 on command, staging, network, or
-metadata errors.
+dependency in any table is incompatible or missing, and 2 on command, staging,
+network, or metadata errors.

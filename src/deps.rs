@@ -17,13 +17,14 @@ use crate::{generate, resolve};
 
 use self::{
     apt::PackageCandidate,
-    control::{Dependency, PackageRequirement, parse_rust_package_name},
+    control::{DependencyOrigin, DependencySection, PackageRequirement, parse_rust_package_name},
 };
 
 const GREEN: &str = "\x1b[32m";
 const GRAY: &str = "\x1b[90m";
 const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
 /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
@@ -64,6 +65,28 @@ pub struct DepArgs {
     /// Retain the temporary debcargo staging directory for inspection.
     #[arg(long)]
     pub keep_staging: bool,
+}
+
+/// Debian requirements grouped by Cargo feature, with `None` for the base crate.
+/// Every relation in a vector is required (comma-separated AND).
+type FeatureRequirements = BTreeMap<Option<String>, Vec<PackageRequirement>>;
+
+/// Debian requirements belonging to one semver line of one Rust crate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Dependency {
+    /// Normalized Cargo crate name.
+    name: String,
+    /// Debian package requirements used for availability and feature checks.
+    debian_requirements: FeatureRequirements,
+}
+
+/// One display table after grouping requirements and suppressing covered relations.
+#[derive(Debug, Eq, PartialEq)]
+struct DependencyTable {
+    /// Formatted heading naming the declaring section.
+    heading: String,
+    /// Dependencies in crate and semver-line order.
+    dependencies: Vec<Dependency>,
 }
 
 /// Availability of one displayed requirement component.
@@ -133,15 +156,75 @@ pub fn run(args: DepArgs) -> Result<bool> {
         args.local_crate.as_deref(),
     )?;
     let generated = generate::generate_package(&resolved, args.keep_staging)?;
-    let dependencies =
-        control::read_dependencies(&generated.source.join("debian/control"), &architecture)?;
+    let sections = control::read_dependency_sections(&generated.source, &architecture)?;
+    let tables = prepare_tables(sections);
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
-    let rows = classify(&dependencies, &candidates);
+    let mut classified = Vec::new();
+    let mut unsatisfied = false;
+    for table in &tables {
+        let rows = classify(&table.dependencies, &candidates);
+        for row in &rows {
+            if matches!(row.status, "incompatible" | "missing") {
+                unsatisfied = true;
+            }
+        }
+        classified.push((table, rows));
+    }
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    print!("{}", format_table(&rows, color));
-    Ok(rows
-        .iter()
-        .any(|row| matches!(row.status, "incompatible" | "missing")))
+    print!("{}", format_tables(&classified, color));
+    Ok(unsatisfied)
+}
+
+/// Prepares display tables, retaining all binary relations and only new source/test relations.
+fn prepare_tables(sections: Vec<DependencySection>) -> Vec<DependencyTable> {
+    let mut seen = BTreeSet::new();
+    let mut tables = Vec::new();
+    for section in sections {
+        let mut shown = Vec::new();
+        for requirement in section.requirements {
+            if seen.insert(requirement.clone()) || section.origin == DependencyOrigin::Package {
+                shown.push(requirement);
+            }
+        }
+        let dependencies = group_dependencies(shown);
+        if !dependencies.is_empty() {
+            let label = match section.origin {
+                DependencyOrigin::Package => "Package",
+                DependencyOrigin::Source => "Source",
+                DependencyOrigin::Tests => "Tests",
+            };
+            tables.push(DependencyTable {
+                heading: format!("{label}: {}", section.name),
+                dependencies,
+            });
+        }
+    }
+    tables
+}
+
+/// Groups Rust relations by crate and semver line, then by feature, dropping duplicates.
+fn group_dependencies(requirements: Vec<PackageRequirement>) -> Vec<Dependency> {
+    let mut grouped: BTreeMap<(String, Option<String>), FeatureRequirements> = BTreeMap::new();
+    for requirement in requirements {
+        // The collector keeps only names that parse as Rust packages.
+        let (name, line, feature) = parse_rust_package_name(&requirement.name).unwrap();
+        let relations = grouped
+            .entry((name.to_owned(), line.map(str::to_owned)))
+            .or_default()
+            .entry(feature.map(str::to_owned))
+            .or_default();
+        if !relations.contains(&requirement) {
+            relations.push(requirement);
+        }
+    }
+    let mut dependencies = Vec::new();
+    for ((name, _), debian_requirements) in grouped {
+        dependencies.push(Dependency {
+            name,
+            debian_requirements,
+        });
+    }
+    dependencies
 }
 
 /// Classifies all candidates for each dependency in deterministic order.
@@ -150,7 +233,7 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
     for candidate in candidates {
         let mut crate_names = BTreeSet::new();
         for provided in candidate.provides.keys() {
-            if let Some((name, _)) = parse_rust_package_name(provided) {
+            if let Some((name, _, _)) = parse_rust_package_name(provided) {
                 crate_names.insert(name);
             }
         }
@@ -348,7 +431,7 @@ fn classify_requirement(
         return RequirementStatus::Satisfied;
     }
     for provided in candidate.provides.keys() {
-        let Some((name, provided_feature)) = parse_rust_package_name(provided) else {
+        let Some((name, _, provided_feature)) = parse_rust_package_name(provided) else {
             continue;
         };
         let related = match kind {
@@ -392,20 +475,22 @@ fn satisfies_package(requirement: &PackageRequirement, candidate: &PackageCandid
     }
 }
 
-/// Formats report rows as an unbordered, space-aligned table.
+/// Formats one headed, unbordered table per dependency table, separated by blank lines.
+/// Columns are aligned across all tables.
 /// The last column is not padded, so that an outlier long field
 /// avoids making the entire output too wide.
-fn format_table(rows: &[Row], color: bool) -> String {
+fn format_tables(tables: &[(&DependencyTable, Vec<Row>)], color: bool) -> String {
     let headers = ["DEPENDENCY", "STATUS", "LOCATION", "VERSION"];
     let mut widths = headers.map(str::len);
-    for row in rows {
-        widths[0] = widths[0].max(row.dependency.len());
-        widths[1] = widths[1].max(row.status.len());
-        widths[2] = widths[2].max(row.location.len());
-        widths[3] = widths[3].max(row.version.len());
+    for (_, rows) in tables {
+        for row in rows {
+            widths[0] = widths[0].max(row.dependency.len());
+            widths[1] = widths[1].max(row.status.len());
+            widths[2] = widths[2].max(row.location.len());
+            widths[3] = widths[3].max(row.version.len());
+        }
     }
-
-    let mut output = format!(
+    let header = format!(
         "{:<dependency_width$}  {:<status_width$}  {:<location_width$}  {:<version_width$}  REQUIREMENT\n",
         headers[0],
         headers[1],
@@ -416,50 +501,66 @@ fn format_table(rows: &[Row], color: bool) -> String {
         location_width = widths[2],
         version_width = widths[3],
     );
-    for row in rows {
-        let status = if color {
-            let code = match row.status {
-                "selected" => GREEN,
-                "available" => GRAY,
-                "incompatible" => YELLOW,
-                "missing" => RED,
-                _ => "",
-            };
-            format!("{code}{:<width$}{RESET}", row.status, width = widths[1])
-        } else {
-            format!("{:<width$}", row.status, width = widths[1])
-        };
-        let mut requirement = String::new();
-        for (index, part) in row.requirement.iter().enumerate() {
-            if index > 0 {
-                requirement.push(' ');
-            }
-            let code = if color {
-                match part.status {
-                    RequirementStatus::Satisfied => "",
-                    RequirementStatus::Incompatible => YELLOW,
-                    RequirementStatus::Missing => RED,
-                }
-            } else {
-                ""
-            };
-            requirement.push_str(code);
-            requirement.push_str(&part.text);
-            if !code.is_empty() {
-                requirement.push_str(RESET);
-            }
+
+    let mut output = String::new();
+    for (index, (table, rows)) in tables.iter().enumerate() {
+        if index > 0 {
+            output.push('\n');
         }
-        output.push_str(&format!(
-            "{:<dependency_width$}  {}  {:<location_width$}  {:<version_width$}  {}\n",
-            row.dependency,
-            status,
-            row.location,
-            row.version,
-            requirement,
-            dependency_width = widths[0],
-            location_width = widths[2],
-            version_width = widths[3],
-        ));
+        if color {
+            output.push_str(BOLD_CYAN);
+        }
+        output.push_str(&table.heading);
+        if color {
+            output.push_str(RESET);
+        }
+        output.push('\n');
+        output.push_str(&header);
+        for row in rows {
+            let status = if color {
+                let code = match row.status {
+                    "selected" => GREEN,
+                    "available" => GRAY,
+                    "incompatible" => YELLOW,
+                    "missing" => RED,
+                    _ => "",
+                };
+                format!("{code}{:<width$}{RESET}", row.status, width = widths[1])
+            } else {
+                format!("{:<width$}", row.status, width = widths[1])
+            };
+            let mut requirement = String::new();
+            for (index, part) in row.requirement.iter().enumerate() {
+                if index > 0 {
+                    requirement.push(' ');
+                }
+                let code = if color {
+                    match part.status {
+                        RequirementStatus::Satisfied => "",
+                        RequirementStatus::Incompatible => YELLOW,
+                        RequirementStatus::Missing => RED,
+                    }
+                } else {
+                    ""
+                };
+                requirement.push_str(code);
+                requirement.push_str(&part.text);
+                if !code.is_empty() {
+                    requirement.push_str(RESET);
+                }
+            }
+            output.push_str(&format!(
+                "{:<dependency_width$}  {}  {:<location_width$}  {:<version_width$}  {}\n",
+                row.dependency,
+                status,
+                row.location,
+                row.version,
+                requirement,
+                dependency_width = widths[0],
+                location_width = widths[2],
+                version_width = widths[3],
+            ));
+        }
     }
     output
 }
@@ -563,9 +664,93 @@ mod tests {
     }
 
     #[test]
-    /// Keeps requirements last and repeats them on continuation rows.
-    fn formats_rows() {
-        let mut rows = [
+    /// Prepares headed tables without repeating covered relations or combining semver lines.
+    fn prepares_tables() {
+        let control = indoc! {r"
+            Source: rust-example
+            Build-Depends: debhelper-compat (= 13),
+             librust-serde-1+derive-dev (>= 1.0.100-~~),
+             librust-criterion-0.5+default-dev,
+             librust-disabled-1-dev [arm64]
+
+            Package: librust-example-dev
+            Architecture: any
+            Depends:
+             ${misc:Depends},
+             librust-serde-1+derive-dev (>= 1.0.100-~~),
+             librust-rand-0.8-dev (>= 0.8.4),
+             librust-rand-0.10-dev
+            Provides: librust-example-1-dev (= ${binary:Version})
+            Description: example
+
+            Package: librust-example+std-dev
+            Architecture: any
+            Depends:
+             ${misc:Depends},
+             librust-example-dev (= ${binary:Version}),
+             librust-example+alloc-dev (= ${binary:Version})
+            Description: example
+
+            Package: librust-example+json-dev
+            Architecture: any
+            Depends:
+             ${misc:Depends},
+             librust-example-dev (= ${binary:Version}),
+             librust-serde-1+derive-dev (>= 1.0.100-~~),
+             librust-serde-json-1+default-dev
+            Description: example
+        "};
+        let tests = indoc! {r"
+            Test-Command: /usr/share/cargo/bin/cargo-auto-test example 1.0.0 --all-targets
+            Features: test-name=rust-example:@
+            Depends: dh-cargo (>= 33~), rustc (>= 1.70), librust-criterion-0.5+default-dev, librust-quickcheck-1+default-dev, @
+            Restrictions: allow-stderr
+        "};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("debian/tests")).unwrap();
+        std::fs::write(root.path().join("debian/control"), control).unwrap();
+        std::fs::write(root.path().join("debian/tests/control"), tests).unwrap();
+        let sections = control::read_dependency_sections(root.path(), "amd64").unwrap();
+        let tables = prepare_tables(sections);
+
+        let mut summary = Vec::new();
+        for table in &tables {
+            let mut names = Vec::new();
+            for dependency in &table.dependencies {
+                names.push(dependency.name.as_str());
+            }
+            summary.push((table.heading.as_str(), names));
+        }
+        assert_eq!(
+            summary,
+            [
+                (
+                    "Package: librust-example-dev",
+                    vec!["rand", "rand", "serde"]
+                ),
+                (
+                    "Package: librust-example+json-dev",
+                    vec!["serde", "serde-json"]
+                ),
+                ("Source: rust-example", vec!["criterion"]),
+                ("Tests: rust-example", vec!["quickcheck"]),
+            ]
+        );
+        // Each semver line of a crate is classified independently.
+        assert_eq!(
+            tables[0].dependencies[0].debian_requirements[&None][0].name,
+            "librust-rand-0.10-dev"
+        );
+        assert_eq!(
+            tables[0].dependencies[1].debian_requirements[&None][0].name,
+            "librust-rand-0.8-dev"
+        );
+    }
+
+    #[test]
+    /// Heads each table, aligns columns across tables, and keeps requirements last.
+    fn formats_tables() {
+        let rows = vec![
             Row {
                 dependency: "serde".to_owned(),
                 status: "selected",
@@ -599,26 +784,125 @@ mod tests {
                 ],
             },
         ];
+        let base = DependencyTable {
+            heading: "Package: librust-example-dev".to_owned(),
+            dependencies: Vec::new(),
+        };
+        let tests = DependencyTable {
+            heading: "Tests: rust-example".to_owned(),
+            dependencies: Vec::new(),
+        };
+        let test_rows = vec![Row {
+            dependency: "quickcheck".to_owned(),
+            status: "missing",
+            location: "-".to_owned(),
+            version: "-".to_owned(),
+            requirement: vec![RequirementPart {
+                text: "1".to_owned(),
+                status: RequirementStatus::Missing,
+            }],
+        }];
         assert_eq!(
-            format_table(&rows, false),
+            format_tables(&[(&base, rows), (&tests, test_rows)], false),
             indoc! {r"
+                Package: librust-example-dev
                 DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT
                 serde       selected   noble/universe          1.0.219-1  1 +derive
                             available  noble-updates/universe  1.0.217-1  1 +derive
+
+                Tests: rust-example
+                DEPENDENCY  STATUS     LOCATION                VERSION    REQUIREMENT
+                quickcheck  missing    -                       -          1
             "}
         );
-        let colored = format_table(&rows, true);
+    }
+
+    #[test]
+    /// Colors every section heading and resets the style before column headers.
+    fn colors_headings() {
+        for heading in [
+            "Package: librust-example-dev",
+            "Source: rust-example",
+            "Tests: rust-example",
+        ] {
+            let table = DependencyTable {
+                heading: heading.to_owned(),
+                dependencies: Vec::new(),
+            };
+            let tables = [(&table, Vec::new())];
+            assert!(
+                format_tables(&tables, true)
+                    .starts_with(&format!("\x1b[1;36m{heading}\x1b[0m\nDEPENDENCY"))
+            );
+            let plain = format_tables(&tables, false);
+            assert!(plain.starts_with(&format!("{heading}\nDEPENDENCY")));
+            assert!(!plain.contains('\x1b'));
+        }
+    }
+
+    #[test]
+    /// Colors statuses and each requirement part independently.
+    fn colors_rows() {
+        let table = DependencyTable {
+            heading: "Package: librust-example-dev".to_owned(),
+            dependencies: Vec::new(),
+        };
+        let mut rows = vec![
+            Row {
+                dependency: "serde".to_owned(),
+                status: "selected",
+                location: "noble/universe".to_owned(),
+                version: "1.0.219-1".to_owned(),
+                requirement: vec![
+                    RequirementPart {
+                        text: "1".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                    RequirementPart {
+                        text: "+derive".to_owned(),
+                        status: RequirementStatus::Satisfied,
+                    },
+                ],
+            },
+            Row {
+                dependency: String::new(),
+                status: "available",
+                location: "noble-updates/universe".to_owned(),
+                version: "1.0.217-1".to_owned(),
+                requirement: Vec::new(),
+            },
+        ];
+        rows[1].requirement.clear();
+        let colored = format_tables(&[(&table, rows)], true);
         assert!(colored.contains("\x1b[32mselected \x1b[0m"));
         assert!(colored.contains("\x1b[90mavailable\x1b[0m"));
-        rows[0].requirement[0].status = RequirementStatus::Incompatible;
-        rows[0].requirement[1].status = RequirementStatus::Missing;
-        assert!(format_table(&rows, true).contains("\x1b[33m1\x1b[0m \x1b[31m+derive\x1b[0m"));
+        let rows = vec![Row {
+            dependency: "serde".to_owned(),
+            status: "incompatible",
+            location: "noble/universe".to_owned(),
+            version: "1.0.219-1".to_owned(),
+            requirement: vec![
+                RequirementPart {
+                    text: "1".to_owned(),
+                    status: RequirementStatus::Incompatible,
+                },
+                RequirementPart {
+                    text: "+derive".to_owned(),
+                    status: RequirementStatus::Missing,
+                },
+            ],
+        }];
+        assert!(
+            format_tables(&[(&table, rows)], true)
+                .contains("\x1b[33m1\x1b[0m \x1b[31m+derive\x1b[0m")
+        );
     }
 
     #[test]
     /// Compacts real control relations without losing feature exceptions.
     fn formats_debian_requirements() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("debian")).unwrap();
         for (relations, expected) in [
             (
                 "librust-foo-1+default-dev (>= 1.0.100-~~), librust-foo-1+derive-dev (>= 1.0.100-~~), librust-foo-1+std-dev (>= 1.0.100-~~)",
@@ -637,25 +921,18 @@ mod tests {
                 "* (>=1:1.0-2~ubuntu1) -default +derive",
             ),
             (
-                "librust-foo-1+alloc-dev, librust-foo-2+derive-dev",
-                "1, 2 -default +alloc(1) +derive(2)",
-            ),
-            (
-                "librust-foo-1-dev (>= 1.2), librust-foo-2-dev (<< 2.5)",
-                "1 (>=1.2), 2 (<<2.5) -default",
-            ),
-            (
                 "librust-foo-1-dev, librust-foo-1+default-dev, librust-foo-1+derive-dev",
                 "1 +derive",
             ),
         ] {
             std::fs::write(
-                file.path(),
+                root.path().join("debian/control"),
                 format!("Source: rust-example\nBuild-Depends: {relations}\n"),
             )
             .unwrap();
-            let dependencies = control::read_dependencies(file.path(), "amd64").unwrap();
-            let parts = make_requirement(&dependencies[0], None);
+            let sections = control::read_dependency_sections(root.path(), "amd64").unwrap();
+            let tables = prepare_tables(sections);
+            let parts = make_requirement(&tables[0].dependencies[0], None);
             let mut texts = Vec::new();
             for part in parts {
                 texts.push(part.text);
