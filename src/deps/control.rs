@@ -1,4 +1,4 @@
-//! Extracts Rust dependency requirements from generated Debian control and test files.
+//! Extracts Rust dependency requirements from Debian control and test files.
 
 use std::{fs, io, path::Path, process::Command};
 
@@ -19,7 +19,7 @@ pub struct PackageRequirement {
     pub version: Option<(VersionConstraint, Version)>,
 }
 
-/// Origin of dependency requirements in the generated Debian files.
+/// Origin of dependency requirements in Debian packaging files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DependencyOrigin {
     /// A binary package's Depends field.

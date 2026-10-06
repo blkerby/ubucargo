@@ -135,7 +135,7 @@ fn resolve_package_target(
 }
 
 /// Finds the nearest source-package root at or above a directory.
-fn find_parent_package(start: &Path) -> Option<PathBuf> {
+pub fn find_parent_package(start: &Path) -> Option<PathBuf> {
     for candidate in start.ancestors() {
         if has_debcargo_config(candidate) {
             return Some(candidate.to_path_buf());

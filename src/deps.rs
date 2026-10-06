@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{generate, resolve};
+use crate::{config::has_debcargo_config, generate, resolve};
 
 use self::{
     apt::PackageCandidate,
@@ -62,7 +62,7 @@ pub struct DepArgs {
     #[arg(long, value_name = "ARCH")]
     pub architecture: Option<String>,
 
-    /// Retain the temporary debcargo staging directory for inspection.
+    /// Retain staging for crate inspection; has no effect when reading an existing package.
     #[arg(long)]
     pub keep_staging: bool,
 }
@@ -132,31 +132,46 @@ struct Row {
     requirement: Vec<RequirementPart>,
 }
 
-/// Stages a crate, queries APT, prints the report, and returns whether it is unsatisfied.
+/// Reads existing packaging or stages a crate, then reports whether APT satisfies its dependencies.
 pub fn run(args: DepArgs) -> Result<bool> {
     let architecture = match args.architecture {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let current = if args.crate_name.is_some() || args.local_crate.is_some() {
-        None
+    let sections = if args.crate_name.is_some() || args.local_crate.is_some() {
+        let resolved = resolve::resolve_package(
+            None,
+            None,
+            args.crate_name.as_deref(),
+            args.version.as_deref(),
+            args.local_crate.as_deref(),
+        )?;
+        let generated = generate::generate_package(&resolved, args.keep_staging)?;
+        control::read_dependency_sections(&generated.source, &architecture)?
     } else {
-        Some(
-            env::current_dir()
-                .context("get current directory")?
+        let current = env::current_dir().context("get current directory")?;
+        let root = if let Some(directory) = &args.package_dir {
+            let root = current
+                .join(directory)
                 .canonicalize()
-                .context("resolve current directory")?,
-        )
+                .with_context(|| format!("resolve package directory {}", directory.display()))?;
+            if !has_debcargo_config(&root) {
+                anyhow::bail!(
+                    "{} is not a source-package root with debian/debcargo.toml",
+                    root.display()
+                );
+            }
+            root
+        } else {
+            let current = current
+                .canonicalize()
+                .context("resolve current directory")?;
+            resolve::find_parent_package(&current).context(
+                "not inside a source package; use CRATE, --local-crate, or --package-dir",
+            )?
+        };
+        control::read_dependency_sections(&root, &architecture)?
     };
-    let resolved = resolve::resolve_package(
-        current.as_deref(),
-        args.package_dir.as_deref(),
-        args.crate_name.as_deref(),
-        args.version.as_deref(),
-        args.local_crate.as_deref(),
-    )?;
-    let generated = generate::generate_package(&resolved, args.keep_staging)?;
-    let sections = control::read_dependency_sections(&generated.source, &architecture)?;
     let tables = prepare_tables(sections);
     let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
     let mut classified = Vec::new();
@@ -567,7 +582,7 @@ fn format_tables(tables: &[(&DependencyTable, Vec<Row>)], color: bool) -> String
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs};
 
     use debversion::Version;
     use indoc::indoc;
@@ -586,6 +601,74 @@ mod tests {
             provides: provided,
             location: location.to_owned(),
         }
+    }
+
+    #[test]
+    /// Reads existing controls despite unusable generation metadata, without changing the package.
+    fn reads_existing_package_unchanged() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("debian/tests")).unwrap();
+        fs::create_dir(root.path().join(".pc")).unwrap();
+        let control = "Source: rust-example\nBuild-Depends: librust-serde-1-dev\n";
+        let tests = "Depends: librust-cmake-dev, librust-fs-extra-dev\n";
+        for (path, contents) in [
+            ("Cargo.toml", "invalid Cargo metadata"),
+            ("debian/debcargo.toml", "invalid debcargo configuration"),
+            ("debian/changelog", "invalid changelog"),
+            ("debian/ubucargo-state.json", "invalid ownership manifest"),
+            ("debian/control", control),
+            ("debian/tests/control", tests),
+            (
+                "debian/tests/control.debcargo.hint",
+                "Depends: librust-olm-rs-2-dev\n",
+            ),
+            (".pc/applied-patches", "unrefreshed.patch\n"),
+        ] {
+            fs::write(root.path().join(path), contents).unwrap();
+        }
+        let nested = root.path().join("src/nested");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(
+            resolve::find_parent_package(&nested),
+            Some(root.path().to_path_buf())
+        );
+        let relative = pathdiff::diff_paths(root.path(), env::current_dir().unwrap()).unwrap();
+        for directory in [root.path().to_path_buf(), relative] {
+            // Stop at APT argument validation: reaching it proves the controls were read
+            // without invoking generation or its metadata and quilt checks.
+            let error = run(DepArgs {
+                crate_name: None,
+                version: None,
+                package_dir: Some(directory),
+                local_crate: None,
+                series: "invalid/series".to_owned(),
+                proposed: false,
+                ppa: Vec::new(),
+                architecture: Some("amd64".to_owned()),
+                keep_staging: true,
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("invalid series"), "{error:#}");
+        }
+        let sections = control::read_dependency_sections(root.path(), "amd64").unwrap();
+        assert_eq!(sections[1].requirements[0].name, "librust-cmake-dev");
+        assert_eq!(sections[1].requirements[1].name, "librust-fs-extra-dev");
+        assert_eq!(
+            fs::read_to_string(root.path().join("debian/control")).unwrap(),
+            control
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("debian/tests/control")).unwrap(),
+            tests
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("debian/ubucargo-state.json")).unwrap(),
+            "invalid ownership manifest"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("debian/tests/control.debcargo.hint")).unwrap(),
+            "Depends: librust-olm-rs-2-dev\n"
+        );
     }
 
     #[test]

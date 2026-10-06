@@ -36,25 +36,28 @@ ubucargo deps serde 1.0.220 --series noble
 ubucargo deps --local-crate ../serde --series noble
 ```
 
-Source-package mode uses its `debian/debcargo.toml` and patch stack. When that
-configuration contains `crate_src_path`, `deps` reads the local crate selected
-by that path.
+Source-package mode reads the existing packaging unchanged. It uses
+`debian/debcargo.toml` only as a marker to identify the source-package root;
+its configuration and any `crate_src_path` are not read.
 Crates.io and explicit local-crate modes generate a temporary package with the
 default debcargo configuration and normally leave no source package behind. Their results do
 not account for configuration or patches that a maintainer might add later.
 
 `--keep-staging` retains the temporary debcargo staging directory for inspection
-in all modes, including when generation fails. Its path is printed to standard error.
+in crates.io and explicit local-crate modes, including when generation fails.
+Its path is printed to standard error. It has no effect in source-package mode,
+which creates no staging directory.
 
 `--series` selects an Ubuntu release. Ubucargo queries its release, updates, and security pockets from `main` and `universe`. `--proposed` additionally includes the release's proposed pocket with normal candidate consideration. Each `--ppa` adds a public Launchpad PPA's `main` component for the same series; private PPAs are not supported. `--architecture` defaults to `dpkg --print-architecture`.
 
 ## Output
 
 The command reports the direct Rust library dependencies, represented by
-`librust-*-dev` package relations, that the generated package needs to build,
-install every binary package, and run its autopkgtests. It reads a freshly
-generated `debian/control` and `debian/tests/control`, which reflect debcargo
-configuration, features, development dependencies, target conditions, and patches.
+`librust-*-dev` package relations, that the package needs to build,
+install every binary package, and run its autopkgtests. In source-package mode,
+it reads the existing `debian/control` and optional `debian/tests/control`
+directly, including all maintainer edits. In crates.io and explicit local-crate
+modes, it reads freshly generated versions of those files.
 
 The report contains one table for each of these, in order, omitting empty tables:
 
@@ -67,7 +70,7 @@ The report contains one table for each of these, in order, omitting empty tables
 The `Source` and `Tests` tables show only relations that no earlier table lists
 identically. For a library crate, the default build's relations already appear in
 its binary packages, so the `Source` table usually lists only binaries'
-dependencies and manual `build_depends` overrides. Relations to the package's own 
+dependencies and manual `build_depends` overrides. Relations to the package's own
 binaries, substitution variables such as `${misc:Depends}`, and autopkgtest's `@`
 are not reported. Test `Architecture` restrictions are not applied, so every test's
 dependencies are reported.
@@ -77,11 +80,6 @@ the dependencies of all features. Otherwise, each feature package lists the
 dependencies that its feature adds directly; dependencies of features it enables
 appear in those features' tables.
 
-In source-package mode, `deps` does not read the existing `debian/control` or
-its `.debcargo.hint` file. Manual `Build-Depends` edits in `debian/control` are
-therefore ignored, so the report can differ from the dependencies used to build
-the actual source package. Overrides in `debian/debcargo.toml` and changes made
-through the patch stack are reflected in the report.
 
 The report shows each dependency and its candidates:
 
@@ -107,7 +105,7 @@ candidate independently. `REQUIREMENT` is last so a long, sorted feature list
 may extend beyond the nominal column width without disturbing the other columns.
 Requirements are not truncated or wrapped by ubucargo.
 
-The displayed requirement comes entirely from the generated Debian relations.
+The displayed requirement comes entirely from the selected Debian control files.
 A leading version such as `1` denotes the package-name suffix in
 `librust-serde-1-dev`, not a Cargo semver expression. `*` denotes an unsuffixed
 package name; matching still requires that actual name or a corresponding
@@ -131,7 +129,7 @@ does not convert Debian bounds into Cargo ranges. Compatibility always uses the
 original Debian relations, including dependencies absent from Cargo metadata.
 
 Default features are implicit in the report. `-default` means that the
-generated Debian dependency does not require the crate's `+default-dev`
+Debian dependency does not require the crate's `+default-dev`
 capability; it does not forbid a candidate from providing that capability.
 Other features remain explicit. The leading expression combines base and default
 requirements when present, otherwise uses the base requirements. When neither
@@ -171,15 +169,9 @@ Ubucargo classifies candidates from the APT sources constructed from the command
 
 To build against the same staging repositories, pass them to `sbuild` with `--extra-repository` and `--extra-repository-key` as appropriate.
 
-In source-package mode, `deps` validates the root Cargo identity and
-`debian/debcargo.toml`, rejects unrefreshed quilt changes, and copies the patch
-stack into a temporary debcargo overlay. Debcargo applies the copied patches
-there and generates the control file used for the report. Refreshed patches may
-remain applied in the working tree because `deps` does not modify it.
 
-Unlike `package`, `deps` does not acquire an old orig tarball, reconcile source
-trees, require the working quilt stack to be popped, or plan or apply source,
-changelog, generated-file, manifest, or hint changes. In both modes, it orders candidates
+Crates.io and explicit local-crate modes resolve the selected crate and generate
+packaging in a temporary directory. In all modes, candidates are ordered
 deterministically from the local APT indexes.
 
 Staged dependency packages must be published in a PPA supplied with `--ppa`. `deps` does not scan source trees or artifact directories for candidates; PPA publication and build infrastructure remain outside ubucargo.
