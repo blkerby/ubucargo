@@ -22,12 +22,50 @@ const UBUNTU_KEYRING: &str = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
 /// One source package version from one configured repository location.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageCandidate {
+    /// Debian source package name.
+    pub source: String,
     /// Debian source package version.
     pub version: Version,
     /// Concrete and virtual package names and versions supplied by its Rust binary packages.
     pub provides: BTreeMap<String, Option<Version>>,
     /// Compact repository location displayed to the user.
     pub location: String,
+}
+
+/// Strong digest algorithm advertised by an authenticated source index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChecksumAlgorithm {
+    /// SHA512, preferred when available.
+    Sha512,
+    /// SHA256 for indexes that do not advertise SHA512.
+    Sha256,
+}
+
+/// Authenticated source publication from a configured repository.
+#[derive(Clone, Debug)]
+pub struct SourceCandidate {
+    /// Exact source-package name.
+    pub source: String,
+    /// Debian source version.
+    pub version: Version,
+    /// Repository provenance.
+    pub location: String,
+    /// Name of the source descriptor.
+    pub dsc: String,
+    /// Strong digest from the signed source index.
+    pub checksum: String,
+    /// Algorithm used to verify the descriptor digest.
+    pub checksum_algorithm: ChecksumAlgorithm,
+    /// Expected descriptor size.
+    pub size: u64,
+}
+
+/// Binary and source records from the same locked APT query.
+pub struct RepositoryRecords {
+    /// Rust binary candidates used for dependency classification.
+    pub packages: Vec<PackageCandidate>,
+    /// Source publications used for input selection.
+    pub sources: Vec<SourceCandidate>,
 }
 
 /// Launchpad archive metadata used to configure one public PPA.
@@ -88,12 +126,12 @@ impl AptView {
 }
 
 /// Refreshes the selected repositories and returns their Rust package records.
-pub fn load_candidates(
+pub fn load_records(
     series: &str,
     architecture: &str,
     proposed: bool,
     ppas: &[String],
-) -> Result<Vec<PackageCandidate>> {
+) -> Result<RepositoryRecords> {
     validate_name("series", series)?;
     validate_name("architecture", architecture)?;
     let view = prepare_view(&cache_root()?, series, architecture, proposed, ppas)?;
@@ -101,7 +139,12 @@ pub fn load_candidates(
     let mut update = Command::new("apt-get");
     view.configure(&mut update);
     // Retain any existing package cache, to be validated and reused below by indextargets if possible.
-    update.args(["-o", "pkgCacheFile::Generate=false"]);
+    update.args([
+        "-o",
+        "pkgCacheFile::Generate=false",
+        "-o",
+        "APT::Update::Error-Mode=any",
+    ]);
     run_command(update.arg("update"), "apt-get update")?;
 
     let mut indexes = Command::new("apt-get");
@@ -116,6 +159,7 @@ pub fn load_candidates(
     )?;
 
     let mut candidates = Vec::new();
+    let mut sources = Vec::new();
     let mut candidate_indexes = BTreeMap::new();
     for line in String::from_utf8(output.stdout)?.lines() {
         let fields: Vec<_> = line.split('|').collect();
@@ -133,10 +177,14 @@ pub fn load_candidates(
                 fields.len()
             );
         };
+        let location = format_location(site, release, component);
+        if *identifier == "Sources" {
+            read_sources(Path::new(filename), &location, &mut sources)?;
+            continue;
+        }
         if *identifier != "Packages" || *index_architecture != architecture {
             continue;
         }
-        let location = format_location(site, release, component);
         read_index(
             Path::new(filename),
             &location,
@@ -144,7 +192,10 @@ pub fn load_candidates(
             &mut candidate_indexes,
         )?;
     }
-    Ok(candidates)
+    Ok(RepositoryRecords {
+        packages: candidates,
+        sources,
+    })
 }
 
 /// Locks the shared APT view, replacing its sources only when their contents change.
@@ -181,12 +232,12 @@ fn prepare_view(
         let key = get_ppa_key(owner, name, &cache.join("keys"))?;
         sources.push_str(&formatdoc! {
             "
-            Types: deb
+            Types: deb deb-src
             URIs: https://ppa.launchpadcontent.net/{owner}/{name}/ubuntu
             Suites: {series}
             Components: main
             Architectures: {architecture}
-            Targets: Packages
+            Targets: Packages Sources
             Signed-By: {}
 
             ",
@@ -212,20 +263,20 @@ fn prepare_view(
     };
     sources.push_str(&formatdoc! {
         "
-        Types: deb
+        Types: deb deb-src
         URIs: {archive}
         Suites: {series} {series}-updates{proposed_suite}
         Components: main universe
         Architectures: {architecture}
-        Targets: Packages
+        Targets: Packages Sources
         Signed-By: {UBUNTU_KEYRING}
 
-        Types: deb
+        Types: deb deb-src
         URIs: {security}
         Suites: {series}-security
         Components: main universe
         Architectures: {architecture}
-        Targets: Packages
+        Targets: Packages Sources
         Signed-By: {UBUNTU_KEYRING}
         "
     });
@@ -394,6 +445,167 @@ fn read_index(
     Ok(())
 }
 
+/// Reads source publications and authenticated descriptor checksums from an APT Sources index.
+fn read_sources(path: &Path, location: &str, sources: &mut Vec<SourceCandidate>) -> Result<()> {
+    let file =
+        fs::File::open(path).with_context(|| format!("read source index {}", path.display()))?;
+    for paragraph in Deb822::iter_paragraphs_from_reader(BufReader::new(file)) {
+        let paragraph = paragraph?;
+        let source = paragraph
+            .get("Package")
+            .context("source record has no Package")?
+            .to_owned();
+        let version = paragraph
+            .get("Version")
+            .context("source record has no Version")?
+            .parse()?;
+        let (checksums, checksum_algorithm, digest_length) =
+            if let Some(checksums) = paragraph.get("Checksums-Sha512") {
+                (checksums, ChecksumAlgorithm::Sha512, 128)
+            } else {
+                (
+                    paragraph.get("Checksums-Sha256").with_context(|| {
+                        format!("source {source} in {location} has no SHA512 or SHA256 checksums")
+                    })?,
+                    ChecksumAlgorithm::Sha256,
+                    64,
+                )
+            };
+        let mut descriptor = None;
+        for line in checksums.lines() {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if let [hash, size, filename] = fields.as_slice() {
+                if filename.ends_with(".dsc") {
+                    if filename.contains('/')
+                        || hash.len() != digest_length
+                        || !hash.bytes().all(|c| c.is_ascii_hexdigit())
+                    {
+                        bail!("invalid source descriptor metadata");
+                    }
+                    descriptor = Some((
+                        filename.to_string(),
+                        hash.to_ascii_lowercase(),
+                        size.parse()?,
+                    ));
+                }
+            }
+        }
+        let (dsc, checksum, size) = descriptor.with_context(|| {
+            format!("source {source} in {location} has no .dsc in its selected checksum field")
+        })?;
+        sources.push(SourceCandidate {
+            source,
+            version,
+            location: location.to_owned(),
+            dsc,
+            checksum,
+            checksum_algorithm,
+            size,
+        });
+    }
+    Ok(())
+}
+
+/// Selects an exact source in the input origin, using Debian ordering and deterministic ties.
+pub fn select_source<'a>(
+    sources: &'a [SourceCandidate],
+    name: &str,
+    ppa: Option<&str>,
+    version: Option<&str>,
+) -> Result<&'a SourceCandidate> {
+    let requested = version.map(str::parse::<Version>).transpose()?;
+    let mut selected: Option<&SourceCandidate> = None;
+    for source in sources {
+        let origin_matches = match ppa {
+            Some(ppa) => source.location.starts_with(&format!("{ppa} (")),
+            None => !source.location.starts_with("ppa:"),
+        };
+        if source.source != name
+            || !origin_matches
+            || requested.as_ref().is_some_and(|v| v != &source.version)
+        {
+            continue;
+        }
+        if selected.is_none_or(|old| {
+            source.version > old.version
+                || (source.version == old.version && source.location < old.location)
+        }) {
+            selected = Some(source);
+        }
+    }
+    selected.with_context(|| {
+        format!(
+            "source {name} {}is absent from the selected repositories and components",
+            version.map(|v| format!("{v} ")).unwrap_or_default()
+        )
+    })
+}
+
+/// Downloads an indexed source, checks its descriptor, and extracts maintained packaging.
+pub fn retrieve_source(
+    source: &SourceCandidate,
+    ppa: Option<&str>,
+    keep: bool,
+) -> Result<(tempfile::TempDir, PathBuf)> {
+    let stage = tempfile::Builder::new().disable_cleanup(keep).tempdir()?;
+    if keep {
+        eprintln!(
+            "published input staging directory: {}",
+            stage.path().display()
+        );
+    }
+    let mut command = Command::new(if ppa.is_some() {
+        "pull-ppa-source"
+    } else {
+        "pull-lp-source"
+    });
+    command.args(["--no-conf", "--download-only", "--no-verify-signature"]);
+    if let Some(ppa) = ppa {
+        command.args([
+            "--ppa",
+            ppa.strip_prefix("ppa:")
+                .context("expected ppa:OWNER/NAME")?,
+        ]);
+    }
+    command
+        .arg(&source.source)
+        .arg(source.version.to_string())
+        .current_dir(stage.path());
+    // Authentication comes from the signed Sources checksum; uploader keys need not be installed.
+    run_command(&mut command, "download indexed source package")?;
+    let descriptor = stage.path().join(&source.dsc);
+    verify_descriptor(&descriptor, source)?;
+    let root = stage.path().join("source");
+    run_command(
+        Command::new("dpkg-source")
+            .arg("-x")
+            .arg(&descriptor)
+            .arg(&root),
+        "extract published source",
+    )?;
+    Ok((stage, root))
+}
+
+/// Checks a downloaded descriptor against authenticated source-index size and its strong digest.
+fn verify_descriptor(descriptor: &Path, source: &SourceCandidate) -> Result<()> {
+    if fs::metadata(&descriptor)?.len() != source.size {
+        bail!("source descriptor size mismatch");
+    }
+    let command = match source.checksum_algorithm {
+        ChecksumAlgorithm::Sha512 => "sha512sum",
+        ChecksumAlgorithm::Sha256 => "sha256sum",
+    };
+    let output = run_command(
+        Command::new(command).arg(descriptor),
+        "verify source descriptor checksum",
+    )?;
+    if String::from_utf8(output.stdout)?.split_whitespace().next() != Some(source.checksum.as_str())
+    {
+        bail!("source descriptor checksum mismatch");
+    }
+    Ok(())
+}
+
 /// Adds one Rust binary package, rejecting non-equality version constraints in Provides.
 fn add_package(
     package: Package,
@@ -408,12 +620,13 @@ fn add_package(
         ),
         None => (package.name.clone(), package.version.clone()),
     };
-    let key = (source, source_version.clone(), location.to_owned());
+    let key = (source.clone(), source_version.clone(), location.to_owned());
     let index = if let Some(index) = candidate_indexes.get(&key) {
         *index
     } else {
         let index = candidates.len();
         candidates.push(PackageCandidate {
+            source,
             version: source_version,
             provides: BTreeMap::new(),
             location: location.to_owned(),
@@ -555,6 +768,8 @@ mod tests {
             let contents = fs::read_to_string(&sources).unwrap();
             assert!(contents.contains(&format!("Suites: {series} {series}-updates")));
             assert!(contents.contains(&format!("Architectures: {architecture}\n")));
+            assert!(contents.contains("Types: deb deb-src\n"));
+            assert!(contents.contains("Targets: Packages Sources\n"));
             assert_eq!(contents.contains(&format!("{series}-proposed")), proposed);
         }
     }
@@ -592,6 +807,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source, "rust-serde");
         assert_eq!(
             candidates[0].provides["librust-serde-1+derive-dev"]
                 .as_ref()
@@ -604,5 +820,145 @@ mod tests {
             candidates[0].provides["librust-serde-dev-unversioned"],
             None
         );
+    }
+    #[test]
+    /// Reads source-only publications and selects within the exact origin using Debian ordering.
+    fn selects_indexed_sources() {
+        let mut index = NamedTempFile::new().unwrap();
+        for (name, version, binaries) in [
+            ("rust-example", "1.9-1", "librust-example-dev, example"),
+            ("rust-example", "1.10-1", "librust-example-dev"),
+            ("rust-example-2", "2.0-1", "librust-example-2-dev"),
+            ("only-source", "1.0", "only-source"),
+        ] {
+            writeln!(index, "Package: {name}\nVersion: {version}\nBinary: {binaries}\nChecksums-Sha256:\n {} 4 {name}.dsc\n", "a".repeat(64)).unwrap();
+        }
+        let mut sources = Vec::new();
+        read_sources(index.path(), "noble/universe", &mut sources).unwrap();
+        assert_eq!(sources.len(), 4);
+        let mut ppa = sources[1].clone();
+        ppa.version = "9.0-1".parse().unwrap();
+        ppa.location = "ppa:owner/staging (noble)".to_owned();
+        sources.push(ppa);
+        let mut updates = sources[1].clone();
+        updates.location = "noble-updates/universe".to_owned();
+        sources.push(updates);
+        let selected = select_source(&sources, "rust-example", None, None).unwrap();
+        assert_eq!(selected.version.to_string(), "1.10-1");
+        assert_eq!(selected.location, "noble-updates/universe");
+        assert_eq!(
+            select_source(&sources, "rust-example", None, Some("1.9-1"))
+                .unwrap()
+                .version
+                .to_string(),
+            "1.9-1"
+        );
+        assert_eq!(
+            select_source(&sources, "rust-example", Some("ppa:owner/staging"), None)
+                .unwrap()
+                .version
+                .to_string(),
+            "9.0-1"
+        );
+        assert!(select_source(&sources, "rust-example", None, Some("9.0-1")).is_err());
+        assert!(select_source(&sources, "rust-example", Some("ppa:other/staging"), None).is_err());
+        assert!(select_source(&sources, "absent", None, None).is_err());
+        assert!(select_source(&sources, "only-source", None, None).is_ok());
+        assert_eq!(
+            select_source(&sources, "rust-example-2", None, None)
+                .unwrap()
+                .version
+                .to_string(),
+            "2.0-1"
+        );
+    }
+
+    #[test]
+    /// Rejects corrupted descriptors before extraction, including same-size content changes.
+    fn verifies_indexed_descriptor() {
+        let descriptor = NamedTempFile::new().unwrap();
+        fs::write(descriptor.path(), "test").unwrap();
+        let mut source = SourceCandidate {
+            source: "rust-example".to_owned(),
+            version: "1.0".parse().unwrap(),
+            location: "noble/universe".to_owned(),
+            dsc: "rust-example_1.0.dsc".to_owned(),
+            size: 4,
+            checksum_algorithm: ChecksumAlgorithm::Sha256,
+            checksum: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned(),
+        };
+        verify_descriptor(descriptor.path(), &source).unwrap();
+        fs::write(descriptor.path(), "fail").unwrap();
+        assert!(
+            verify_descriptor(descriptor.path(), &source)
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
+        source.checksum_algorithm = ChecksumAlgorithm::Sha512;
+        source.checksum = "ee26b0dd4af7e749aa1a8ee3c10ae9923f618980772e473f8819a5d4940e0db27ac185f8a0e1d5f84f88bc887fd67b143732c304cc5fa9ad8e6f57f50028a8ff".to_owned();
+        fs::write(descriptor.path(), "test").unwrap();
+        verify_descriptor(descriptor.path(), &source).unwrap();
+        fs::write(descriptor.path(), "fail").unwrap();
+        assert!(
+            verify_descriptor(descriptor.path(), &source)
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
+        source.size = 5;
+        assert!(
+            verify_descriptor(descriptor.path(), &source)
+                .unwrap_err()
+                .to_string()
+                .contains("size mismatch")
+        );
+    }
+    #[test]
+    /// Accepts either strong checksum field and prefers SHA512 without bypassing malformed digests.
+    fn parses_strong_source_checksums() {
+        let index = NamedTempFile::new().unwrap();
+        for (fields, expected) in [
+            (
+                format!("Checksums-Sha256:\n {} 4 example.dsc\n", "a".repeat(64)),
+                ChecksumAlgorithm::Sha256,
+            ),
+            (
+                format!("Checksums-Sha512:\n {} 4 example.dsc\n", "b".repeat(128)),
+                ChecksumAlgorithm::Sha512,
+            ),
+            (
+                format!(
+                    "Checksums-Sha256:\n {} 4 example.dsc\nChecksums-Sha512:\n {} 4 example.dsc\n",
+                    "a".repeat(64),
+                    "B".repeat(128)
+                ),
+                ChecksumAlgorithm::Sha512,
+            ),
+        ] {
+            fs::write(
+                index.path(),
+                format!("Package: example\nVersion: 1.0\n{fields}"),
+            )
+            .unwrap();
+            let mut sources = Vec::new();
+            read_sources(index.path(), "stonking/universe", &mut sources).unwrap();
+            assert_eq!(sources[0].checksum_algorithm, expected);
+            if expected == ChecksumAlgorithm::Sha512 {
+                assert_eq!(sources[0].checksum, "b".repeat(128));
+            }
+        }
+        for fields in [
+            "",
+            "Checksums-Sha512:\n bad 4 example.dsc\n",
+            "Checksums-Sha256:\n bad 4 example.dsc\n",
+        ] {
+            fs::write(
+                index.path(),
+                format!("Package: example\nVersion: 1.0\n{fields}"),
+            )
+            .unwrap();
+            assert!(read_sources(index.path(), "stonking/universe", &mut Vec::new()).is_err());
+        }
     }
 }

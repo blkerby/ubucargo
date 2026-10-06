@@ -36,22 +36,17 @@ mod source;
 /// Create or reconcile a complete source package.
 #[derive(clap::Args)]
 pub struct PackageArgs {
-    /// Crate name; defaults to the existing package's root Cargo identity.
-    #[arg(value_name = "CRATE")]
-    pub crate_name: Option<String>,
+    /// Input selector: crate:NAME, pkg:PATH, or local:PATH; defaults to the nearest package.
+    #[arg(value_name = "INPUT")]
+    pub input: Option<String>,
 
     /// Exact crate version; defaults to the latest release when a crate is named.
-    #[arg(value_name = "VERSION", requires = "crate_name")]
+    #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Debian source-package directory. If omitted, uses the nearest parent package;
-    /// if none exists, CRATE creates one under the current directory, or the command fails.
+    /// Source-package directory to create or update.
     #[arg(long = "package-dir", value_name = "DIR")]
     pub package_dir: Option<PathBuf>,
-
-    /// Local crate used to create a new source package.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version"], requires = "package_dir")]
-    pub local_crate: Option<PathBuf>,
 
     /// Report changes without writing them.
     #[arg(long)]
@@ -81,12 +76,42 @@ pub fn run(args: PackageArgs) -> Result<bool> {
         .canonicalize()
         .context("resolve current directory")?;
     let (keep_paths, replace_paths) = collect_decisions(&args.keep, &args.replace)?;
+    let input = args
+        .input
+        .as_deref()
+        .map(|value| crate::input::parse_input(value, &current))
+        .transpose()?;
+    if let Some(input) = &input {
+        crate::input::validate_version(input, args.version.as_deref())?;
+    }
+    let mut destination = args.package_dir.as_deref();
+    let mut name = None;
+    let mut local = None;
+    match &input {
+        Some(crate::input::Input::Crate(value)) => name = Some(value.as_str()),
+        Some(crate::input::Input::Package(path)) => {
+            if destination.is_some() {
+                bail!("pkg: inputs cannot be combined with --package-dir");
+            }
+            destination = Some(path.as_path());
+        }
+        Some(crate::input::Input::Local(path)) => {
+            if destination.is_none() {
+                bail!("local: inputs require --package-dir");
+            }
+            local = Some(path.as_path());
+        }
+        Some(_) => bail!(
+            "published-package imports are unsupported by package; use deps to inspect published inputs"
+        ),
+        None => {}
+    }
     let resolved = resolve_package(
         Some(&current),
-        args.package_dir.as_deref(),
-        args.crate_name.as_deref(),
+        destination,
+        name,
         args.version.as_deref(),
-        args.local_crate.as_deref(),
+        local,
     )?;
     if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
         bail!("--keep and --replace apply only to existing packages");
@@ -412,10 +437,13 @@ mod tests {
                 before.push(fs::read(path).ok());
             }
             let changed = run(PackageArgs {
-                crate_name: None,
+                input: if creating {
+                    Some(format!("local:{}", local.display()))
+                } else {
+                    None
+                },
                 version: None,
                 package_dir: Some(root.clone()),
-                local_crate: if creating { Some(local.clone()) } else { None },
                 check,
                 force: false,
                 keep_staging: false,

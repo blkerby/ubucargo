@@ -7,13 +7,16 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     io::{self, IsTerminal},
-    path::PathBuf,
 };
 
 use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
-use crate::{config::has_debcargo_config, generate, resolve};
+use crate::{
+    generate,
+    input::{Input, parse_input, validate_version},
+    resolve,
+};
 
 use self::{
     apt::PackageCandidate,
@@ -30,25 +33,17 @@ const RESET: &str = "\x1b[0m";
 /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
 #[derive(clap::Args)]
 pub struct DepArgs {
-    /// Crate name from crates.io; conflicts with --package-dir.
-    #[arg(value_name = "CRATE", conflicts_with = "package_dir")]
-    pub crate_name: Option<String>,
+    /// Input selector: crate:NAME, archive:SERIES/SOURCE, ppa:OWNER/NAME/SOURCE, pkg:PATH, or local:PATH.
+    #[arg(value_name = "INPUT")]
+    pub input: Option<String>,
 
-    /// Exact crate version; defaults to the latest release when a crate is named.
-    #[arg(value_name = "VERSION", requires = "crate_name")]
+    /// Exact Cargo or Debian source version; local inputs reject versions.
+    #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Existing source package directory; defaults to the nearest parent package.
-    #[arg(long = "package-dir", value_name = "DIR")]
-    pub package_dir: Option<PathBuf>,
-
-    /// Local crate to inspect using the default debcargo configuration.
-    #[arg(long, value_name = "DIR", conflicts_with_all = ["crate_name", "version", "package_dir"])]
-    pub local_crate: Option<PathBuf>,
-
-    /// Ubuntu series to query.
+    /// Checking series; defaults to the Archive input series, otherwise required.
     #[arg(long, value_name = "SERIES")]
-    pub series: String,
+    pub series: Option<String>,
 
     /// Include the Ubuntu proposed pocket.
     #[arg(long)]
@@ -62,7 +57,7 @@ pub struct DepArgs {
     #[arg(long, value_name = "ARCH")]
     pub architecture: Option<String>,
 
-    /// Retain staging for crate inspection; has no effect when reading an existing package.
+    /// Retain generated or published-input staging, including on failure.
     #[arg(long)]
     pub keep_staging: bool,
 }
@@ -134,46 +129,117 @@ struct Row {
 
 /// Reads existing packaging or stages a crate, then reports whether APT satisfies its dependencies.
 pub fn run(args: DepArgs) -> Result<bool> {
+    let current = env::current_dir().context("get current directory")?;
+    let input = if let Some(value) = &args.input {
+        parse_input(value, &current)?
+    } else {
+        Input::Package(
+            resolve::find_parent_package(&current.canonicalize()?)
+                .context("not inside a source package; supply INPUT")?,
+        )
+    };
+    validate_version(&input, args.version.as_deref())?;
+    let series = args
+        .series
+        .as_deref()
+        .or_else(|| match &input {
+            Input::Archive { series, .. } => Some(series.as_str()),
+            _ => None,
+        })
+        .context("--series is required unless an Archive input supplies it")?;
+    let local_changelog = match &input {
+        Input::Package(root) => Some(crate::changelog::read_top_changelog(
+            &root.join("debian/changelog"),
+        )?),
+        _ => None,
+    };
     let architecture = match args.architecture {
         Some(architecture) => architecture,
         None => apt::read_architecture()?,
     };
-    let sections = if args.crate_name.is_some() || args.local_crate.is_some() {
-        let resolved = resolve::resolve_package(
-            None,
-            None,
-            args.crate_name.as_deref(),
-            args.version.as_deref(),
-            args.local_crate.as_deref(),
-        )?;
-        let generated = generate::generate_package(&resolved, args.keep_staging)?;
-        control::read_dependency_sections(&generated.source, &architecture)?
-    } else {
-        let current = env::current_dir().context("get current directory")?;
-        let root = if let Some(directory) = &args.package_dir {
-            let root = current
-                .join(directory)
-                .canonicalize()
-                .with_context(|| format!("resolve package directory {}", directory.display()))?;
-            if !has_debcargo_config(&root) {
-                anyhow::bail!(
-                    "{} is not a source-package root with debian/debcargo.toml",
-                    root.display()
-                );
-            }
-            root
-        } else {
-            let current = current
-                .canonicalize()
-                .context("resolve current directory")?;
-            resolve::find_parent_package(&current).context(
-                "not inside a source package; use CRATE, --local-crate, or --package-dir",
-            )?
-        };
-        control::read_dependency_sections(&root, &architecture)?
+    let mut ppas = BTreeSet::new();
+    for ppa in args.ppa {
+        ppas.insert(ppa);
+    }
+    if let Input::Ppa { ppa, .. } = &input {
+        ppas.insert(ppa.clone());
+    }
+    let ppas: Vec<_> = ppas.into_iter().collect();
+    let mut input_records = None;
+    if let Input::Archive {
+        series: input_series,
+        ..
+    } = &input
+    {
+        if input_series != series {
+            input_records = Some(apt::load_records(
+                input_series,
+                &architecture,
+                args.proposed,
+                &[],
+            )?);
+        }
+    }
+    let records = apt::load_records(series, &architecture, args.proposed, &ppas)?;
+    let (sections, header) = match &input {
+        Input::Crate(_) | Input::Local(_) => {
+            let (name, local) = match &input {
+                Input::Crate(name) => (Some(name.as_str()), None),
+                Input::Local(path) => (None, Some(path.as_path())),
+                _ => unreachable!(),
+            };
+            let resolved =
+                resolve::resolve_package(None, None, name, args.version.as_deref(), local)?;
+            let location = match &input {
+                Input::Local(_) => args.input.as_deref().unwrap(),
+                _ => "crates.io",
+            };
+            let header = format!(
+                "Input: {} {} from {location} (generated packaging)",
+                resolved.crate_selection.crate_name, resolved.crate_selection.version
+            );
+            let generated = generate::generate_package(&resolved, args.keep_staging)?;
+            (
+                control::read_dependency_sections(&generated.source, &architecture)?,
+                header,
+            )
+        }
+        Input::Package(root) => {
+            let top = local_changelog.as_ref().unwrap();
+            let location = match args.input.as_deref() {
+                Some(value) if value.starts_with("pkg:") => value.to_owned(),
+                Some(value) => format!("pkg:{value}"),
+                None => format!("pkg:{}", root.display()),
+            };
+            (
+                control::read_dependency_sections(root, &architecture)?,
+                format!("Input: {} {} from {location}", top.source, top.version),
+            )
+        }
+        Input::Archive { source, .. } | Input::Ppa { source, .. } => {
+            let ppa = match &input {
+                Input::Ppa { ppa, .. } => Some(ppa.as_str()),
+                _ => None,
+            };
+            let source = apt::select_source(
+                &input_records.as_ref().unwrap_or(&records).sources,
+                source,
+                ppa,
+                args.version.as_deref(),
+            )?;
+            let (_stage, root) = apt::retrieve_source(source, ppa, args.keep_staging)?;
+            (
+                control::read_dependency_sections(&root, &architecture)?,
+                format!(
+                    "Input: {} {} from {}",
+                    source.source, source.version, source.location
+                ),
+            )
+        }
     };
+    println!("{header}\n");
     let tables = prepare_tables(sections);
-    let candidates = apt::load_candidates(&args.series, &architecture, args.proposed, &args.ppa)?;
+    let candidates = records.packages;
     let mut classified = Vec::new();
     let mut unsatisfied = false;
     for table in &tables {
@@ -597,6 +663,7 @@ mod tests {
             provided.insert((*name).to_owned(), Some(version.clone()));
         }
         PackageCandidate {
+            source: "rust-example".to_owned(),
             version,
             provides: provided,
             location: location.to_owned(),
@@ -614,7 +681,10 @@ mod tests {
         for (path, contents) in [
             ("Cargo.toml", "invalid Cargo metadata"),
             ("debian/debcargo.toml", "invalid debcargo configuration"),
-            ("debian/changelog", "invalid changelog"),
+            (
+                "debian/changelog",
+                "rust-example (1.0-1) noble; urgency=medium\n\n  * Example.\n\n -- Example <example@example.com>  Tue, 06 Oct 2026 12:00:00 +0000\n",
+            ),
             ("debian/ubucargo-state.json", "invalid ownership manifest"),
             ("debian/control", control),
             ("debian/tests/control", tests),
@@ -634,14 +704,12 @@ mod tests {
         );
         let relative = pathdiff::diff_paths(root.path(), env::current_dir().unwrap()).unwrap();
         for directory in [root.path().to_path_buf(), relative] {
-            // Stop at APT argument validation: reaching it proves the controls were read
-            // without invoking generation or its metadata and quilt checks.
+            // Invalid repository arguments must fail before generation or filesystem changes.
+            // The direct reader below verifies maintained requirements independently.
             let error = run(DepArgs {
-                crate_name: None,
+                input: Some(format!("pkg:{}", directory.display())),
                 version: None,
-                package_dir: Some(directory),
-                local_crate: None,
-                series: "invalid/series".to_owned(),
+                series: Some("invalid/series".to_owned()),
                 proposed: false,
                 ppa: Vec::new(),
                 architecture: Some("amd64".to_owned()),
@@ -1221,6 +1289,7 @@ mod tests {
         ));
 
         let unversioned = PackageCandidate {
+            source: "rust-example".to_owned(),
             version: "1.0.219-1".parse().unwrap(),
             provides: BTreeMap::from([("librust-serde-1-dev".to_owned(), None)]),
             location: "noble/universe".to_owned(),
@@ -1230,5 +1299,33 @@ mod tests {
             version: None,
         };
         assert!(satisfies_package(&unversioned_requirement, &unversioned));
+    }
+    #[test]
+    /// Requires a checking series and rejects local versions before APT or generation.
+    fn rejects_invalid_inspection_arguments() {
+        for (input, version, expected) in [
+            ("crate:serde", None, "--series is required"),
+            ("pkg:.", Some("1.0.0"), "VERSION cannot"),
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            fs::create_dir(temporary.path().join("debian")).unwrap();
+            fs::write(temporary.path().join("debian/debcargo.toml"), "invalid").unwrap();
+            let input = if input == "pkg:." {
+                format!("pkg:{}", temporary.path().display())
+            } else {
+                input.to_owned()
+            };
+            let error = run(DepArgs {
+                input: Some(input),
+                version: version.map(str::to_owned),
+                series: None,
+                proposed: false,
+                ppa: Vec::new(),
+                architecture: Some("amd64".to_owned()),
+                keep_staging: false,
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
     }
 }

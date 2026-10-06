@@ -53,7 +53,7 @@ Each source package contains its upstream source, generator input `debcargo.toml
 ### `package`
 
 ```console
-ubucargo package [CRATE [VERSION]] [--local-crate DIR] [--package-dir DIR] \
+ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
   [--check] [--force] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
@@ -61,20 +61,22 @@ ubucargo package [CRATE [VERSION]] [--local-crate DIR] [--package-dir DIR] \
 - Run `ubucargo package CRATE [VERSION]` outside a package to create a new source tree and orig tarball.
 - Run `ubucargo package` inside an existing package to regenerate its current release.
 - Run `ubucargo package CRATE VERSION` against an existing package to select another release.
-- Run `ubucargo package --local-crate CRATE-DIR --package-dir PACKAGE-DIR` to create a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
+- Run `ubucargo package local:CRATE-DIR --package-dir PACKAGE-DIR` to create a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
 - After changing `debcargo.toml`, run `ubucargo package` again.
 - `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
 
 See [`docs/package.md`](docs/package.md) for full behavior and options.
 
+Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and predictable automatic spellings. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`. `deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog. Archive inputs default the checking series; `--series` overrides checking without changing input origin. Published-package imports into `package` are deferred. Old input flags have been removed; `package --package-dir` remains the workspace to create or update.
+
 ### `deps`
 
 ```console
-ubucargo deps [CRATE [VERSION]] [--package-dir DIR] --series SERIES \
+ubucargo deps [INPUT [VERSION]] [--series SERIES] \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-- Run `ubucargo deps --series SERIES` inside a source package, or use `--package-dir DIR` to select one explicitly.
+- Run `ubucargo deps --series SERIES` inside a source package, or use `pkg:DIR` to select one explicitly.
 - Run `ubucargo deps CRATE [VERSION] --series SERIES` to inspect a crates.io release without creating a source package.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
@@ -84,4 +86,4 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 ## Requirements
 
-It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, GNU coreutils (including `sha256sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
+It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.

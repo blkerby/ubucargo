@@ -4,7 +4,7 @@
 
 `deps` generates APT sources from its command-line arguments and stores the current selection in one shared, user-writable cache. It reuses the same configuration paths and binary package cache across invocations rather than creating a separate cache for each combination of series and PPAs.
 
-`deps` requests only binary `Packages` indexes. Translations, DEP-11 data, icons, command-not-found data, source indexes, and unrelated architectures are disabled.
+`deps` requests binary `Packages` and source `Sources` indexes. Translations, DEP-11 data, icons, command-not-found data, and unrelated architectures are disabled.
 
 ## Layout
 
@@ -34,17 +34,17 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 ## Sources
 
-For `deps --series noble`, Ubucargo creates binary-only entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `noble-proposed` from the same Archive source. Each `--ppa ppa:OWNER/NAME` adds a binary-only `main` entry for Noble. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
+For `deps --series noble`, Ubucargo creates binary and source entries for `noble`, `noble-updates`, and `noble-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `noble-proposed` from the same Archive source. Each `--ppa ppa:OWNER/NAME` adds a binary and source `main` entry for Noble. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
 
 The generated deb822 entries select only their required APT targets:
 
 ```text
-Types: deb
+Types: deb deb-src
 URIs: https://archive.ubuntu.com/ubuntu
 Suites: noble noble-updates
 Components: main universe
 Architectures: amd64
-Targets: Packages
+Targets: Packages Sources
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 ```
 
@@ -71,8 +71,8 @@ Ubucargo runs `apt-get update` with command-line configuration that supplies:
 - no list cleanup; and
 - no translation downloads.
 
-APT updates the selected indexes on every invocation. It reuses unchanged files and may apply index deltas, so Ubucargo needs no freshness policy or per-view cache identity.
+APT updates the selected indexes on every invocation. Update failures are fatal (`APT::Update::Error-Mode=any`), so an unavailable repository cannot silently turn into a misleading absence report. It reuses unchanged files and may apply index deltas, so Ubucargo needs no freshness policy or per-view cache identity.
 
-Queries use the same source file and list directory. `apt-get indextargets` identifies the selected package indexes and their repository locations. Ubucargo reads those `Packages` files itself, extracts Rust package versions and `Provides`, and classifies candidates against the dependency requirements using Debian version ordering.
+Queries use the same source file and list directory. `apt-get indextargets` identifies the selected package indexes and their repository locations. Ubucargo reads `Packages` files for Rust versions and `Provides` and `Sources` files for source names, Debian versions, locations, and descriptor checksums. Dependency classification uses only checking-series binaries. Cross-series published inspection queries the input view and checking view sequentially, releasing the shared lock between them; parsed results remain separate. Source metadata uses the same signature verification, index cache, components, and pocket selection as binary metadata.
 
 Only metadata operations run. Ubucargo never asks this configuration to install, upgrade, remove, or configure packages, and it does not modify the host's APT lists or dpkg status.

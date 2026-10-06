@@ -5,44 +5,46 @@ The command reports the direct Rust library dependencies, represented by `librus
 ## Synopsis
 
 ```console
-ubucargo deps [CRATE [VERSION]] [--package-dir DIR] --series SERIES \
-  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH] [--keep-staging]
-ubucargo deps --local-crate DIR --series SERIES \
+ubucargo deps [INPUT [VERSION]] [--series SERIES] \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH] [--keep-staging]
 ```
 
-When an existing source package is specified with `--package-dir`, or is implicit based on running from within a source package, `ubucargo deps` reads the existing `debian/control` and optional `debian/tests/control` directly, including all maintainer edits. When a crate is selected from crates.io by supplying `CRATE`, or locally by supplying `--local-crate`, it reads freshly generated versions of those control files.
+See [input selectors](inputs.md) for the shared explicit grammar, automatic precedence, and version rules. Omitting the input reads the nearest parent package. Existing-package inputs require `debian/debcargo.toml` only as a marker; inspection requires a valid top `debian/changelog` entry for the source identity and version, but does not read Cargo metadata, debcargo configuration, or `crate_src_path`. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
 
-Source-package mode requires `debian/debcargo.toml` as a marker to identify the source-package root; its configuration and any `crate_src_path` are not read.
+Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local packages and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. Published inspection does not require a debcargo configuration. Inspection never modifies an existing package.
 
-In the crates.io case, `VERSION` selects an exact release, while an omitted version selects the latest release using the same rules as [`package`](package.md#target-and-version-selection). `CRATE` and `--package-dir` may not be combined.
+An Archive input supplies the default checking series. `noble/rust-serde --series resolute` reads Noble packaging and checks its dependencies against Resolute. Other input kinds require `--series` before generation or network work. A PPA input uses that series for both source selection and checking, and automatically adds its PPA to dependency repositories. Repeated PPA arguments are deduplicated.
 
-`--local-crate` selects a local crate's current contents and reads its name and version from Cargo metadata. Relative paths resolve against the working directory. It may not be combined with `CRATE`, `VERSION`, or `--package-dir`.
-
-Crates.io and explicit local-crate modes resolve the selected crate and generate packaging in a temporary directory. `ubucargo deps` never modifies an existing source package, nor does it create a new source package outside of a temporary directory.
+Ubuntu source selection considers release, updates, and security in `main` and `universe`, adding proposed only with `--proposed`. Additional PPAs cannot replace an Archive input's input. An explicit Debian source version must exist in the selected source indexes. Otherwise the highest Debian version wins, with deterministic location ordering for ties.
 
 ```console
-# Inspect the nearest source package.
 ubucargo deps --series noble
-
-# Inspect an explicit source package.
-ubucargo deps --package-dir ./rust-serde --series noble
-
-# Inspect the latest serde release from crates.io.
 ubucargo deps serde --series noble
-
-# Inspect an exact serde release from crates.io.
 ubucargo deps serde 1.0.220 --series noble
-
-# Inspect a local checkout without creating a source package.
-ubucargo deps --local-crate ../serde --series noble
+ubucargo deps archive:noble/rust-serde
+ubucargo deps noble/rust-serde --series resolute
+ubucargo deps ppa:myuser/rust-staging/rust-serde --series noble
+ubucargo deps pkg:./rust-serde --series noble
+ubucargo deps local:../serde --series noble
 ```
 
-`--keep-staging` retains the temporary debcargo staging directory for inspection in crates.io and explicit local-crate modes, including when generation fails. Its path is printed to standard error. It has no effect in source-package mode, which creates no staging directory.
+`--keep-staging` retains and prints generated or published-input staging, including on failure. Existing local package inspection creates no staging directory.
 
-`--series` selects an Ubuntu release. Ubucargo queries its release, updates, and security pockets from `main` and `universe`. `--proposed` additionally includes the release's proposed pocket with normal candidate consideration. Each `--ppa` adds a public Launchpad PPA's `main` component for the same series; private PPAs are not supported. `--architecture` defaults to `dpkg --print-architecture`.
+`--series` selects the dependency environment: release, updates, and security pockets in `main` and `universe`. `--proposed` adds proposed. Each public `--ppa ppa:OWNER/NAME` adds `main`; private PPAs are unsupported. `--architecture` defaults to `dpkg --print-architecture`.
 
 ## Output
+
+A single line identifies the resolved input name, version, and location:
+
+```text
+Input: rust-rand 0.8.5-1 from noble/universe
+Input: rust-rand 0.8.5-1 from ppa:owner/staging (noble)
+Input: rand 0.8.5 from crates.io (generated packaging)
+Input: rand 0.8.5 from local:../rand (generated packaging)
+Input: rust-rand 0.8.5-1 from pkg:./rust-rand
+```
+
+Local-package identity and version come from the top changelog entry; a missing or malformed changelog is an error. Unusable Cargo metadata or debcargo configuration does not prevent inspection. Cross-series checks show the actual input location. The header is present even when all dependency tables are empty. Repository summaries and published-source availability listings are omitted.
 
 The report contains one table for each of these, in order, omitting empty tables:
 
@@ -108,7 +110,9 @@ In all modes, candidates are ordered deterministically from the local APT indexe
 
 ## APT metadata
 
-`deps` uses only binary `Packages` indexes. They contain the package versions and versioned `Provides` needed to match Debian Rust feature packages; Archive `Sources` indexes are not downloaded.
+`deps` downloads binary `Packages` and source `Sources` indexes through its isolated, signature-verified APT view. Packages supply versions and versioned `Provides` for dependency classification; Sources supply publication selection and authenticated `.dsc` checksums.
+
+Published inputs are retrieved at the indexed exact version with `pull-lp-source` or `pull-ppa-source`. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. If input and checking series differ, their APT views are queried sequentially; input-series binaries cannot enter dependency classification.
 
 Every invocation asks APT to update the selected indexes. APT reuses unchanged files and may apply index deltas. Indexes for all previously requested series and PPAs share the cache described in [`apt-cache.md`](apt-cache.md).
 

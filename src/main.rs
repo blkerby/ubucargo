@@ -5,6 +5,7 @@ mod changelog;
 mod config;
 mod deps;
 mod generate;
+mod input;
 mod package;
 mod resolve;
 mod util;
@@ -57,7 +58,7 @@ mod tests {
     /// Accepts registry, local, and dependency command forms.
     fn parses_command_arguments() {
         for arguments in [
-            vec!["deps", "--local-crate", "../example", "--series", "noble"],
+            vec!["deps", "local:../example", "--series", "noble"],
             vec![
                 "package",
                 "serde",
@@ -70,8 +71,7 @@ mod tests {
             ],
             vec![
                 "package",
-                "--local-crate",
-                "../example",
+                "local:../example",
                 "--package-dir",
                 "rust-example",
             ],
@@ -94,71 +94,27 @@ mod tests {
     }
 
     #[test]
-    /// Rejects argument combinations before attempting filesystem or network work.
-    fn rejects_conflicting_targets() {
+    /// Rejects removed flags and extra positional arguments during CLI parsing.
+    fn rejects_removed_flags() {
         for arguments in [
-            vec![
-                "deps",
-                "serde",
-                "--local-crate",
-                "../example",
-                "--series",
-                "noble",
-            ],
-            vec![
-                "deps",
-                "serde",
-                "1.0.0",
-                "--local-crate",
-                "../example",
-                "--series",
-                "noble",
-            ],
-            vec![
-                "deps",
-                "--package-dir",
-                "rust-example",
-                "--local-crate",
-                "../example",
-                "--series",
-                "noble",
-            ],
-            vec!["package", "--local-crate", "../example"],
+            vec!["deps", "--package-dir", "./example", "--series", "noble"],
+            vec!["deps", "--local-crate", "./example", "--series", "noble"],
             vec![
                 "package",
-                "serde",
                 "--local-crate",
-                "../example",
+                "./example",
                 "--package-dir",
-                "rust-example",
+                "./package",
             ],
-            vec![
-                "package",
-                "serde",
-                "1.0.0",
-                "--local-crate",
-                "../example",
-                "--package-dir",
-                "rust-example",
-            ],
-            vec![
-                "deps",
-                "serde",
-                "--package-dir",
-                "rust-serde",
-                "--series",
-                "noble",
-            ],
+            vec!["deps", "serde", "1.0.0", "extra", "--series", "noble"],
         ] {
-            let error = Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments))
-                .err()
-                .unwrap();
-            assert!(matches!(
-                error.kind(),
-                clap::error::ErrorKind::ArgumentConflict
-                    | clap::error::ErrorKind::MissingRequiredArgument
-            ));
-            assert_eq!(error.exit_code(), 2);
+            assert!(Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments)).is_err());
+        }
+        for arguments in [
+            vec!["deps", "archive:noble/rust-serde"],
+            vec!["package", "pkg:./example"],
+        ] {
+            Cli::try_parse_from(std::iter::once("ubucargo").chain(arguments)).unwrap();
         }
     }
 }

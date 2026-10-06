@@ -98,7 +98,7 @@ fn resolve_package_target(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if crate_name.is_none() && local_crate.is_none() {
                     bail!(
-                        "CRATE or --local-crate is required when creating {}",
+                        "CRATE or local: input is required when creating {}",
                         requested_dir.display()
                     );
                 }
@@ -171,7 +171,7 @@ fn check_patch_state(source: &Path) -> Result<bool> {
 /// Rejects local crate and source-package trees that overlap or contain one another.
 fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()> {
     if local_crate.starts_with(package_root) || package_root.starts_with(local_crate) {
-        bail!("--local-crate and --package-dir must be separate, non-nested directory trees");
+        bail!("local: input and --package-dir must be separate, non-nested directory trees");
     }
     Ok(())
 }
@@ -196,7 +196,7 @@ pub fn resolve_package(
     local_crate: Option<&Path>,
 ) -> Result<ResolvedPackage> {
     if local_crate.is_some() && (requested_name.is_some() || requested_version.is_some()) {
-        bail!("CRATE and VERSION may not be used with --local-crate");
+        bail!("CRATE and VERSION may not be used with local: input");
     }
     if let Some(version) = requested_version {
         parse_exact_version(version)?;
@@ -215,7 +215,7 @@ pub fn resolve_package(
         None
     };
     if local_crate.is_some() && target.as_ref().is_some_and(|target| target.existing) {
-        bail!("--local-crate applies only when creating a package");
+        bail!("local: input applies only when creating a package");
     }
     let debcargo_version = check_debcargo_version()?;
 
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    /// Rejects --local-crate when the destination already contains a source package.
+    /// Rejects local: input when the destination already contains a source package.
     fn rejects_local_crate_for_existing_package() {
         let parent = tempfile::tempdir().unwrap();
         let destination = parent.path().join("rust-example");
@@ -555,7 +555,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("--local-crate applies only")
+            .contains("local: input applies only")
         );
     }
 
