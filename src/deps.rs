@@ -2,6 +2,7 @@
 
 mod apt;
 mod control;
+mod latest;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -182,7 +183,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
         }
     }
     let records = apt::load_records(series, &architecture, args.proposed, &ppas)?;
-    let (sections, header) = match &input {
+    let (sections, header, mut identity) = match &input {
         Input::Crate(_) | Input::Local(_) => {
             let (name, local) = match &input {
                 Input::Crate(name) => (Some(name.as_str()), None),
@@ -203,6 +204,11 @@ pub fn run(args: DepArgs) -> Result<bool> {
             (
                 control::read_dependency_sections(&generated.source, &architecture)?,
                 header,
+                latest::InputIdentity {
+                    crate_name: Some(resolved.crate_selection.crate_name.clone()),
+                    source_name: resolved.source_name.clone(),
+                    version: resolved.crate_selection.version.clone(),
+                },
             )
         }
         Input::Package(root) => {
@@ -215,6 +221,11 @@ pub fn run(args: DepArgs) -> Result<bool> {
             (
                 control::read_dependency_sections(root, &architecture)?,
                 format!("Input: {} {} from {location}", top.source, top.version),
+                latest::InputIdentity {
+                    crate_name: None,
+                    source_name: top.source.clone(),
+                    version: top.version.clone(),
+                },
             )
         }
         Input::Archive { source, .. } | Input::Ppa { source, .. } => {
@@ -235,10 +246,41 @@ pub fn run(args: DepArgs) -> Result<bool> {
                     "Input: {} {} from {}",
                     source.source, source.version, source.location
                 ),
+                latest::InputIdentity {
+                    crate_name: None,
+                    source_name: source.source.clone(),
+                    version: source.version.to_string(),
+                },
             )
         }
     };
-    println!("{header}\n");
+    if identity.crate_name.is_none() {
+        for section in &sections {
+            if section.origin == DependencyOrigin::Package {
+                if let Some((name, _, _)) = parse_rust_package_name(&section.name) {
+                    identity.crate_name = Some(name.to_owned());
+                    break;
+                }
+            }
+        }
+        if identity.crate_name.is_none() {
+            identity.crate_name = latest::infer_crate_name(&identity.source_name);
+        }
+    }
+    let release = if matches!(input, Input::Crate(_)) && args.version.is_none() {
+        None
+    } else {
+        Some(latest::read_latest_release(identity.crate_name.as_deref()))
+    };
+    let latest = latest::format_latest(
+        &input,
+        args.version.is_some(),
+        &identity,
+        series,
+        &records.sources,
+        release,
+    );
+    println!("{header}\n{latest}");
     let tables = prepare_tables(sections);
     let candidates = records.packages;
     let mut classified = Vec::new();

@@ -45,7 +45,18 @@ Input: rand 0.8.5 from local:../rand (generated packaging)
 Input: rust-rand 0.8.5-1 from pkg:./rust-rand
 ```
 
-Local-package identity and version come from the top changelog entry; a missing or malformed changelog is an error. Unusable Cargo metadata or debcargo configuration does not prevent inspection. Cross-series checks show the actual input location. The header is present even when all dependency tables are empty. Repository summaries and published-source availability listings are omitted.
+Local-package identity and version come from the top changelog entry; a missing or malformed changelog is an error. Unusable Cargo metadata or debcargo configuration does not prevent inspection. Cross-series checks show the actual input location. The header is present even when all dependency tables are empty. Advisory availability lines follow the input header, for example:
+
+```text
+crates.io availability: 0.9.2
+noble availability: rust-rand 0.8.5-1
+```
+
+Crates.io information comes from its metadata API, selecting the highest non-yanked stable version without downloading a crate archive. A missing crate displays `not published`, a crate with no eligible stable version displays `no stable release`, and request or metadata failures display `unavailable`. Requests have an eight-second overall timeout. These outcomes do not change dependency results or exit status.
+
+The Archive entry describes the checking series and its selected pockets/components, excludes PPAs, and shows the highest full Debian version for each matching source package, retaining parallel semver lines grouped under a single series label. Matching uses conventional Rust source names and declared Rust library binaries; absence displays `not packaged`. Local and published inputs infer the crate name from control-file Rust binaries or conventional source names without requiring usable Cargo metadata.
+
+An entry is omitted when that origin already supplied an implicitly selected latest input. An unversioned crates.io input reuses its resolved version and avoids another API request. An unversioned Archive input omits its matching Archive entry only when the checking series and version match; parallel source packages remain visible. Explicit versions, local inputs, and cross-series checks retain their relevant latest entries.
 
 The report contains one table for each of these, in order, omitting empty tables:
 

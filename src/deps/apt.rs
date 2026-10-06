@@ -48,6 +48,8 @@ pub struct SourceCandidate {
     pub source: String,
     /// Debian source version.
     pub version: Version,
+    /// Declared binaries used to match the packaged crate across source names.
+    pub binaries: Vec<String>,
     /// Repository provenance.
     pub location: String,
     /// Name of the source descriptor.
@@ -474,6 +476,12 @@ fn read_sources(path: &Path, location: &str, sources: &mut Vec<SourceCandidate>)
             .get("Version")
             .context("source record has no Version")?
             .parse()?;
+        let mut binaries = Vec::new();
+        if let Some(names) = paragraph.get("Binary") {
+            for name in names.split(',') {
+                binaries.push(name.trim().to_owned());
+            }
+        }
         let (checksums, checksum_algorithm, digest_length) =
             if let Some(checksums) = paragraph.get("Checksums-Sha512") {
                 (checksums, ChecksumAlgorithm::Sha512, 128)
@@ -509,6 +517,7 @@ fn read_sources(path: &Path, location: &str, sources: &mut Vec<SourceCandidate>)
             format!("source {source} in {location} has no .dsc in its selected checksum field")
         })?;
         sources.push(SourceCandidate {
+            binaries,
             source,
             version,
             location: location.to_owned(),
@@ -894,6 +903,7 @@ mod tests {
         let descriptor = NamedTempFile::new().unwrap();
         fs::write(descriptor.path(), "test").unwrap();
         let mut source = SourceCandidate {
+            binaries: Vec::new(),
             source: "rust-example".to_owned(),
             version: "1.0".parse().unwrap(),
             location: "noble/universe".to_owned(),
