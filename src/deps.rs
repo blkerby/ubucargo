@@ -41,7 +41,7 @@ pub struct DepArgs {
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Checking series; defaults to the Archive input series, otherwise required.
+    /// Checking series; defaults to the Archive input series, otherwise the current Ubuntu development series.
     #[arg(long, value_name = "SERIES")]
     pub series: Option<String>,
 
@@ -139,14 +139,15 @@ pub fn run(args: DepArgs) -> Result<bool> {
         )
     };
     validate_version(&input, args.version.as_deref())?;
-    let series = args
-        .series
-        .as_deref()
-        .or_else(|| match &input {
-            Input::Archive { series, .. } => Some(series.as_str()),
-            _ => None,
-        })
-        .context("--series is required unless an Archive input supplies it")?;
+    let default_series;
+    let series = if let Some(series) = args.series.as_deref() {
+        series
+    } else if let Input::Archive { series, .. } = &input {
+        series.as_str()
+    } else {
+        default_series = apt::read_development_series()?;
+        &default_series
+    };
     let local_changelog = match &input {
         Input::Package(root) => Some(crate::changelog::read_top_changelog(
             &root.join("debian/changelog"),
@@ -1301,10 +1302,10 @@ mod tests {
         assert!(satisfies_package(&unversioned_requirement, &unversioned));
     }
     #[test]
-    /// Requires a checking series and rejects local versions before APT or generation.
+    /// Rejects invalid versions before APT, development-series detection, or generation.
     fn rejects_invalid_inspection_arguments() {
         for (input, version, expected) in [
-            ("crate:serde", None, "--series is required"),
+            ("crate:serde", Some("bad-version"), "exact Cargo version"),
             ("pkg:.", Some("1.0.0"), "VERSION cannot"),
         ] {
             let temporary = tempfile::tempdir().unwrap();

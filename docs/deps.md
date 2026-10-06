@@ -13,12 +13,13 @@ See [input selectors](inputs.md) for the shared explicit grammar, automatic prec
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local packages and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. Published inspection does not require a debcargo configuration. Inspection never modifies an existing package.
 
-An Archive input supplies the default checking series. `noble/rust-serde --series resolute` reads Noble packaging and checks its dependencies against Resolute. Other input kinds require `--series` before generation or network work. A PPA input uses that series for both source selection and checking, and automatically adds its PPA to dependency repositories. Repeated PPA arguments are deduplicated.
+An Archive input supplies the default checking series. `noble/rust-serde --series resolute` reads Noble packaging and checks its dependencies against Resolute. Otherwise, the checking series defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence, followed by the series embedded in an Archive input. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input uses that series for both source selection and checking, and automatically adds its PPA to dependency repositories. Repeated PPA arguments are deduplicated.
 
 Ubuntu source selection considers release, updates, and security in `main` and `universe`, adding proposed only with `--proposed`. Additional PPAs cannot replace an Archive input's input. An explicit Debian source version must exist in the selected source indexes. Otherwise the highest Debian version wins, with deterministic location ordering for ties.
 
 ```console
 ubucargo deps --series noble
+ubucargo deps serde
 ubucargo deps serde --series noble
 ubucargo deps serde 1.0.220 --series noble
 ubucargo deps archive:noble/rust-serde

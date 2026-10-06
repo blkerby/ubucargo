@@ -309,6 +309,21 @@ fn cache_root() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".cache/ubucargo/apt"))
 }
 
+/// Reads the current Ubuntu development series from installed distro-info data.
+pub fn read_development_series() -> Result<String> {
+    let output = run_command(
+        Command::new("ubuntu-distro-info").arg("--devel"),
+        "ubuntu-distro-info --devel",
+    )
+    .context("cannot determine the Ubuntu development series; supply --series explicitly")?;
+    let series = String::from_utf8(output.stdout)
+        .context("invalid development-series output; supply --series explicitly")?;
+    let series = series.trim();
+    validate_name("development series", series)
+        .context("cannot determine the Ubuntu development series; supply --series explicitly")?;
+    Ok(series.to_owned())
+}
+
 /// Reads the host's native Debian architecture.
 pub fn read_architecture() -> Result<String> {
     let output = run_command(

@@ -67,7 +67,7 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 
 See [`docs/package.md`](docs/package.md) for full behavior and options.
 
-Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and predictable automatic spellings. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`. `deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog. Archive inputs default the checking series; `--series` overrides checking without changing input origin. Published-package imports into `package` are deferred. Old input flags have been removed; `package --package-dir` remains the workspace to create or update.
+Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and predictable automatic spellings. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`. `deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog. Archive inputs default the checking series; other inputs default to `ubuntu-distro-info --devel`; `--series` overrides checking without changing input origin. Published-package imports into `package` are deferred. Old input flags have been removed; `package --package-dir` remains the workspace to create or update.
 
 ### `deps`
 
@@ -86,4 +86,4 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 ## Requirements
 
-It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
+It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, distro-info (for automatic development-series selection), GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
