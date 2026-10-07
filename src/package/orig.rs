@@ -68,26 +68,3 @@ fn find_orig(directory: &Path, top: &TopChangelog) -> Option<PathBuf> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    /// Verifies local orig discovery.
-    fn finds_local_orig() {
-        let parent = tempfile::tempdir().unwrap();
-        let root = parent.path().join("rust-example");
-        fs::create_dir(&root).unwrap();
-        let orig = parent.path().join("rust-example_1.0.0.orig.tar.gz");
-        fs::write(&orig, "orig").unwrap();
-        let top = TopChangelog {
-            source: "rust-example".to_owned(),
-            version: "1.0.0-0ubuntu1".to_owned(),
-            upstream: "1.0.0".to_owned(),
-            distribution: "noble".to_owned(),
-        };
-        assert_eq!(acquire_old_orig(&root, &top).unwrap().path, orig);
-    }
-}

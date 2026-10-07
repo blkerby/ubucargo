@@ -110,3 +110,15 @@ See [`docs/deps.md`](docs/deps.md) for details.
 ## Requirements
 
 It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, distro-info (for automatic development-series selection), GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
+
+## Testing
+
+Run the package end-to-end tests with:
+
+```sh
+cargo test --offline --test package
+```
+
+The four tests invoke the CLI and real packaging tools using dependency-free local crates, private Cargo caches, and Cargo's offline mode. They cover creation and upgrades, maintainer overrides and ownership decisions, source conflicts and local additions, and repacking with maintainer patches. Dry runs and rejected operations are checked against complete snapshots of the package directory and adjacent orig archives.
+
+Rust dependencies must be cached before building with `--offline`. The tests require debcargo, quilt, devscripts (`dch`), ubuntu-dev-tools (`update-maintainer`), and the GNU coreutils and tar commands used during packaging; they require no external services or network access.
