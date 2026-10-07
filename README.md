@@ -1,6 +1,6 @@
 # Ubucargo
 
-Ubucargo is a tool for creating and maintaining Ubuntu packages for Rust crates, translating Cargo dependencies in `Cargo.toml` into Debian source package data such as `debian/control`. It is a wrapper around `debcargo`, the corresponding tool for Debian packages.
+Ubucargo is a tool for creating and maintaining Ubuntu packages for Rust crates, translating Cargo dependencies in `Cargo.toml` into Debian source package data including `debian/control`. It is a wrapper around `debcargo`, the corresponding tool for Debian packages.
 
 Disclaimer: This software is currently **experimental**. It may contain bugs, and its CLI may change.
 
@@ -16,9 +16,9 @@ Benefits of Ubucargo include the following:
 - Regenerating source packaging can be done without interfering with local files such as a `.git` directory. This way `ubucargo` can be conveniently used in conjunction with tools such as `git-ubuntu` and `gbp`.
 - Ubucargo invokes `debcargo` internally, to ensure good alignment with Debian Rust packaging policy.
 
-## Drawbacks
+## How it works
 
-The main complication of this approach is that when running `ubucargo package` on an existing package, it must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides that should be preserved. The way that `ubucargo` handles this is to keep track of content hashes for latest generated content in a manifest at `debian/ubucargo-state.json`. Files matching that record are considered generator-owned and can be updated automatically; changed or deleted files are preserved as maintainer overrides. The status of each generated file is included in the output. Existing Debian `.debcargo.hint` files establish the initial baseline when no manifest entry exists (e.g. when running `ubucargo package` for the first time on a package synced from Debian). When the manifest record and hint are both missing or conflicting, a one-time explicit `--keep` or `--replace` decision is required from the maintainer.
+The main complication of this approach is that when running `ubucargo package` on an existing package, it must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides that should be preserved. The way that `ubucargo` handles this is to keep track of content hashes for latest generated content in a manifest at `debian/ubucargo-state.json`. Files matching that record are considered generator-owned and can be updated automatically; changed or deleted files are preserved as maintainer overrides. The status of each generated file is displayed in the output. Existing Debian `.debcargo.hint` files establish the baseline when no manifest entry exists (e.g. when running `ubucargo package` for the first time on a package synced from Debian). When the manifest record and hint are both missing or conflicting, a one-time explicit `--keep` or `--replace` decision is required from the maintainer.
 
 Similarly, when an operation affects the upstream source tree, `ubucargo` must infer which files were part of the old upstream and should be replaced, and which files are local and should be retained. This applies, for example, when upgrading a package to a new upstream version, or when repackaging after changing the `excludes` filter in `debcargo.toml`. To resolve this in a general way, `ubucargo` compares the current source tree with the orig tarball referenced in the top-most `changelog` entry: files in the source tree that are not present in the orig tarball are treated as local additions to be retained, while missing or modified files are treated as inconsistencies resulting in an error.
 
@@ -34,7 +34,7 @@ Each source package contains its upstream source, generator input `debcargo.toml
     src/
     debian/
       debcargo.toml               # generator input
-      ubucargo-state.json         # latest generated fingerprints
+      ubucargo-state.json         # latest generated hashes
       control                     # generated
       rules                       # generated
       patches/                    # maintainer-owned except generated auto/
@@ -49,6 +49,8 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | ------------------ | --------------------------------- | ------------------------------------ |
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
 | `ubucargo deps`    | Inspect dependency candidates     | [`docs/deps.md`](docs/deps.md)       |
+
+Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and shorthands. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`.
 
 ### `package`
 
@@ -67,7 +69,7 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 
 See [`docs/package.md`](docs/package.md) for full behavior and options.
 
-Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and predictable automatic spellings. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`. `deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header, followed by latest crates.io and Ubuntu versions. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog. Archive inputs default the checking series; other inputs default to `ubuntu-distro-info --devel`; `--series` overrides checking without changing input origin. Published-package imports into `package` are deferred. Old input flags have been removed; `package --package-dir` remains the workspace to create or update.
+Published-package imports into `package` are deferred. `--package-dir` remains the workspace to create or update.
 
 ### `deps`
 
@@ -81,6 +83,10 @@ ubucargo deps [INPUT [VERSION]] [--series SERIES] \
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when all dependencies are satisfiable, 1 when any are incompatible or missing, and 2 on errors.
+
+`deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header, followed by latest crates.io and Ubuntu versions. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog.
+
+Archive inputs default the checking series; other inputs default to `ubuntu-distro-info --devel`. `--series` overrides checking without changing input origin.
 
 See [`docs/deps.md`](docs/deps.md) for details.
 
