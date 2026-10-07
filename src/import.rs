@@ -1,0 +1,38 @@
+//! Imports published Debian source packages without regeneration.
+
+use crate::{
+    input::{parse_input, validate_version},
+    published::{acquire_package, install_package},
+};
+use anyhow::Result;
+use std::path::PathBuf;
+
+/// Import a published source package unchanged.
+#[derive(clap::Args)]
+pub struct ImportArgs {
+    /// Published input: archive:SUITE/SOURCE or ppa:OWNER/NAME/SERIES/SOURCE.
+    #[arg(value_name = "INPUT")]
+    pub input: String,
+    /// Exact Debian source version; defaults to the highest published version.
+    #[arg(value_name = "VERSION")]
+    pub version: Option<String>,
+    /// New source-package directory; defaults to SOURCE in the current directory.
+    #[arg(long, value_name = "DIR")]
+    pub package_dir: Option<PathBuf>,
+    /// Retain downloaded source staging, including on failure.
+    #[arg(long)]
+    pub keep_staging: bool,
+}
+
+/// Downloads and installs the selected source without modifying its packaging.
+pub fn run(args: ImportArgs) -> Result<bool> {
+    let input = parse_input(&args.input, &std::env::current_dir()?)?;
+    validate_version(&input, args.version.as_deref())?;
+    let package = acquire_package(
+        &input,
+        args.version.as_deref(),
+        args.package_dir.as_deref(),
+        args.keep_staging,
+    )?;
+    install_package(&package, false)
+}

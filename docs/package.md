@@ -14,7 +14,13 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 
 ## Input and version selection
 
-See [input selectors](inputs.md) for explicit and automatic input spellings. `pkg:./rust-serde` (or automatic `./rust-serde`) reconciles that workspace in place and cannot be combined with `--package-dir`. Published Archive/PPA imports are unsupported. Omitting the input retains nearest-parent selection and existing `--package-dir` behavior. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
+See [input selectors](inputs.md) for explicit and automatic input spellings. `pkg:./rust-serde` (or automatic `./rust-serde`) reconciles that workspace in place and cannot be combined with `--package-dir`. Published Archive/PPA inputs download the selected Debian source version and regenerate its maintained packaging in staging before installation. They require a new destination, defaulting to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). Use `--package-dir` to select another new directory; parent-package discovery does not apply to published inputs. Omitting the input retains nearest-parent selection and existing `--package-dir` behavior. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
+
+Published inputs preserve the selected upstream release rather than upgrading to the latest crate. Their positional `VERSION` is the published Debian version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same reconciliation rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. `--check` performs the full regeneration in temporary staging and reports installation without creating the destination. Acquisition and regeneration failures leave the destination untouched.
+
+The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing archive with different contents causes an error. Published regeneration supports a single main orig baseline; supplementary orig components are not merged into that baseline.
+
+Use [`import`](import.md) to extract maintained published packaging without regenerating it.
 
 `--package-dir` means “Source-package directory to create or update.” An existing workspace supplies configuration, patches, maintainer overrides, and reconciliation state as well as receiving changes. Orig tarballs remain beside this directory. No `--output-dir` option is introduced.
 

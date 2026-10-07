@@ -5,7 +5,8 @@ use anyhow::Result;
 use semver::Version;
 use serde::Deserialize;
 
-use super::{apt::SourceCandidate, control::parse_rust_package_name};
+use super::control::parse_rust_package_name;
+use crate::apt::SourceCandidate;
 use crate::{input::Input, resolve::normalize_crate_name};
 
 /// Resolved input identity used to compare available versions without changing the input.
@@ -181,11 +182,11 @@ pub fn format_latest(
     for source in latest.values() {
         if !explicit_version
             && let Input::Archive {
-                series: input_series,
+                suite: input_suite,
                 source: input_source,
             } = input
         {
-            if input_series == series
+            if crate::input::split_archive_suite(input_suite).0 == series
                 && *input_source == source.source
                 && identity.version == source.version.to_string()
             {
@@ -251,7 +252,7 @@ mod tests {
                 binaries: Vec::new(),
                 dsc: "example.dsc".to_owned(),
                 checksum: "a".repeat(64),
-                checksum_algorithm: super::super::apt::ChecksumAlgorithm::Sha256,
+                checksum_algorithm: crate::apt::ChecksumAlgorithm::Sha256,
                 size: 4,
             });
         }
@@ -299,12 +300,12 @@ mod tests {
                 binaries: Vec::new(),
                 dsc: "example.dsc".to_owned(),
                 checksum: "a".repeat(64),
-                checksum_algorithm: super::super::apt::ChecksumAlgorithm::Sha256,
+                checksum_algorithm: crate::apt::ChecksumAlgorithm::Sha256,
                 size: 4,
             });
         }
         let input = Input::Archive {
-            series: "noble".to_owned(),
+            suite: "noble".to_owned(),
             source: "rust-rand".to_owned(),
         };
         let identity = InputIdentity {

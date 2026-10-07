@@ -48,9 +48,10 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | Command            | Purpose                           | Detailed specification               |
 | ------------------ | --------------------------------- | ------------------------------------ |
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
+| `ubucargo import` | Import a published source package unchanged | [`docs/import.md`](docs/import.md) |
 | `ubucargo deps`    | Inspect dependency candidates     | [`docs/deps.md`](docs/deps.md)       |
 
-Both commands use [shared input selectors](docs/inputs.md), including explicit `crate:`, `pkg:`, and `local:` forms and shorthands. Automatic directory inputs select existing source packages; local Cargo crates require `local:PATH`.
+These commands share a common syntax for specifying an input crate or syntax, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](docs/inputs.md) for details.
 
 ### `package`
 
@@ -67,9 +68,26 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 - After changing `debcargo.toml`, run `ubucargo package` again.
 - `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
 
+```sh
+ubucargo package serde
+```
+
 See [`docs/package.md`](docs/package.md) for full behavior and options.
 
-Published-package imports into `package` are deferred. `--package-dir` remains the workspace to create or update.
+### `import`
+
+```console
+ubucargo import INPUT [VERSION] [--package-dir DIR] \
+  [--keep-staging]
+```
+
+`import` downloads and extracts a published Archive/PPA source package without regenerating it, placing its orig tarballs beside the source directory:
+
+```sh
+ubucargo import resolute/rust-serde
+```
+
+See [`docs/import.md`](docs/import.md) for full behavior and options.
 
 ### `deps`
 
@@ -78,15 +96,14 @@ ubucargo deps [INPUT [VERSION]] [--series SERIES] \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-- Run `ubucargo deps --series SERIES` inside a source package, or use `pkg:DIR` to select one explicitly.
-- Run `ubucargo deps CRATE [VERSION] --series SERIES` to inspect a crates.io release without creating a source package.
+`deps` reports the direct Rust library dependencies, represented by `librust-*-dev` packages needed to build and install every binary package and to run autopkgtests.
+
+- Run `ubucargo deps CRATE [VERSION]` to inspect a crates.io release without creating a source package.
+- Run `ubucargo deps` inside a source package, or use `pkg:<DIR>` to select one explicitly.
+- Use `--series SERIES` to select an Ubuntu series for resolving dependencies. This defaults to the current Ubuntu development series.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when all dependencies are satisfiable, 1 when any are incompatible or missing, and 2 on errors.
-
-`deps` also accepts `archive:SERIES/SOURCE` (or `SERIES/SOURCE`) and `ppa:OWNER/NAME/SOURCE`, reads published maintained packaging, and identifies the resolved input in a single-line header, followed by latest crates.io and Ubuntu versions. Published input selection uses signed APT Sources indexes; local-package inspection requires a valid changelog.
-
-Archive inputs default the checking series; other inputs default to `ubuntu-distro-info --devel`. `--series` overrides checking without changing input origin.
 
 See [`docs/deps.md`](docs/deps.md) for details.
 

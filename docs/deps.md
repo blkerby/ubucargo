@@ -13,20 +13,20 @@ See [input selectors](inputs.md) for the shared explicit grammar, automatic prec
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local packages and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. Published inspection does not require a debcargo configuration. Inspection never modifies an existing package.
 
-An Archive input supplies the default checking series. `noble/rust-serde --series resolute` reads Noble packaging and checks its dependencies against Resolute. Otherwise, the checking series defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence, followed by the series embedded in an Archive input. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input uses that series for both source selection and checking, and automatically adds its PPA to dependency repositories. Repeated PPA arguments are deduplicated.
+A published input supplies the default checking series: its base Archive series or explicit PPA series. `resolute-proposed/rust-serde --series jammy` reads Resolute proposed packaging and checks its dependencies against Jammy. Otherwise, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the published input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
 
-Ubuntu source selection considers release, updates, and security in `main` and `universe`, adding proposed only with `--proposed`. Additional PPAs cannot replace an Archive input's input. An explicit Debian source version must exist in the selected source indexes. Otherwise the highest Debian version wins, with deterministic location ordering for ties.
+Source selection is independent of `--series` and `--proposed`. A bare Archive series considers release, updates, and security in `main` and `universe`. A suffixed suite (for example, `resolute-proposed`) selects only that pocket. PPA selectors require their own series. Additional PPAs cannot replace an Archive input's source. An explicit Debian source version must exist in the input's source indexes. Otherwise the highest Debian version wins, with deterministic location ordering for ties.
 
 ```console
-ubucargo deps --series noble
+ubucargo deps --series resolute
 ubucargo deps serde
-ubucargo deps serde --series noble
-ubucargo deps serde 1.0.220 --series noble
-ubucargo deps archive:noble/rust-serde
-ubucargo deps noble/rust-serde --series resolute
-ubucargo deps ppa:myuser/rust-staging/rust-serde --series noble
-ubucargo deps pkg:./rust-serde --series noble
-ubucargo deps local:../serde --series noble
+ubucargo deps serde --series resolute
+ubucargo deps serde 1.0.220 --series resolute
+ubucargo deps archive:resolute/rust-serde
+ubucargo deps resolute/rust-serde --series jammy
+ubucargo deps ppa:myuser/rust-staging/resolute/rust-serde --series resolute
+ubucargo deps pkg:./rust-serde --series resolute
+ubucargo deps local:../serde --series resolute
 ```
 
 `--keep-staging` retains and prints generated or published-input staging, including on failure. Existing local package inspection creates no staging directory.
@@ -38,8 +38,8 @@ ubucargo deps local:../serde --series noble
 A single line identifies the resolved input name, version, and location:
 
 ```text
-Input: rust-rand 0.8.5-1 from noble/universe
-Input: rust-rand 0.8.5-1 from ppa:owner/staging (noble)
+Input: rust-rand 0.8.5-1 from resolute/universe
+Input: rust-rand 0.8.5-1 from ppa:owner/staging (resolute)
 Input: rand 0.8.5 from crates.io (generated packaging)
 Input: rand 0.8.5 from local:../rand (generated packaging)
 Input: rust-rand 0.8.5-1 from pkg:./rust-rand
@@ -49,7 +49,7 @@ Local-package identity and version come from the top changelog entry; a missing 
 
 ```text
 crates.io availability: 0.9.2
-noble availability: rust-rand 0.8.5-1
+resolute availability: rust-rand 0.8.5-1
 ```
 
 Crates.io information comes from its metadata API, selecting the highest non-yanked stable version without downloading a crate archive. A missing crate displays `not published`, a crate with no eligible stable version displays `no stable release`, and request or metadata failures display `unavailable`. Requests have an eight-second overall timeout. These outcomes do not change dependency results or exit status.
@@ -73,9 +73,9 @@ The report shows each dependency and its candidates:
 ```text
 Package: librust-example-dev
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
-serde       selected      ppa:example/rust-staging (noble)    1.0.219-1    1 +derive
-            available     noble-updates/universe              1.0.217-1    1 +derive
-syn         incompatible  noble/universe                      1.0.109-2    2 -default
+serde       selected      ppa:example/rust-staging (resolute)    1.0.219-1    1 +derive
+            available     resolute-updates/universe              1.0.217-1    1 +derive
+syn         incompatible  resolute/universe                      1.0.109-2    2 -default
 foo         missing       -                                   -            3
 
 Tests: rust-example
@@ -124,7 +124,7 @@ In all modes, candidates are ordered deterministically from the local APT indexe
 
 `deps` downloads binary `Packages` and source `Sources` indexes through its isolated, signature-verified APT view. Packages supply versions and versioned `Provides` for dependency classification; Sources supply publication selection and authenticated `.dsc` checksums.
 
-Published inputs are retrieved at the indexed exact version with `pull-lp-source` or `pull-ppa-source`. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. If input and checking series differ, their APT views are queried sequentially; input-series binaries cannot enter dependency classification.
+Published inputs are retrieved at the indexed exact version with `pull-lp-source` or `pull-ppa-source`. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. Input and checking APT views are queried sequentially; input-series binaries cannot enter dependency classification.
 
 Every invocation asks APT to update the selected indexes. APT reuses unchanged files and may apply index deltas. Indexes for all previously requested series and PPAs share the cache described in [`apt-cache.md`](apt-cache.md).
 

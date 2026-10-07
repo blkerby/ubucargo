@@ -200,6 +200,23 @@ pub fn load_records(
     })
 }
 
+/// Queries published input metadata independently of dependency environment options.
+pub fn load_source_records(
+    input: &crate::input::Input,
+    architecture: &str,
+) -> Result<Vec<SourceCandidate>> {
+    let mut ppas = Vec::new();
+    let series = match input {
+        crate::input::Input::Archive { suite, .. } => suite,
+        crate::input::Input::Ppa { ppa, series, .. } => {
+            ppas.push(ppa.clone());
+            series
+        }
+        _ => bail!("expected a published source input"),
+    };
+    Ok(load_records(series, architecture, false, &ppas)?.sources)
+}
+
 /// Locks the shared APT view, replacing its sources only when their contents change.
 fn prepare_view(
     cache: &Path,
@@ -258,30 +275,44 @@ fn prepare_view(
     } else {
         "https://security.ubuntu.com/ubuntu"
     };
-    let proposed_suite = if proposed {
-        format!(" {series}-proposed")
+    let (_, pocket) = crate::input::split_archive_suite(series);
+    let suites = if pocket.is_some() {
+        series.to_owned()
+    } else if proposed {
+        format!("{series} {series}-updates {series}-proposed")
     } else {
-        String::new()
+        format!("{series} {series}-updates")
+    };
+    let archive = if pocket == Some("security") {
+        security
+    } else {
+        archive
     };
     sources.push_str(&formatdoc! {
         "
         Types: deb deb-src
         URIs: {archive}
-        Suites: {series} {series}-updates{proposed_suite}
-        Components: main universe
-        Architectures: {architecture}
-        Targets: Packages Sources
-        Signed-By: {UBUNTU_KEYRING}
-
-        Types: deb deb-src
-        URIs: {security}
-        Suites: {series}-security
+        Suites: {suites}
         Components: main universe
         Architectures: {architecture}
         Targets: Packages Sources
         Signed-By: {UBUNTU_KEYRING}
         "
     });
+    if pocket.is_none() {
+        sources.push_str(&formatdoc! {
+            "
+
+            Types: deb deb-src
+            URIs: {security}
+            Suites: {series}-security
+            Components: main universe
+            Architectures: {architecture}
+            Targets: Packages Sources
+            Signed-By: {UBUNTU_KEYRING}
+            "
+        });
+    }
     let source_path = cache.join("sources.sources");
     let previous = match fs::read(&source_path) {
         Ok(contents) => contents,

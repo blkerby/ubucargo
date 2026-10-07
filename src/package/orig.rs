@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::util::run_command;
 use tempfile::TempDir;
@@ -23,9 +23,7 @@ pub struct OrigBaseline {
 /// Finds the old orig locally or downloads the exact Launchpad source.
 pub fn acquire_old_orig(root: &Path, top: &TopChangelog) -> Result<OrigBaseline> {
     let parent = root.parent().context("package root has no parent")?;
-    let expected_name = format!("{}_{}.orig.tar.gz", top.source, top.upstream);
-    let local = parent.join(&expected_name);
-    if local.is_file() {
+    if let Some(local) = find_orig(parent, top) {
         return Ok(OrigBaseline {
             path: local,
             _temporary: None,
@@ -44,16 +42,30 @@ pub fn acquire_old_orig(root: &Path, top: &TopChangelog) -> Result<OrigBaseline>
 
     // pull-lp-source already verifies downloaded source files against their `.dsc`.
     // So here we only check that the downloaded tarball exists.
-    let orig = download
-        .path()
-        .join(format!("{}_{}.orig.tar.gz", top.source, top.upstream));
-    if !orig.is_file() {
-        bail!("pull-lp-source did not produce {}", orig.display());
-    }
+    let orig = find_orig(download.path(), top).with_context(|| {
+        format!(
+            "pull-lp-source did not produce an orig tarball for {} {}",
+            top.source, top.upstream
+        )
+    })?;
     Ok(OrigBaseline {
         path: orig,
         _temporary: Some(download),
     })
+}
+
+/// Finds the main orig tarball using the compression formats supported by dpkg-source.
+fn find_orig(directory: &Path, top: &TopChangelog) -> Option<PathBuf> {
+    for extension in ["gz", "xz", "bz2", "lzma"] {
+        let path = directory.join(format!(
+            "{}_{}.orig.tar.{extension}",
+            top.source, top.upstream
+        ));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

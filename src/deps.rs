@@ -1,6 +1,5 @@
 //! Inspects Ubuntu binary package candidates for direct Rust dependencies.
 
-mod apt;
 mod control;
 mod latest;
 
@@ -14,14 +13,15 @@ use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
 use crate::{
-    generate,
+    apt, generate,
     input::{Input, parse_input, validate_version},
     resolve,
 };
 
-use self::{
-    apt::PackageCandidate,
-    control::{DependencyOrigin, DependencySection, PackageRequirement, parse_rust_package_name},
+use crate::apt::PackageCandidate;
+
+use self::control::{
+    DependencyOrigin, DependencySection, PackageRequirement, parse_rust_package_name,
 };
 
 const GREEN: &str = "\x1b[32m";
@@ -34,7 +34,7 @@ const RESET: &str = "\x1b[0m";
 /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
 #[derive(clap::Args)]
 pub struct DepArgs {
-    /// Input selector: crate:NAME, archive:SERIES/SOURCE, ppa:OWNER/NAME/SOURCE, pkg:PATH, or local:PATH.
+    /// Input selector: crate:NAME, archive:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
     #[arg(value_name = "INPUT")]
     pub input: Option<String>,
 
@@ -42,7 +42,7 @@ pub struct DepArgs {
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Checking series; defaults to the Archive input series, otherwise the current Ubuntu development series.
+    /// Checking series; defaults to the published input series, otherwise the current Ubuntu development series.
     #[arg(long, value_name = "SERIES")]
     pub series: Option<String>,
 
@@ -143,8 +143,8 @@ pub fn run(args: DepArgs) -> Result<bool> {
     let default_series;
     let series = if let Some(series) = args.series.as_deref() {
         series
-    } else if let Input::Archive { series, .. } = &input {
-        series.as_str()
+    } else if let Some(series) = crate::input::read_input_series(&input) {
+        series
     } else {
         default_series = apt::read_development_series()?;
         &default_series
@@ -167,21 +167,11 @@ pub fn run(args: DepArgs) -> Result<bool> {
         ppas.insert(ppa.clone());
     }
     let ppas: Vec<_> = ppas.into_iter().collect();
-    let mut input_records = None;
-    if let Input::Archive {
-        series: input_series,
-        ..
-    } = &input
-    {
-        if input_series != series {
-            input_records = Some(apt::load_records(
-                input_series,
-                &architecture,
-                args.proposed,
-                &[],
-            )?);
-        }
-    }
+    let input_records = if crate::input::read_input_series(&input).is_some() {
+        Some(apt::load_source_records(&input, &architecture)?)
+    } else {
+        None
+    };
     let records = apt::load_records(series, &architecture, args.proposed, &ppas)?;
     let (sections, header, mut identity) = match &input {
         Input::Crate(_) | Input::Local(_) => {
@@ -234,7 +224,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
                 _ => None,
             };
             let source = apt::select_source(
-                &input_records.as_ref().unwrap_or(&records).sources,
+                input_records.as_ref().unwrap(),
                 source,
                 ppa,
                 args.version.as_deref(),

@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 pub enum Input {
     /// A crates.io crate.
     Crate(String),
-    /// A published Ubuntu source package in a particular series.
+    /// A published Ubuntu source package in a series or explicit pocket.
     Archive {
-        /// Input series, independent of dependency checking overrides.
-        series: String,
+        /// Input series or suite, independent of dependency checking overrides.
+        suite: String,
         /// Exact Debian source-package name.
         source: String,
     },
@@ -19,6 +19,8 @@ pub enum Input {
     Ppa {
         /// Public archive in ppa:OWNER/NAME notation.
         ppa: String,
+        /// Ubuntu series in which the PPA source is published.
+        series: String,
         /// Exact Debian source-package name.
         source: String,
     },
@@ -42,14 +44,15 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
             "archive" => parse_archive(rest),
             "ppa" => {
                 let fields: Vec<_> = rest.split('/').collect();
-                let [owner, name, source] = fields.as_slice() else {
-                    bail!("expected ppa:OWNER/NAME/SOURCE");
+                let [owner, name, series, source] = fields.as_slice() else {
+                    bail!("expected ppa:OWNER/NAME/SERIES/SOURCE");
                 };
                 for field in &fields {
                     validate_name("PPA input field", field)?;
                 }
                 Ok(Input::Ppa {
                     ppa: format!("ppa:{owner}/{name}"),
+                    series: series.to_string(),
                     source: source.to_string(),
                 })
             }
@@ -101,15 +104,34 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
     Ok(Input::Crate(value.to_owned()))
 }
 
-/// Parses a series and exact source-package name.
+/// Parses a series or suite and exact source-package name.
 fn parse_archive(value: &str) -> Result<Input> {
-    let (series, source) = value.split_once('/').context("expected SERIES/SOURCE")?;
-    validate_name("series", series)?;
+    let (suite, source) = value.split_once('/').context("expected SUITE/SOURCE")?;
+    validate_name("suite", suite)?;
     validate_name("source", source)?;
     Ok(Input::Archive {
-        series: series.to_owned(),
+        suite: suite.to_owned(),
         source: source.to_owned(),
     })
+}
+
+/// Splits an Archive selector's suite into its base series and optional pocket.
+pub fn split_archive_suite(suite: &str) -> (&str, Option<&str>) {
+    if let Some((series, pocket)) = suite.rsplit_once('-')
+        && matches!(pocket, "updates" | "security" | "proposed" | "backports")
+    {
+        return (series, Some(pocket));
+    }
+    (suite, None)
+}
+
+/// Returns the input's base series when it selects a published source.
+pub fn read_input_series(input: &Input) -> Option<&str> {
+    match input {
+        Input::Archive { suite, .. } => Some(split_archive_suite(suite).0),
+        Input::Ppa { series, .. } => Some(series),
+        _ => None,
+    }
 }
 
 /// Rejects empty or unsafe input name fields.
@@ -161,9 +183,10 @@ mod tests {
             );
         }
         assert_eq!(
-            parse_input("ppa:owner/staging/rust-serde", current).unwrap(),
+            parse_input("ppa:owner/staging/noble/rust-serde", current).unwrap(),
             Input::Ppa {
                 ppa: "ppa:owner/staging".to_owned(),
+                series: "noble".to_owned(),
                 source: "rust-serde".to_owned()
             }
         );

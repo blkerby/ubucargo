@@ -36,11 +36,11 @@ mod source;
 /// Create or reconcile a complete source package.
 #[derive(clap::Args)]
 pub struct PackageArgs {
-    /// Input selector: crate:NAME, pkg:PATH, or local:PATH; defaults to the nearest package.
+    /// Crate, published source, package, or local input; defaults to the nearest package.
     #[arg(value_name = "INPUT")]
     pub input: Option<String>,
 
-    /// Exact crate version; defaults to the latest release when a crate is named.
+    /// Exact Cargo or Debian source version; defaults to the latest selected release.
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
@@ -70,7 +70,7 @@ pub struct PackageArgs {
 }
 
 /// Creates or reconciles one source package, returning true when check mode finds changes.
-pub fn run(args: PackageArgs) -> Result<bool> {
+pub fn run(mut args: PackageArgs) -> Result<bool> {
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
@@ -83,6 +83,37 @@ pub fn run(args: PackageArgs) -> Result<bool> {
         .transpose()?;
     if let Some(input) = &input {
         crate::input::validate_version(input, args.version.as_deref())?;
+    }
+    if let Some(input @ (crate::input::Input::Archive { .. } | crate::input::Input::Ppa { .. })) =
+        &input
+    {
+        let imported = crate::published::acquire_package(
+            input,
+            args.version.as_deref(),
+            args.package_dir.as_deref(),
+            args.keep_staging,
+        )?;
+        // dpkg-source applies quilt patches on extraction. Regeneration works
+        // against the unpatched upstream tree and reads the maintained stack.
+        let applied = imported.root.join(".pc/applied-patches");
+        if applied.is_file() && !fs::read_to_string(&applied)?.trim().is_empty() {
+            crate::util::run_command(
+                std::process::Command::new("quilt")
+                    .args(["pop", "--quiltrc=-", "-a"])
+                    .env("QUILT_PATCHES", "debian/patches")
+                    .current_dir(&imported.root),
+                "pop imported quilt patches",
+            )?;
+        }
+        let check = args.check;
+        args.input = None;
+        args.version = None;
+        args.package_dir = Some(imported.root.clone());
+        // Reconcile only staging, even in check mode, so installation always
+        // uses the same validated result without touching the destination.
+        args.check = false;
+        run(args)?;
+        return crate::published::install_package(&imported, check);
     }
     let mut destination = args.package_dir.as_deref();
     let mut name = None;
@@ -101,9 +132,7 @@ pub fn run(args: PackageArgs) -> Result<bool> {
             }
             local = Some(path.as_path());
         }
-        Some(_) => bail!(
-            "published-package imports are unsupported by package; use deps to inspect published inputs"
-        ),
+        Some(_) => unreachable!(),
         None => {}
     }
     let resolved = resolve_package(
