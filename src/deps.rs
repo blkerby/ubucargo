@@ -229,7 +229,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
                 ppa,
                 args.version.as_deref(),
             )?;
-            let (_stage, root) = apt::retrieve_source(source, ppa, args.keep_staging)?;
+            let (_stage, root) = apt::retrieve_source(source, args.keep_staging)?;
             (
                 control::read_dependency_sections(&root, &architecture)?,
                 format!(

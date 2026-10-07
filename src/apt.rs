@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::util::{run_command, write_file};
+use crate::util::{run_command, run_streaming_command, write_file};
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::{lossy::apt::Package, relations::VersionConstraint};
 use debversion::Version;
@@ -54,6 +54,8 @@ pub struct SourceCandidate {
     pub location: String,
     /// Name of the source descriptor.
     pub dsc: String,
+    /// Exact descriptor URL in the selected repository.
+    pub dsc_url: String,
     /// Strong digest from the signed source index.
     pub checksum: String,
     /// Algorithm used to verify the descriptor digest.
@@ -155,7 +157,7 @@ pub fn load_records(
         indexes.args([
             "indextargets",
             "--format",
-            "$(FILENAME)|$(SITE)|$(RELEASE)|$(COMPONENT)|$(ARCHITECTURE)|$(IDENTIFIER)",
+            "$(FILENAME)|$(SITE)|$(REPO_URI)|$(RELEASE)|$(COMPONENT)|$(ARCHITECTURE)|$(IDENTIFIER)",
         ]),
         "apt-get indextargets",
     )?;
@@ -168,6 +170,7 @@ pub fn load_records(
         let [
             filename,
             site,
+            repository_uri,
             release,
             component,
             index_architecture,
@@ -175,13 +178,13 @@ pub fn load_records(
         ] = fields.as_slice()
         else {
             bail!(
-                "unexpected apt-get indextargets row: expected 6 fields, got {}: {line:?}",
+                "unexpected apt-get indextargets row: expected 7 fields, got {}: {line:?}",
                 fields.len()
             );
         };
         let location = format_location(site, release, component);
         if *identifier == "Sources" {
-            read_sources(Path::new(filename), &location, &mut sources)?;
+            read_sources(Path::new(filename), repository_uri, &location, &mut sources)?;
             continue;
         }
         if *identifier != "Packages" || *index_architecture != architecture {
@@ -494,7 +497,12 @@ fn read_index(
 }
 
 /// Reads source publications and authenticated descriptor checksums from an APT Sources index.
-fn read_sources(path: &Path, location: &str, sources: &mut Vec<SourceCandidate>) -> Result<()> {
+fn read_sources(
+    path: &Path,
+    repository_uri: &str,
+    location: &str,
+    sources: &mut Vec<SourceCandidate>,
+) -> Result<()> {
     let file =
         fs::File::open(path).with_context(|| format!("read source index {}", path.display()))?;
     for paragraph in Deb822::iter_paragraphs_from_reader(BufReader::new(file)) {
@@ -547,7 +555,17 @@ fn read_sources(path: &Path, location: &str, sources: &mut Vec<SourceCandidate>)
         let (dsc, checksum, size) = descriptor.with_context(|| {
             format!("source {source} in {location} has no .dsc in its selected checksum field")
         })?;
+        let directory = paragraph
+            .get("Directory")
+            .context("source record has no Directory")?;
+        let dsc_url = format!(
+            "{}/{}/{}",
+            repository_uri.trim_end_matches('/'),
+            directory.trim_matches('/'),
+            dsc
+        );
         sources.push(SourceCandidate {
+            dsc_url,
             binaries,
             source,
             version,
@@ -599,7 +617,6 @@ pub fn select_source<'a>(
 /// Downloads an indexed source, checks its descriptor, and extracts maintained packaging.
 pub fn retrieve_source(
     source: &SourceCandidate,
-    ppa: Option<&str>,
     keep: bool,
 ) -> Result<(tempfile::TempDir, PathBuf)> {
     let stage = tempfile::Builder::new().disable_cleanup(keep).tempdir()?;
@@ -609,25 +626,20 @@ pub fn retrieve_source(
             stage.path().display()
         );
     }
-    let mut command = Command::new(if ppa.is_some() {
-        "pull-ppa-source"
-    } else {
-        "pull-lp-source"
-    });
-    command.args(["--no-conf", "--download-only", "--no-verify-signature"]);
-    if let Some(ppa) = ppa {
-        command.args([
-            "--ppa",
-            ppa.strip_prefix("ppa:")
-                .context("expected ppa:OWNER/NAME")?,
-        ]);
-    }
-    command
-        .arg(&source.source)
-        .arg(source.version.to_string())
-        .current_dir(stage.path());
     // Authentication comes from the signed Sources checksum; uploader keys need not be installed.
-    run_command(&mut command, "download indexed source package")?;
+    eprintln!("Downloading {} {} ...", source.source, source.version);
+    run_streaming_command(
+        Command::new("dget")
+            .args([
+                "--no-conf",
+                "--quiet",
+                "--download-only",
+                "--allow-unauthenticated",
+            ])
+            .arg(&source.dsc_url)
+            .current_dir(stage.path()),
+        "download indexed source package",
+    )?;
     let descriptor = stage.path().join(&source.dsc);
     verify_descriptor(&descriptor, source)?;
     let root = stage.path().join("source");
@@ -886,10 +898,16 @@ mod tests {
             ("rust-example-2", "2.0-1", "librust-example-2-dev"),
             ("only-source", "1.0", "only-source"),
         ] {
-            writeln!(index, "Package: {name}\nVersion: {version}\nBinary: {binaries}\nChecksums-Sha256:\n {} 4 {name}.dsc\n", "a".repeat(64)).unwrap();
+            writeln!(index, "Package: {name}\nVersion: {version}\nBinary: {binaries}\nDirectory: pool/universe/r/{name}\nChecksums-Sha256:\n {} 4 {name}.dsc\n", "a".repeat(64)).unwrap();
         }
         let mut sources = Vec::new();
-        read_sources(index.path(), "noble/universe", &mut sources).unwrap();
+        read_sources(
+            index.path(),
+            "https://archive.ubuntu.com/ubuntu/",
+            "noble/universe",
+            &mut sources,
+        )
+        .unwrap();
         assert_eq!(sources.len(), 4);
         let mut ppa = sources[1].clone();
         ppa.version = "9.0-1".parse().unwrap();
@@ -939,6 +957,7 @@ mod tests {
             version: "1.0".parse().unwrap(),
             location: "noble/universe".to_owned(),
             dsc: "rust-example_1.0.dsc".to_owned(),
+            dsc_url: "https://archive.ubuntu.com/ubuntu/pool/universe/r/rust-example/rust-example_1.0.dsc".to_owned(),
             size: 4,
             checksum_algorithm: ChecksumAlgorithm::Sha256,
             checksum: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned(),
@@ -994,11 +1013,19 @@ mod tests {
         ] {
             fs::write(
                 index.path(),
-                format!("Package: example\nVersion: 1.0\n{fields}"),
+                format!(
+                    "Package: example\nVersion: 1.0\nDirectory: pool/universe/e/example\n{fields}"
+                ),
             )
             .unwrap();
             let mut sources = Vec::new();
-            read_sources(index.path(), "stonking/universe", &mut sources).unwrap();
+            read_sources(
+                index.path(),
+                "https://archive.ubuntu.com/ubuntu/",
+                "stonking/universe",
+                &mut sources,
+            )
+            .unwrap();
             assert_eq!(sources[0].checksum_algorithm, expected);
             if expected == ChecksumAlgorithm::Sha512 {
                 assert_eq!(sources[0].checksum, "b".repeat(128));
@@ -1011,10 +1038,20 @@ mod tests {
         ] {
             fs::write(
                 index.path(),
-                format!("Package: example\nVersion: 1.0\n{fields}"),
+                format!(
+                    "Package: example\nVersion: 1.0\nDirectory: pool/universe/e/example\n{fields}"
+                ),
             )
             .unwrap();
-            assert!(read_sources(index.path(), "stonking/universe", &mut Vec::new()).is_err());
+            assert!(
+                read_sources(
+                    index.path(),
+                    "https://archive.ubuntu.com/ubuntu/",
+                    "stonking/universe",
+                    &mut Vec::new()
+                )
+                .is_err()
+            );
         }
     }
 }

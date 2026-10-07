@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
-use crate::util::run_command;
+use crate::util::run_streaming_command;
 use tempfile::TempDir;
 
 use crate::changelog::TopChangelog;
@@ -31,7 +31,8 @@ pub fn acquire_old_orig(root: &Path, top: &TopChangelog) -> Result<OrigBaseline>
     }
 
     let download = tempfile::tempdir().context("create orig download directory")?;
-    run_command(
+    eprintln!("Downloading {} {} ...", top.source, top.version);
+    run_streaming_command(
         Command::new("pull-lp-source")
             .arg("--download-only")
             .arg(&top.source)

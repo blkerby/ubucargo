@@ -124,7 +124,7 @@ In all modes, candidates are ordered deterministically from the local APT indexe
 
 `deps` downloads binary `Packages` and source `Sources` indexes through its isolated, signature-verified APT view. Packages supply versions and versioned `Provides` for dependency classification; Sources supply publication selection and authenticated `.dsc` checksums.
 
-Published inputs are retrieved at the indexed exact version with `pull-lp-source` or `pull-ppa-source`. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. Input and checking APT views are queried sequentially; input-series binaries cannot enter dependency classification.
+Published inputs are retrieved with `dget` using the descriptor URL from the selected repository and its signed Sources index. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. Input and checking APT views are queried sequentially; input-series binaries cannot enter dependency classification.
 
 Every invocation asks APT to update the selected indexes. APT reuses unchanged files and may apply index deltas. Indexes for all previously requested series and PPAs share the cache described in [`apt-cache.md`](apt-cache.md).
 

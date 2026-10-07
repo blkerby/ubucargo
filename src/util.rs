@@ -2,10 +2,10 @@
 
 use std::{
     fs,
-    io::Write,
-    os::unix::fs::PermissionsExt,
+    io::{self, Write},
+    os::{fd::AsFd, unix::fs::PermissionsExt},
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use anyhow::{Context, Result, bail};
@@ -60,6 +60,25 @@ pub fn run_command(command: &mut Command, operation: &str) -> Result<Output> {
         );
     }
     Ok(output)
+}
+
+/// Streams both command output streams to stderr, preserving terminal progress displays.
+pub fn run_streaming_command(command: &mut Command, operation: &str) -> Result<()> {
+    let stderr = io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .with_context(|| format!("duplicate stderr for {operation}"))?;
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(stderr)
+        .stderr(Stdio::inherit())
+        .status()
+        .with_context(|| format!("run {operation}"))?;
+    eprintln!();
+    if !status.success() {
+        bail!("{operation} failed ({status})");
+    }
+    Ok(())
 }
 
 /// Rejects a path that already exists.

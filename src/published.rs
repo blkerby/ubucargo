@@ -45,7 +45,7 @@ pub fn acquire_package(
         "Input: {} {} from {}",
         selected.source, selected.version, selected.location
     );
-    let (stage, root) = apt::retrieve_source(selected, ppa, keep)?;
+    let (stage, root) = apt::retrieve_source(selected, keep)?;
     Ok(PublishedPackage {
         stage,
         root,
