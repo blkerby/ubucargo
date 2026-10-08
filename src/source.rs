@@ -167,7 +167,7 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
             if !files_differ(&entry.path(), &target)? {
                 continue;
             }
-            if !package.update && target.try_exists()? {
+            if target.try_exists()? {
                 bail!(
                     "{} already exists with different contents",
                     target.display()

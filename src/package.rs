@@ -422,6 +422,9 @@ fn create_new(
             .context("candidate orig has no file name")?,
     );
     let orig_changed = files_differ(&generated.orig, &orig)?;
+    if orig_changed && orig.try_exists()? {
+        bail!("{} already exists with different contents", orig.display());
+    }
     println!("Create {}", root.display());
     if orig_changed {
         println!("Create {}", orig.display());

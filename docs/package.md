@@ -154,7 +154,7 @@ When the source name changes, the existing changelog still identifies the old or
 
 `pull-lp-source` verifies the downloaded source files against their `.dsc`; ubucargo only checks that the expected orig tarball was produced. If no old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
-If the candidate orig path already exists, ubucargo replaces it with the fresh debcargo result when its contents differ. Other orig tarballs beside the package are left unchanged.
+If the candidate orig path already exists, ubucargo reuses it when its bytes match the fresh debcargo result and rejects it when they differ, before writing to the destination. This applies to both package creation and updates, including `--check`; `--force` does not bypass it. When repacking changes the archive, use a new `repack_suffix`, such as `ds2`, to give the new orig a distinct upstream version and filename. Other orig tarballs beside the package are left unchanged.
 
 ### Source merge
 
