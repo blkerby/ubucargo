@@ -62,9 +62,9 @@ The report contains one table for each of these, in order, omitting empty tables
 
 - `Package: NAME`: the `Depends` of each binary package, in control-file order;
 - `Source: NAME`: the source paragraph's `Build-Depends`, `Build-Depends-Arch`, and `Build-Depends-Indep`; and
-- `Tests: NAME`: the `Depends` of all autopkgtests, which contain the crate's development dependencies.
+- `Tests: NAME`: the `Depends` of autopkgtests applicable to the selected architecture, which contain the crate's development dependencies.
 
-The `Source` and `Tests` tables show only relations that no earlier table lists identically. For a library crate, the default build's relations already appear in its binary packages, so the `Source` table usually lists only binaries' dependencies and manual `build_depends` overrides. Relations to the package's own binaries, substitution variables such as `${misc:Depends}`, and autopkgtest's `@` are not reported. Test `Architecture` restrictions are not applied, so every test's dependencies are reported.
+The `Source` and `Tests` tables show only relations that no earlier table lists identically. For a library crate, the default build's relations already appear in its binary packages, so the `Source` table usually lists only binaries' dependencies and manual `build_depends` overrides. The report covers external Rust package relations with concrete package names and version constraints. Test `Architecture` fields filter whole test paragraphs before their dependencies are read, using Debian architecture names, wildcards, and exclusions. An omitted field includes the test on every architecture.
 
 When features are collapsed, as debcargo does by default, one binary package lists the dependencies of all features. Otherwise, each feature package lists the dependencies that its feature adds directly; dependencies of features it enables appear in those features' tables.
 
@@ -73,7 +73,7 @@ The report shows each dependency and its candidates:
 ```text
 Package: librust-example-dev
 DEPENDENCY  STATUS        LOCATION                            VERSION      REQUIREMENT
-serde       selected      ppa:example/rust-staging (resolute)    1.0.219-1    1 +derive
+serde       preferred     ppa:example/rust-staging (resolute)    1.0.219-1    1 +derive
             available     resolute-updates/universe              1.0.217-1    1 +derive
 syn         incompatible  resolute/universe                      1.0.109-2    2 -default
 foo         missing       -                                   -            3
@@ -105,18 +105,18 @@ Default features are implicit in the report. A negative entry `-default` is used
 
 Statuses have the following meanings:
 
-- `selected`: the first compatible candidate in descending version order;
+- `preferred`: the first compatible candidate in descending version order;
 - `available`: another version or origin also satisfies the dependency;
 - `incompatible`: packages for the crate exist, but none satisfy the required Debian version constraints and features; and
 - `missing`: no package for the crate exists in the selected sources.
 
-When standard output is a terminal, statuses are colored green for `selected`, gray for `available`, yellow for `incompatible`, and red for `missing`. The version expression and each `+feature` in `REQUIREMENT` are colored independently: yellow when a corresponding package exists but is incompatible, and red when it is missing. A hidden default-feature requirement is reflected in the base version color. `-default` has the same color as the base version because it is contextual information rather than a requirement that candidates must satisfy. Satisfied components remain neutral on every row, reserving green for the `selected` status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
+When standard output is a terminal, statuses are colored green for `preferred`, gray for `available`, yellow for `incompatible`, and red for `missing`. The version expression and each `+feature` in `REQUIREMENT` are colored independently: yellow when a corresponding package exists but is incompatible, and red when it is missing. A hidden default-feature requirement is reflected in the base version color. `-default` has the same color as the base version because it is contextual information rather than a requirement that candidates must satisfy. Satisfied components remain neutral on every row, reserving green for the `preferred` status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
 
-When a dependency requires multiple feature packages, all of them must resolve from one candidate for the dependency to be selected or available. After architecture and build-profile filtering, `|` alternatives involving Rust libraries are rejected (debcargo does not generate such forms), while wholly non-Rust groups are ignored.
+When a dependency requires multiple feature packages, one candidate must provide all of them for the dependency to be preferred or available. After architecture and build-profile filtering, `|` alternatives involving Rust libraries are rejected (debcargo does not generate such forms), while wholly non-Rust groups are ignored.
 
 Ubuntu Archive locations are shown as `suite/component`, while PPA locations appear as `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.
 
-Ubucargo classifies candidates from the APT sources constructed from the command arguments. The result predicts a build configured with the same series and PPAs. Standard tooling (`sbuild` and `autopkgtest`) remains the authoritative way to determine whether a build is successful, but `ubucargo deps` aims to simulate the dependency resolution part of this as accurately as possible.
+The report checks direct Rust dependency candidate availability in the APT sources constructed from the command arguments. Each dependency is checked independently against its required package names, Debian version constraints, and features. `preferred` identifies the highest-version compatible candidate for that dependency. Use `sbuild` and `autopkgtest` to validate complete build and test environments, including transitive dependencies and joint installability.
 
 In all modes, candidates are ordered deterministically from the local APT indexes.
 
@@ -130,4 +130,4 @@ Every invocation asks APT to update the selected indexes. APT reuses unchanged f
 
 ## Exit status
 
-`deps` exits 0 when every dependency is satisfiable, 1 when at least one dependency in any table is incompatible or missing, and 2 on command, staging, network, or metadata errors.
+`deps` exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when at least one dependency in any table is incompatible or missing, and 2 on command, staging, network, or metadata errors.

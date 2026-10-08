@@ -97,14 +97,14 @@ ubucargo deps [INPUT [VERSION]] [--series SERIES] \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
 ```
 
-`deps` reports the direct Rust library dependencies, represented by `librust-*-dev` packages needed to build and install every binary package and to run autopkgtests.
+`deps` reports the direct Rust library dependencies, represented by `librust-*-dev` packages needed to build and install every binary package and to run autopkgtests applicable to the selected architecture. Each dependency is checked independently for compatible candidates in the selected repositories. Use `sbuild` and `autopkgtest` to validate complete build and test environments.
 
 - Run `ubucargo deps CRATE [VERSION]` to inspect a crates.io release without creating a source package.
 - Run `ubucargo deps` inside a source package, or use `pkg:<DIR>` to select one explicitly.
-- Use `--series SERIES` to select an Ubuntu series for resolving dependencies. This defaults to the current Ubuntu development series.
+- Use `--series SERIES` to select an Ubuntu series for checking dependency candidates. This defaults to the published input's series, otherwise the current Ubuntu development series.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
-- It exits 0 when all dependencies are satisfiable, 1 when any are incompatible or missing, and 2 on errors.
+- It exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when any are incompatible or missing, and 2 on errors.
 
 See [`docs/deps.md`](docs/deps.md) for details.
 

@@ -26,7 +26,7 @@ pub enum DependencyOrigin {
     Package,
     /// The source package's Build-Depends fields.
     Source,
-    /// All autopkgtests' Depends fields.
+    /// Applicable autopkgtests' Depends fields.
     Tests,
 }
 
@@ -93,9 +93,14 @@ pub fn read_dependency_sections(
             let tests: Deb822 = contents
                 .parse()
                 .with_context(|| format!("parse {}", tests_path.display()))?;
-            // Test Architecture restrictions are ignored, so a test that never
-            // runs on the selected architecture still contributes its dependencies.
             for paragraph in tests.iter() {
+                if let Some(value) = paragraph.get("Architecture")
+                    && !matches_architectures(architecture, value.split_whitespace()).with_context(
+                        || format!("parse Architecture in {}", tests_path.display()),
+                    )?
+                {
+                    continue;
+                }
                 if let Some(value) = paragraph.get("Depends") {
                     collect_requirements(value, architecture, &mut test_requirements)
                         .with_context(|| format!("parse Depends in {}", tests_path.display()))?;
@@ -161,24 +166,10 @@ fn collect_requirements(
 
 /// Reports whether a relation applies for the selected architecture and default profiles.
 fn relation_applies(relation: &Relation, architecture: &str) -> Result<bool> {
-    if let Some(architectures) = &relation.architectures {
-        let mut has_positive = false;
-        let mut positive_match = false;
-        for candidate in architectures {
-            if let Some(excluded) = candidate.strip_prefix('!') {
-                if matches_architecture(architecture, excluded)? {
-                    return Ok(false);
-                }
-            } else {
-                has_positive = true;
-                if matches_architecture(architecture, candidate)? {
-                    positive_match = true;
-                }
-            }
-        }
-        if has_positive && !positive_match {
-            return Ok(false);
-        }
+    if let Some(architectures) = &relation.architectures
+        && !matches_architectures(architecture, architectures.iter().map(String::as_str))?
+    {
+        return Ok(false);
     }
     let profile_valid = relation.profiles.is_empty()
         || relation.profiles.iter().any(|group| {
@@ -187,6 +178,28 @@ fn relation_applies(relation: &Relation, architecture: &str) -> Result<bool> {
                 .all(|profile| matches!(profile, BuildProfile::Disabled(_)))
         });
     Ok(profile_valid)
+}
+
+/// Matches a Debian architecture against a list of inclusions or exclusions.
+fn matches_architectures<'a>(
+    architecture: &str,
+    restrictions: impl IntoIterator<Item = &'a str>,
+) -> Result<bool> {
+    let mut has_positive = false;
+    let mut positive_match = false;
+    for candidate in restrictions {
+        if let Some(excluded) = candidate.strip_prefix('!') {
+            if matches_architecture(architecture, excluded)? {
+                return Ok(false);
+            }
+        } else {
+            has_positive = true;
+            if matches_architecture(architecture, candidate)? {
+                positive_match = true;
+            }
+        }
+    }
+    Ok(!has_positive || positive_match)
 }
 
 /// Matches one Debian architecture against an architecture restriction.

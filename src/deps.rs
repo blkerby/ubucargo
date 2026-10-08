@@ -128,7 +128,7 @@ struct Row {
     requirement: Vec<RequirementPart>,
 }
 
-/// Reads existing packaging or stages a crate, then reports whether APT satisfies its dependencies.
+/// Reads existing packaging or stages a crate, then reports direct Rust dependency candidates.
 pub fn run(args: DepArgs) -> Result<bool> {
     let current = env::current_dir().context("get current directory")?;
     let input = if let Some(value) = &args.input {
@@ -387,7 +387,7 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
             let status = if !compatible {
                 "incompatible"
             } else if index == 0 {
-                "selected"
+                "preferred"
             } else {
                 "available"
             };
@@ -633,7 +633,7 @@ fn format_tables(tables: &[(&DependencyTable, Vec<Row>)], color: bool) -> String
         for row in rows {
             let status = if color {
                 let code = match row.status {
-                    "selected" => GREEN,
+                    "preferred" => GREEN,
                     "available" => GRAY,
                     "incompatible" => YELLOW,
                     "missing" => RED,
