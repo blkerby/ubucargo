@@ -185,7 +185,7 @@ Ubucargo copies the complete `debian/patches/` directory into a temporary debcar
 
 Every existing-package update uses a complete staging copy, including its `.pc` state. Ubucargo reads the last entry of `.pc/applied-patches` to remember the top applied patch and runs `quilt diff -z` in staging. Unrefreshed changes trigger an error, since otherwise a stale version of the patch would be supplied to debcargo, which would likely be unintended. It then pops the staged stack before comparing upstream source and regenerating packaging.
 
-After materializing the final staged packaging, including preserved patch overrides, ubucargo pushes through the remembered patch by name. This restores the same position in the updated series, even if automatic patches earlier in the series may have changed. Inputs with no applied patches remain unapplied. A missing remembered patch or a failure to reapply the stack stops the operation without modifying the destination. Ubucargo writes the resulting source and quilt backup state together, so later `quilt pop` operations use the updated upstream baseline.
+After materializing the final staged packaging with fresh automatic patches, ubucargo pushes through the remembered patch by name. This restores the same position in the updated series, even if automatic patches earlier in the series may have changed. Inputs with no applied patches remain unapplied. A missing remembered patch or a failure to reapply the stack stops the operation without modifying the destination. Ubucargo writes the resulting source and quilt backup state together, so later `quilt pop` operations use the updated upstream baseline.
 
 `--check` performs this complete flow, including patch reapplication, without writing the destination or adjacent orig tarballs. Maintainers do not need to pop patches before either checking or updating a package.
 
@@ -204,7 +204,7 @@ Generated files may include:
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
 - `debian/patches/auto/<patch>`, for debcargo-generated source transformations
 
-During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json`. It writes `<file>.debcargo.hint` only when fresh generated output differs from the resulting primary in content or executable status. The hint contains the generated alternative from that run. `--check` previews these changes without writing them.
+During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json` for files that support maintainer overrides. It writes `<file>.debcargo.hint` only when fresh generated output differs from the resulting primary in content or executable status. The hint contains the generated alternative from that run. Automatic patches use the generator-owned rules below and have neither manifest entries nor hints. `--check` previews these changes without writing them.
 
 `debian/cargo-checksum.json` uses these same ownership rules; maintainer edits are preserved. `debian/patches/series` retains the special merge behavior described below and has neither a manifest entry nor a hint.
 
@@ -214,7 +214,8 @@ For a new package, ubucargo retains debcargo's `debian/source/format`. On subseq
 
 ### Generated patches
 
-Debcargo may generate patches for configuration-driven source transformations such as `remove_features`. Ubucargo materializes files below `debian/patches/auto/` using the ordinary hint rules.
+Debcargo may generate patches for configuration-driven source transformations such as `remove_features`. The entire `debian/patches/auto/` namespace is exclusively generator-owned. On regeneration, ubucargo silently replaces edited patches, restores deleted generated patches, and removes files no longer generated. No ownership baseline or keep-or-replace decision is required. 
+Therefore, maintainers should not edit these automatically generated patches.
 
 `debian/patches/series` has mixed ownership and does not use a hint. Debcargo receives the complete existing series as overlay input, regenerates the `auto/` entries, and preserves all other lines; ubucargo writes that merged output directly. Generated auto-patch files are written before the series is updated; obsolete auto-patch files are removed afterward.
 
@@ -237,7 +238,7 @@ The manifest travels with the source package. Version 1 is JSON with paths sorte
 
 Keys are package-relative managed paths. Present files have a SHA-256 content hash and an executable boolean matching Git's file-mode semantics. A `null` entry records generated absence; a missing entry means its baseline is unknown. Entries for previously managed paths remain even after the files disappear. Invalid records, unsupported versions, and paths outside the managed namespaces cause errors before any changes are applied.
 
-For each managed path, materialization has three values:
+For each managed path that supports maintainer overrides, materialization has three values:
 
 - `base`: the previous generated fingerprint or recorded absence
 - `old`: the working-tree `<file>`
@@ -267,6 +268,8 @@ Conversely, copying a hint's contents and permissions to the primary leaves a re
 Maintainers can build or upload a source package with such manual edits without first refreshing its hints. Provided the manifest remains in the source package, a later ubucargo run can still detect and preserve those edits. Running `ubucargo package` refreshes the generated references when wanted; it is not required solely to keep hints synchronized before building.
 
 ## Migration and ambiguous baselines
+
+These baseline rules apply to files that support maintainer overrides; automatic patches are always regenerated as described above.
 
 When a manifest entry is missing, an existing `.debcargo.hint` establishes the baseline, including executable status. Migration happens during ordinary generation: establish the manifest, keep hints for overrides, and remove redundant recognized hints. Unrecognized hints remain untouched.
 
@@ -325,7 +328,7 @@ debcargo package \
 
 Ubucargo validates the selected crate identity, Debian source identity, source tree, orig filename and contents, patch stack, generated packaging, and complete materialization plan before writing.
 
-The manifest is not a generator input. Ubucargo materializes primary files, patch series, hints, and generated ownership state in staging, then restores the original quilt position. Before writing, ubucargo compares this completed tree with the destination and changes only differing paths; unchanged source and packaging files retain their modification times. Regular files are written atomically, and the ownership manifest is the final managed-state write. When writing a changed package, `.pc` is copied with its quilt backup timestamps. An interruption while applying changes may require an explicit decision on rerun; it does not authorize overwriting a changed primary.
+The manifest is not a generator input. Ubucargo materializes primary files, patch series, hints, and generated ownership state in staging, then restores the original quilt position. Before writing, ubucargo compares this completed tree with the destination and changes only differing paths; unchanged source and packaging files retain their modification times. Regular files are written atomically, and the ownership manifest is the final managed-state write. When writing a changed package, `.pc` is copied with its quilt backup timestamps. For files that support maintainer overrides, an interruption while applying changes may require an explicit decision on rerun; it does not authorize overwriting a changed primary.
 
 Ubucargo applies changes to files only. It does not create commits, branches, tags, pristine-tar data, `.dsc` files, source `.changes`, or `.buildinfo` files. Standard Debian and VCS tools remain responsible for those artifacts.
 

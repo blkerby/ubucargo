@@ -182,7 +182,7 @@ fn is_feature_override(path: &Path) -> bool {
 }
 
 /// Reports whether a path belongs to debcargo's generated auto-patch namespace.
-fn is_auto_patch(path: &Path) -> bool {
+pub fn is_auto_patch(path: &Path) -> bool {
     path.starts_with("debian/patches/auto")
         && path != Path::new("debian/patches/auto")
         && !path

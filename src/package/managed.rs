@@ -14,7 +14,7 @@ use crate::util::write_file;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::output::is_package_managed;
+use super::output::{is_auto_patch, is_package_managed};
 
 const MANIFEST_NAME: &str = "ubucargo-state.json";
 
@@ -267,6 +267,7 @@ impl ManagedPlan {
 ///   that are not ambiguous are rejected.
 ///
 /// Ambiguities without a decision remain in the returned plan and prevent it from being applied.
+/// Auto patches always take the generated state, without hints or ownership baselines.
 pub fn build_plan(
     debian: &Path,
     managed: &BTreeSet<PathBuf>,
@@ -288,6 +289,21 @@ pub fn build_plan(
         let hint_before = read_state(&resolve_managed_path(debian, &make_hint_path(path))?)?;
         let new = generated.get(path).cloned();
         let name = path.to_str().context("managed path is not UTF-8")?;
+        // Debcargo replaces auto patches before reading the manifest. Save the
+        // same patches so the source transformations agree with generated metadata.
+        if is_auto_patch(path) {
+            manifest.files.remove(name);
+            paths.push(PathPlan {
+                path: path.clone(),
+                old,
+                hint_before,
+                primary_after: new,
+                hint_after: None,
+                overridden: false,
+                unresolved: false,
+            });
+            continue;
+        }
         let old_fingerprint = old.as_ref().map(compute_fingerprint).transpose()?;
         let hint_fingerprint = hint_before.as_ref().map(compute_fingerprint).transpose()?;
         // Some(None) is a known absence; None is an unknown baseline:
