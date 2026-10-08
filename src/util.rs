@@ -104,16 +104,16 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
 }
 
 /// Extracts a tarball, removing its top-level directory component.
-pub fn extract_tree(archive: &Path, destination: &Path) -> Result<()> {
+pub fn extract_tree(tarball: &Path, destination: &Path) -> Result<()> {
     run_command(
         Command::new("tar")
             .arg("--extract")
             .arg("--file")
-            .arg(archive)
+            .arg(tarball)
             .arg("--directory")
             .arg(destination)
             .arg("--strip-components=1"),
-        &format!("extract {}", archive.display()),
+        &format!("extract {}", tarball.display()),
     )?;
     Ok(())
 }

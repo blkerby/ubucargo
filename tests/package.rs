@@ -96,7 +96,7 @@ fn run_command(command: &mut Command, expected_status: i32) -> Output {
     output
 }
 
-/// Captures the complete package directory and adjacent orig archives.
+/// Captures the complete package directory and adjacent orig tarballs.
 fn read_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntry> {
     let mut tree = BTreeMap::new();
     let mut directories = vec![PathBuf::new()];
@@ -658,7 +658,7 @@ fn reject_missing_top_patch() {
     assert_tree_eq(&packages, &before);
 }
 
-/// Repacks orig archives while retaining maintainer patches and verifying their application.
+/// Repacks orig tarballs while retaining maintainer patches and verifying their application.
 #[test]
 fn repack_source_and_preserve_patches() {
     let fixture = create_fixture();

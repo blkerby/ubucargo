@@ -149,7 +149,7 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
         .destination
         .parent()
         .context("package destination has no parent")?;
-    let mut archives = Vec::new();
+    let mut orig_tarballs = Vec::new();
     for entry in fs::read_dir(
         package
             .root
@@ -173,10 +173,10 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
                     target.display()
                 );
             }
-            archives.push((entry.path(), target));
+            orig_tarballs.push((entry.path(), target));
         }
     }
-    archives.sort();
+    orig_tarballs.sort();
     let staged_tree = scan_tree(&package.root, None)?;
     let old_tree = if package.update {
         scan_tree(&package.destination, None)?
@@ -198,11 +198,13 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
     } else {
         println!("Create {}", package.destination.display());
     }
-    for (_, target) in &archives {
+    for (_, target) in &orig_tarballs {
         println!("Write {}", target.display());
     }
-    let changed =
-        !package.update || plan.has_changes() || final_plan.has_changes() || !archives.is_empty();
+    let changed = !package.update
+        || plan.has_changes()
+        || final_plan.has_changes()
+        || !orig_tarballs.is_empty();
     if !changed {
         println!("Clean");
     }
@@ -213,7 +215,7 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
         return Ok(false);
     }
     fs::create_dir_all(parent)?;
-    for (source, target) in archives {
+    for (source, target) in orig_tarballs {
         fs::copy(source, target)?;
     }
     if package.update {

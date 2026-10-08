@@ -20,7 +20,7 @@ When a package input is used, `pkg:<PATH>`, it updates the package in place by d
 
 Published inputs preserve the selected upstream release rather than upgrading to the latest crate. Their positional `VERSION` is the published Debian version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same update rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. `--check` performs the full regeneration in temporary staging and reports the planned writes without creating the destination. Acquisition and regeneration failures leave the destination untouched.
 
-The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing archive with different contents causes an error. Published regeneration supports a single main orig baseline; supplementary orig components are not merged into that baseline.
+The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing orig tarball with different contents causes an error. Published regeneration supports a single main orig baseline; supplementary orig components are not merged into that baseline.
 
 Use [`import`](import.md) to extract maintained published packaging without regenerating it.
 
@@ -34,7 +34,7 @@ Output identifies the operation as `Create new package: DIR`, `Update existing p
 
 To select an existing package from outside its directory, use `ubucargo package pkg:PATH`. Supplying only `--package-dir PATH` outside a package fails because no input has been selected.
 
-Package copies use the same staging and writing flow as in-place updates and published inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. `--check` reports creation without writing the destination or its parent directories. Existing orig archives with different contents cause an error before writing to the destination.
+Package copies use the same staging and writing flow as in-place updates and published inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. `--check` reports creation without writing the destination or its parent directories. Existing orig tarballs with different contents cause an error before writing to the destination.
 
 For an existing package:
 
@@ -144,7 +144,7 @@ The orig tarball is placed beside the source directory using Debian naming:
   rust-serde/
 ```
 
-When repacking is not required, debcargo copies the verified `.crate` archive unchanged. Matching `excludes` entries cause debcargo to rebuild the archive without those paths. `repack_suffix` supplies the suffix added to the Debian upstream version.
+When repacking is not required, debcargo copies the verified `.crate` archive unchanged. Matching `excludes` entries cause debcargo to rebuild the orig tarball without those paths. `repack_suffix` supplies the suffix added to the Debian upstream version.
 
 The next package's repack suffix comes only from `debian/debcargo.toml`: an explicit `repack_suffix` is used as written, otherwise it defaults to `ds` when `excludes` is present, or no suffix when it is absent. The existing changelog identifies the old package and does not supply a suffix for the next one. To retain `+dfsg` from an existing version such as `1.0.0+dfsg-1`, set `repack_suffix = "dfsg"` in the configuration.
 
@@ -154,7 +154,7 @@ When the source name changes, the existing changelog still identifies the old or
 
 `pull-lp-source` verifies the downloaded source files against their `.dsc`; ubucargo only checks that the expected orig tarball was produced. If no old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
-If the candidate orig path already exists, ubucargo reuses it when its bytes match the fresh debcargo result and rejects it when they differ, before writing to the destination. This applies to both package creation and updates, including `--check`; `--force` does not bypass it. When repacking changes the archive, use a new `repack_suffix`, such as `ds2`, to give the new orig a distinct upstream version and filename. Other orig tarballs beside the package are left unchanged.
+If the candidate orig path already exists, ubucargo reuses it when its bytes match the fresh debcargo result and rejects it when they differ, before writing to the destination. This applies to both package creation and updates, including `--check`; `--force` does not bypass it. When repacking changes the orig tarball, use a new `repack_suffix`, such as `ds2`, to give the new orig a distinct upstream version and filename. Other orig tarballs beside the package are left unchanged.
 
 ### Source merge
 
