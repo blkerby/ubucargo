@@ -70,6 +70,9 @@ pub struct DepArgs {
 /// Every relation in a vector is required (comma-separated AND).
 type FeatureRequirements = BTreeMap<Option<String>, Vec<PackageRequirement>>;
 
+/// Candidates grouped by provided crate, in descending Debian version order.
+type CandidateIndex<'a> = BTreeMap<&'a str, Vec<&'a PackageCandidate>>;
+
 /// Debian requirements belonging to one semver line of one Rust crate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Dependency {
@@ -287,7 +290,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
     );
     println!("{header}\n{latest}");
     let tables = prepare_tables(sections);
-    let candidates = records.packages;
+    let candidates = index_candidates(&records.packages);
     let mut classified = Vec::new();
     let mut unsatisfied = false;
     for table in &tables {
@@ -363,9 +366,9 @@ fn group_dependencies(requirements: Vec<PackageRequirement>) -> Vec<Dependency> 
     dependencies
 }
 
-/// Classifies candidates in deterministic order and appends unknown complex expressions.
-fn classify(table: &DependencyTable, candidates: &[PackageCandidate]) -> Vec<Row> {
-    let mut candidates_by_crate: BTreeMap<&str, Vec<&PackageCandidate>> = BTreeMap::new();
+/// Indexes each candidate once per provided crate and sorts by descending version.
+fn index_candidates(candidates: &[PackageCandidate]) -> CandidateIndex<'_> {
+    let mut candidates_by_crate = CandidateIndex::new();
     for candidate in candidates {
         let mut crate_names = BTreeSet::new();
         for provided in candidate.provides.keys() {
@@ -377,14 +380,20 @@ fn classify(table: &DependencyTable, candidates: &[PackageCandidate]) -> Vec<Row
             candidates_by_crate.entry(name).or_default().push(candidate);
         }
     }
+    for candidates in candidates_by_crate.values_mut() {
+        candidates.sort_by(|first, second| second.version.cmp(&first.version));
+    }
+    candidates_by_crate
+}
 
+/// Classifies indexed candidates and appends unknown complex expressions.
+fn classify(table: &DependencyTable, candidates: &CandidateIndex<'_>) -> Vec<Row> {
     let mut rows = Vec::new();
     for dependency in &table.dependencies {
-        let mut matching = candidates_by_crate
+        let matching = candidates
             .get(dependency.name.as_str())
-            .cloned()
-            .unwrap_or_default();
-        matching.sort_by(|first, second| second.version.cmp(&first.version));
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         if matching.is_empty() {
             rows.push(Row {
                 dependency: dependency.name.clone(),
@@ -396,13 +405,17 @@ fn classify(table: &DependencyTable, candidates: &[PackageCandidate]) -> Vec<Row
             continue;
         }
         let mut satisfying = Vec::new();
-        for candidate in &matching {
+        for candidate in matching {
             if satisfies(dependency, candidate) {
                 satisfying.push(*candidate);
             }
         }
         let compatible = !satisfying.is_empty();
-        let mut candidates = if compatible { satisfying } else { matching };
+        let mut candidates = if compatible {
+            satisfying
+        } else {
+            matching.to_vec()
+        };
         let mut displayed = BTreeSet::new();
         candidates.retain(|candidate| displayed.insert((&candidate.version, &candidate.location)));
         for (index, candidate) in candidates.into_iter().enumerate() {
