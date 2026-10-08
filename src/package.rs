@@ -304,7 +304,7 @@ fn build_update_plan(
     let ambiguities = generated_plan.collect_ambiguities();
     if !ambiguities.is_empty() {
         for path in ambiguities {
-            println!("ambiguous {} (use --keep or --replace)", path.display());
+            println!("Ambiguous {} (use --keep or --replace)", path.display());
         }
         bail!("unresolved generated-file ambiguities");
     }
@@ -391,18 +391,18 @@ impl UpdatePlan {
     /// Prints package changes or reports a clean package.
     fn print_report(&self) {
         if let Some((_, destination)) = &self.orig {
-            println!("create {}", destination.display());
+            println!("Create {}", destination.display());
         }
         self.source.print_report();
         self.managed.print_report();
         if self.changelog.is_some() {
-            println!("update debian/changelog");
+            println!("Update debian/changelog");
         }
         if self.config.is_some() {
-            println!("update debian/debcargo.toml");
+            println!("Update debian/debcargo.toml");
         }
         if !self.has_changes() {
-            println!("clean");
+            println!("Clean");
         }
     }
 
@@ -448,9 +448,9 @@ fn create_new(
             .context("candidate orig has no file name")?,
     );
     let orig_changed = files_differ(&generated.orig, &orig)?;
-    println!("create {}", root.display());
+    println!("Create {}", root.display());
     if orig_changed {
-        println!("create {}", orig.display());
+        println!("Create {}", orig.display());
     }
     if check {
         return Ok(true);

@@ -309,7 +309,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
     fs::write(debian.join("control"), &edited).unwrap();
     let before = read_tree(&packages);
     let output = run_package(root, &["pkg:packages/rust-example"], 2);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("ambiguous debian/control"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Ambiguous debian/control"));
     assert_tree_eq(&packages, &before);
     run_package(
         root,

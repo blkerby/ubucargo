@@ -46,9 +46,9 @@ impl SourcePlan {
     pub fn print_report(&self) {
         for (path, (old, new)) in &self.paths {
             let verb = match (old, new) {
-                (None, Some(_)) => "create",
-                (Some(_), None) => "remove",
-                _ => "update",
+                (None, Some(_)) => "Create",
+                (Some(_), None) => "Remove",
+                _ => "Update",
             };
             println!("{verb} {}", path.display());
         }

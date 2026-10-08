@@ -129,9 +129,9 @@ pub fn install_package(package: &SourcePackage, check: bool) -> Result<bool> {
         }
     }
     archives.sort();
-    println!("create {}", package.destination.display());
+    println!("Create {}", package.destination.display());
     for (_, target) in &archives {
-        println!("retain {}", target.display());
+        println!("Retain {}", target.display());
     }
     if check {
         return Ok(true);

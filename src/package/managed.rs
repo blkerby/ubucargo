@@ -210,7 +210,7 @@ impl ManagedPlan {
                     path.path.display()
                 );
             } else if path.overridden {
-                println!("preserve override {}", path.path.display());
+                println!("Preserve override {}", path.path.display());
             }
 
             if path.has_hint_changed() {
@@ -223,9 +223,9 @@ impl ManagedPlan {
         }
         if self.has_manifest_changed() {
             let verb = if self.manifest_before.is_some() {
-                "update"
+                "Update"
             } else {
-                "create"
+                "Create"
             };
             println!("{verb} debian/{MANIFEST_NAME}");
         }
@@ -487,8 +487,8 @@ pub fn make_hint_path(path: &Path) -> PathBuf {
 /// Selects the user-facing verb for a file-state transition.
 fn describe_change(before: &Option<FileState>, after: &Option<FileState>) -> &'static str {
     match (before, after) {
-        (None, Some(_)) => "create",
-        (Some(_), None) => "remove",
-        _ => "update",
+        (None, Some(_)) => "Create",
+        (Some(_), None) => "Remove",
+        _ => "Update",
     }
 }
