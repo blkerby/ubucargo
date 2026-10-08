@@ -12,15 +12,22 @@ use debian_control::lossless::control::Control;
 
 use crate::{
     changelog::read_top_changelog,
-    config::{PackageConfig, relocate_package_config},
+    config::{
+        PackageConfig, get_new_local_package_config, get_new_package_config, read_package_config,
+        relocate_package_config,
+    },
     generate::{GeneratedPackage, generate_package},
-    resolve::{ExistingPackage, resolve_package, validate_separate_trees},
+    input::Input,
+    resolve::{
+        CrateRequest, ExistingPackage, find_parent_package, get_crate_source_name,
+        read_existing_package, resolve_package, validate_separate_trees,
+    },
     source::{
         acquire_old_orig, acquire_package, read_top_patch,
         tree::{TreePlan, build_source_plan, scan_tree},
         write_package,
     },
-    util::{copy_tree, extract_tree, files_differ, require_absent, run_command},
+    util::{copy_tree, extract_tree, files_differ, require_absent, resolve_path, run_command},
 };
 
 use self::{
@@ -67,7 +74,7 @@ pub struct PackageArgs {
 }
 
 /// Creates or updates one source package.
-pub fn run(mut args: PackageArgs) -> Result<()> {
+pub fn run(args: PackageArgs) -> Result<()> {
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
@@ -76,54 +83,71 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
     let input = if let Some(value) = &args.input {
         crate::input::parse_input(value, &current)?
     } else {
-        crate::input::Input::Package(
-            crate::resolve::find_parent_package(&current)
-                .context("not inside a source package; supply INPUT")?,
+        Input::Package(
+            find_parent_package(&current).context("not inside a source package; supply INPUT")?,
         )
     };
     crate::input::validate_version(&input, args.version.as_deref())?;
-    let mut acquired = match &input {
-        crate::input::Input::Package(_)
-        | crate::input::Input::Archive { .. }
-        | crate::input::Input::Ppa { .. } => Some(acquire_package(
-            &input,
-            args.version.as_deref(),
-            args.package_dir.as_deref(),
-            args.keep_staging,
-        )?),
+    let destination = resolve_package_destination(&current, &input, args.package_dir.as_deref())?;
+    let maintained_input = match &input {
+        Input::Crate(_) | Input::Local(_) => {
+            if destination.try_exists()? {
+                Some(Input::Package(destination.clone()))
+            } else {
+                None
+            }
+        }
+        Input::Package(_) | Input::Archive { .. } | Input::Ppa { .. } => Some(input.clone()),
+    };
+    let source_version = match &input {
+        Input::Archive { .. } | Input::Ppa { .. } => args.version.as_deref(),
         _ => None,
     };
-    if acquired.is_some() {
-        args.version = None;
-    }
-    let destination = acquired
-        .as_ref()
-        .map(|package| package.root.as_path())
-        .or(args.package_dir.as_deref());
-    let mut name = None;
-    let mut local = None;
-    match &input {
-        crate::input::Input::Crate(value) => name = Some(value.as_str()),
-        crate::input::Input::Local(path) => {
-            if destination.is_none() {
-                bail!("local: inputs require --package-dir");
-            }
-            local = Some(path.as_path());
+    let mut acquired = match &maintained_input {
+        Some(input) => Some(acquire_package(
+            input,
+            source_version,
+            &destination,
+            args.keep_staging,
+        )?),
+        None => None,
+    };
+    let local = match &input {
+        Input::Local(path) => Some(path.as_path()),
+        _ => None,
+    };
+    let (mut config, existing) = if let Some(package) = &acquired {
+        let existing = read_existing_package(&package.root)?;
+        let config = read_package_config(&package.root, local)?;
+        (config, Some(existing))
+    } else if let Some(local) = local {
+        (
+            get_new_local_package_config(local, Some(&destination))?,
+            None,
+        )
+    } else {
+        (get_new_package_config()?, None)
+    };
+    if let Some(local) = &config.resolved_crate_src_path {
+        validate_separate_trees(local, &destination)?;
+        if let Some(existing) = &existing
+            && existing.root != destination
+        {
+            validate_separate_trees(local, &existing.root)?;
         }
-        _ => {}
     }
-    let mut resolved = resolve_package(
-        Some(&current),
-        destination,
-        name,
-        args.version.as_deref(),
-        local,
-    )?;
-    let destination = acquired
-        .as_ref()
-        .map(|package| package.destination.as_path())
-        .or(resolved.destination.as_deref())
-        .context("package destination is missing")?;
+    if acquired.as_ref().is_some_and(|package| !package.update) {
+        relocate_package_config(&mut config, &destination)?;
+    }
+    let request = match &input {
+        Input::Crate(name) => CrateRequest::Registry {
+            name,
+            version: args.version.as_deref(),
+        },
+        Input::Local(path) => CrateRequest::Local(path),
+        _ => CrateRequest::Current,
+    };
+    let mut resolved = resolve_package(request, config, existing)?;
     let action = if resolved.existing.is_none() {
         "Create new package"
     } else if acquired.as_ref().is_some_and(|package| !package.update) {
@@ -136,19 +160,8 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
         bail!("--keep and --replace apply only to existing packages");
     }
     let mut top_patch = None;
-    let baseline = if let Some(existing) = &mut resolved.existing {
-        if let Some(crate_root) = &resolved.config.resolved_crate_src_path {
-            validate_separate_trees(crate_root, destination)?;
-        }
-        if acquired.is_none() {
-            acquired = Some(acquire_package(
-                &crate::input::Input::Package(existing.root.clone()),
-                None,
-                Some(destination),
-                args.keep_staging,
-            )?);
-        }
-        let package = acquired.as_mut().unwrap();
+    let baseline = if let Some(package) = &mut acquired {
+        let existing = resolved.existing.as_mut().unwrap();
         package.stage(args.keep_staging)?;
         existing.root = package.root.clone();
         top_patch = read_top_patch(&existing.root)?;
@@ -160,11 +173,6 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
                     .current_dir(&existing.root),
                 "pop staged quilt patches",
             )?;
-        }
-        // All maintained packages follow the same staged update flow. Relative
-        // configuration paths keep their final destination meaning throughout.
-        if !package.update {
-            relocate_package_config(&mut resolved.config, &package.destination)?;
         }
         let old_orig = acquire_old_orig(&existing.root, &existing.top_changelog)?;
         let base = tempfile::tempdir().context("create old-source extraction directory")?;
@@ -180,6 +188,11 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
 
+    // Reconcile unpatched source and packaging in staging, then restore the
+    // original quilt position there. This validates patch reapplication and
+    // rebuilds .pc against the updated upstream before touching the destination.
+    // The final write compares the completed, patched tree with the destination
+    // so unchanged files retain their modification times.
     if let (Some(existing), Some(base)) = (&resolved.existing, &baseline) {
         let plan = build_update_plan(
             existing,
@@ -196,14 +209,7 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
             plan.apply()?;
         }
     } else {
-        create_new(
-            resolved
-                .destination
-                .as_deref()
-                .context("package destination is missing")?,
-            &resolved.config,
-            &generated,
-        )?;
+        create_new(&destination, &resolved.config, &generated)?;
     }
     if let Some(package) = &acquired {
         if let Some(top) = top_patch {
@@ -222,6 +228,43 @@ pub fn run(mut args: PackageArgs) -> Result<()> {
         write_package(package)?;
     }
     Ok(())
+}
+
+/// Resolves the final destination and validates restrictions for the selected input kind.
+fn resolve_package_destination(
+    current: &Path,
+    input: &Input,
+    package_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    let destination = if let Some(package_dir) = package_dir {
+        current.join(package_dir)
+    } else {
+        match input {
+            Input::Crate(name) => find_parent_package(current)
+                .unwrap_or_else(|| current.join(get_crate_source_name(name, None))),
+            Input::Local(_) => bail!("local: inputs require --package-dir"),
+            Input::Package(root) => root.clone(),
+            Input::Archive { source, .. } | Input::Ppa { source, .. } => current.join(source),
+        }
+    };
+    let destination = resolve_path(&destination)?;
+    match input {
+        Input::Package(root) if destination != *root => {
+            require_absent(&destination)?;
+            validate_separate_trees(root, &destination)?;
+        }
+        Input::Archive { .. } | Input::Ppa { .. } => require_absent(&destination)?,
+        Input::Crate(_) | Input::Local(_) => {
+            if let Input::Local(root) = input {
+                validate_separate_trees(root, &destination)?;
+            }
+            if !destination.try_exists()? {
+                require_absent(&destination)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(destination)
 }
 
 /// Validates and deduplicates generated-file decisions.

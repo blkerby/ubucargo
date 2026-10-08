@@ -13,7 +13,9 @@ use anyhow::{Context, Result};
 use debian_control::relations::VersionConstraint;
 
 use crate::{
-    apt, generate,
+    apt,
+    config::{get_new_local_package_config, get_new_package_config},
+    generate,
     input::{Input, parse_input, validate_version},
     resolve,
 };
@@ -180,13 +182,21 @@ pub fn run(args: DepArgs) -> Result<bool> {
     let records = apt::load_records(series, &architecture, args.proposed, &ppas)?;
     let (sections, header, mut identity) = match &input {
         Input::Crate(_) | Input::Local(_) => {
-            let (name, local) = match &input {
-                Input::Crate(name) => (Some(name.as_str()), None),
-                Input::Local(path) => (None, Some(path.as_path())),
+            let (request, config) = match &input {
+                Input::Crate(name) => (
+                    resolve::CrateRequest::Registry {
+                        name,
+                        version: args.version.as_deref(),
+                    },
+                    get_new_package_config()?,
+                ),
+                Input::Local(path) => (
+                    resolve::CrateRequest::Local(path),
+                    get_new_local_package_config(path, None)?,
+                ),
                 _ => unreachable!(),
             };
-            let resolved =
-                resolve::resolve_package(None, None, name, args.version.as_deref(), local)?;
+            let resolved = resolve::resolve_package(request, config, None)?;
             let location = match &input {
                 Input::Local(_) => args.input.as_deref().unwrap(),
                 _ => "crates.io",

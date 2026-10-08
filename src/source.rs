@@ -4,8 +4,7 @@ use crate::{
     apt,
     changelog::read_top_changelog,
     input::Input,
-    resolve::validate_separate_trees,
-    util::{copy_tree, files_differ, require_absent, resolve_path, run_command},
+    util::{copy_tree, files_differ, require_absent, run_command},
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -93,25 +92,18 @@ pub fn read_top_patch(source: &Path) -> Result<Option<String>> {
     Ok(Some(top))
 }
 
-/// Selects a local package or acquires a published package in staging.
+/// Acquires maintained packaging for an already resolved final destination.
 pub fn acquire_package(
     input: &Input,
     version: Option<&str>,
-    destination: Option<&Path>,
+    destination: &Path,
     keep: bool,
 ) -> Result<SourcePackage> {
-    let current = std::env::current_dir()?;
     if let Input::Package(root) = input {
-        let destination = resolve_path(&current.join(destination.unwrap_or(root)))?;
-        let update = destination == *root;
-        if !update {
-            require_absent(&destination)?;
-            validate_separate_trees(root, &destination)?;
-        }
         return Ok(SourcePackage {
             root: root.clone(),
-            destination,
-            update,
+            destination: destination.to_path_buf(),
+            update: destination == root,
             _stage: None,
         });
     }
@@ -119,8 +111,6 @@ pub fn acquire_package(
         Input::Archive { source, .. } | Input::Ppa { source, .. } => source,
         _ => bail!("expected a maintained source-package input"),
     };
-    let destination = resolve_path(&current.join(destination.unwrap_or(Path::new(source))))?;
-    require_absent(&destination)?;
     let records = apt::load_source_records(input, &apt::read_architecture()?)?;
     let ppa = match input {
         Input::Ppa { ppa, .. } => Some(ppa.as_str()),
@@ -135,7 +125,7 @@ pub fn acquire_package(
     Ok(SourcePackage {
         _stage: Some(stage),
         root,
-        destination,
+        destination: destination.to_path_buf(),
         update: false,
     })
 }
