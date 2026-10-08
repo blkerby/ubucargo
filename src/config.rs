@@ -40,7 +40,7 @@ pub fn write_package_config(config: &PackageConfig, package_root: &Path) -> Resu
     fs::write(&path, &config.original_contents).with_context(|| format!("write {}", path.display()))
 }
 
-/// Reports whether a directory contains Ubucargo's source-package marker.
+/// Reports whether a directory contains debcargo configuration for package generation.
 pub fn has_debcargo_config(package_root: &Path) -> bool {
     get_package_config_path(package_root).is_file()
 }

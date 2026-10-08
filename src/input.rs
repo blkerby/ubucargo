@@ -1,5 +1,4 @@
 //! Shared input notation for package generation and dependency inspection.
-use crate::config::has_debcargo_config;
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -28,6 +27,11 @@ pub enum Input {
     Package(PathBuf),
     /// Current local Cargo contents, ignoring packaging in the input tree.
     Local(PathBuf),
+}
+
+/// Reports whether a directory contains the files identifying a Debian source package.
+pub fn has_package_files(package_root: &Path) -> bool {
+    package_root.join("debian/control").is_file() && package_root.join("debian/changelog").is_file()
 }
 
 /// Parses explicit inputs and predictable automatic spellings against the working directory.
@@ -61,8 +65,11 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
                     .join(rest)
                     .canonicalize()
                     .context("resolve package input")?;
-                if !has_debcargo_config(&path) {
-                    bail!("{} has no debian/debcargo.toml marker", path.display());
+                if !has_package_files(&path) {
+                    bail!(
+                        "{} requires debian/control and debian/changelog to select a package",
+                        path.display()
+                    );
                 }
                 Ok(Input::Package(path))
             }
@@ -89,11 +96,11 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
             .join(value)
             .canonicalize()
             .context("resolve directory input")?;
-        if has_debcargo_config(&path) {
+        if has_package_files(&path) {
             return Ok(Input::Package(path));
         }
         bail!(
-            "{} has no debian/debcargo.toml marker; use local:{value} to select a local Cargo crate",
+            "{} requires debian/control and debian/changelog to select a package; use local:{value} to select a local Cargo crate",
             path.display()
         );
     }

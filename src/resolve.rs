@@ -18,6 +18,7 @@ use crate::{
         get_package_config_path, get_staged_config_path, has_debcargo_config, read_package_config,
         write_staged_config,
     },
+    input::has_package_files,
     util::{require_absent, resolve_path, run_command},
 };
 
@@ -87,9 +88,9 @@ fn resolve_package_target(
     if existing {
         if !has_debcargo_config(&destination) {
             bail!(
-                "{} is not a source-package root with {}",
-                destination.display(),
-                get_package_config_path(Path::new("")).display()
+                "package generation requires {} in {}",
+                get_package_config_path(Path::new("")).display(),
+                destination.display()
             );
         }
     } else {
@@ -110,7 +111,7 @@ fn resolve_package_target(
 /// Finds the nearest source-package root at or above a directory.
 pub fn find_parent_package(start: &Path) -> Option<PathBuf> {
     for candidate in start.ancestors() {
-        if has_debcargo_config(candidate) {
+        if has_package_files(candidate) {
             return Some(candidate.to_path_buf());
         }
     }

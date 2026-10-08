@@ -9,7 +9,7 @@ ubucargo deps [INPUT [VERSION]] [--series SERIES] \
   [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH] [--keep-staging]
 ```
 
-See [input selectors](inputs.md) for the shared explicit grammar, automatic precedence, and version rules. Omitting the input reads the nearest parent package. Existing-package inputs require `debian/debcargo.toml` only as a marker; inspection requires a valid top `debian/changelog` entry for the source identity and version, but does not read Cargo metadata, debcargo configuration, or `crate_src_path`. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
+See [input selectors](inputs.md) for the shared explicit grammar, automatic precedence, and version rules. Omitting the input reads the nearest parent package. Local package selection requires `debian/control` and `debian/changelog` files; inspection reads maintained control files and a valid top changelog entry for the source identity and version. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package, Archive, and PPA inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
 

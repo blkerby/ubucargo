@@ -14,13 +14,13 @@ Recognized prefixes select their explicit kind. Unknown prefixes, empty fields, 
 
 Automatic spellings have fixed precedence:
 
-1. `.`, `..`, and paths beginning with `./`, `../`, or `/` select a directory. A `debian/debcargo.toml` marker is required to select an existing package. Local Cargo crates must use the explicit `local:PATH` form.
+1. `.`, `..`, and paths beginning with `./`, `../`, or `/` select a directory. Both `debian/control` and `debian/changelog` must be files to select an existing package. Local Cargo crates must use the explicit `local:PATH` form.
 2. `<SUITE>/<SOURCE>` selects an Ubuntu Archive source package.
 3. A bare name selects crates.io, regardless of whether a directory with that name exists.
 
-Use `./` for nested filesystem paths to distinguish them from Archive inputs. Explicit `pkg:` requires the package marker. Explicit `local:` ignores packaging in its input tree. For `package`, a new destination uses default configuration; an existing destination supplies maintained packaging, with `crate_src_path` updated to the selected local source. `crate:` inputs also create or update the destination package.
+Use `./` for nested filesystem paths to distinguish them from Archive inputs. Explicit `pkg:` requires the same packaging files. Commands validate the selected package's contents for their operation: `deps` reads maintained control files and the top changelog entry; `package` additionally requires usable `debian/debcargo.toml` and Cargo metadata for regeneration. Explicit `local:` ignores packaging in its input tree. For `package`, a new destination uses default configuration; an existing destination supplies maintained packaging, with `crate_src_path` updated to the selected local source. `crate:` inputs also create or update the destination package.
 
-With no input, both commands select the nearest parent package and fail if none is found. `package --package-dir` selects only the destination; it cannot supply a missing input. Explicit and implicit package inputs are updated in place by default. With `--package-dir`, the same directory is updated in place; a different, new directory receives a regenerated copy while the input remains untouched. A different existing destination is rejected.
+With no input, both commands select the nearest directory at or above the working directory containing `debian/control` and `debian/changelog`, then validate that package's contents. They fail if none is found. `package --package-dir` selects only the destination; it cannot supply a missing input. Explicit and implicit package inputs are updated in place by default. With `--package-dir`, the same directory is updated in place; a different, new directory receives a regenerated copy while the input remains untouched. A different existing destination is rejected.
 
 `package` supports every input kind above. Archive and PPA inputs are downloaded and regenerated in staging before writing to a new destination. `import` accepts only Archive and PPA inputs and writes the extracted package unchanged. Both default to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). They accept `--package-dir` and reject existing destinations rather than merging remote and local packaging.
 
