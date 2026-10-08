@@ -6,7 +6,6 @@ mod changelog;
 mod config;
 mod deps;
 mod generate;
-mod import;
 mod input;
 mod package;
 mod resolve;
@@ -32,9 +31,6 @@ enum Command {
     /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
     Deps(deps::DepArgs),
 
-    /// Import a published source package without regenerating it.
-    Import(import::ImportArgs),
-
     /// Create or update a complete source package.
     Package(package::PackageArgs),
 }
@@ -49,7 +45,6 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         }),
-        Command::Import(args) => import::run(args).map(|()| ExitCode::SUCCESS),
         Command::Package(args) => package::run(args).map(|()| ExitCode::SUCCESS),
     };
 

@@ -18,9 +18,9 @@ Benefits of Ubucargo include the following:
 
 ## How it works
 
-The main complication of this approach is that when running `ubucargo package` on an existing package, it must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides that should be preserved. The way that `ubucargo` handles this is to keep track of content hashes for latest generated content in a manifest at `debian/ubucargo-state.json`. Files matching that record are considered generator-owned and can be updated automatically; changed or deleted files are preserved as maintainer overrides. The status of each generated file is displayed in the output. Existing Debian `.debcargo.hint` files establish the baseline when no manifest entry exists (e.g. when running `ubucargo package` for the first time on a package synced from Debian). When the manifest record and hint are both missing or conflicting, a one-time explicit `--keep` or `--replace` decision is required from the maintainer.
+The main complication of this approach is that when running `ubucargo package` on an existing package, it must infer which packaging files are generator-owned (eligible to be overwritten by the new generated output) vs. which ones are maintainer overrides that should be preserved. The way that `ubucargo` handles this is to keep track of content hashes for latest generated content in a manifest at `debian/ubucargo-state.json`. Files matching that record are considered generator-owned and can be updated automatically; changed or deleted files are preserved as maintainer overrides. The status of each generated file is displayed in the output. Existing Debian `.debcargo.hint` files establish the baseline when no manifest entry exists (e.g. when running `ubucargo package` for the first time on a package synced from Debian). When the manifest record and hint are both missing or conflicting, a one-time explicit `--keep` or `--replace` decision may be required from the maintainer. See [migration rules](docs/package.md#migration-and-ambiguous-baselines) for details.
 
-Similarly, when an operation affects the upstream source tree, `ubucargo` must infer which files were part of the old upstream and should be replaced, and which files are local and should be retained. This applies, for example, when upgrading a package to a new upstream version, or when repackaging after changing the `excludes` filter in `debcargo.toml`. To resolve this in a general way, `ubucargo` compares the current source tree with the orig tarball referenced in the top-most `changelog` entry: files in the source tree that are not present in the orig tarball are treated as local additions to be retained, while missing or modified files are treated as inconsistencies resulting in an error.
+Similarly, when an operation affects the upstream source tree, `ubucargo` must infer which files were part of the old upstream and should be replaced, and which files are local and should be retained. This applies, for example, when upgrading a package to a new upstream version, or when repackaging after changing the `excludes` filter in `debcargo.toml`. Ubucargo compares the current source tree with the old and new upstream sources. Unchanged upstream files are updated automatically, and local additions are retained unless they conflict with new upstream files. Missing or modified upstream files cause an error unless they already match the new upstream.
 
 ## Source-package structure
 
@@ -48,7 +48,6 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | Command | Purpose | Detailed specification |
 | --- | --- | --- |
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
-| `ubucargo import` | Import a published source package unchanged | [`docs/import.md`](docs/import.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`docs/deps.md`](docs/deps.md) |
 
 These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](docs/inputs.md) for details.
@@ -74,21 +73,6 @@ ubucargo package serde
 ```
 
 See [`docs/package.md`](docs/package.md) for full behavior and options.
-
-### `import`
-
-```console
-ubucargo import INPUT [VERSION] [--package-dir DIR] \
-  [--keep-staging]
-```
-
-`import` downloads and extracts a published Archive/PPA source package without regenerating it, placing its orig tarballs beside the source directory:
-
-```sh
-ubucargo import resolute/rust-serde
-```
-
-See [`docs/import.md`](docs/import.md) for full behavior and options.
 
 ### `deps`
 

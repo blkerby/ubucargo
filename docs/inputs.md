@@ -1,6 +1,6 @@
 # Input selectors
 
-`deps` and `package` share input notation; `import` accepts the Archive and PPA forms:
+`deps` and `package` share input notation:
 
 | Input selector | Selected input | Positional `VERSION` |
 |---|---|---|
@@ -22,15 +22,15 @@ Use `./` for nested filesystem paths to distinguish them from Archive inputs. Ex
 
 With no input, both commands select the nearest directory at or above the working directory containing `debian/control` and `debian/changelog`, then validate that package's contents. They fail if none is found. `package --package-dir` selects only the destination; it cannot supply a missing input. Explicit and implicit package inputs are updated in place by default. With `--package-dir`, the same directory is updated in place; a different, new directory receives a regenerated copy while the input remains untouched. A different existing destination is rejected.
 
-`package` supports every input kind above. Archive and PPA inputs are downloaded and regenerated in staging before writing to a new destination. `import` accepts only Archive and PPA inputs and writes the extracted package unchanged. Both default to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). They accept `--package-dir` and reject existing destinations rather than merging remote and local packaging.
+`package` supports every input kind above. Archive and PPA inputs are downloaded and regenerated in staging before writing to a new destination, defaulting to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). Use `--package-dir` to select another new directory; existing destinations are rejected.
 
 Archive and PPA selectors fully specify the input location. `<OWNER>` and `<NAME>` identify the PPA, `<SERIES>` is its Ubuntu series (for example, `resolute`), and `<SOURCE>` is the Debian source-package name (for example, `rust-serde`). PPA inputs require all four fields; the former `ppa:OWNER/NAME/SOURCE` form is rejected.
 
 For Archive inputs, `<SUITE>` is either a base series or a series with a pocket suffix. A bare `resolute` considers release, updates, and security. `resolute-updates`, `resolute-security`, `resolute-proposed`, and `resolute-backports` each select only that pocket. Examples:
 
 ```sh
-ubucargo import archive:resolute-proposed/rust-serde
-ubucargo import ppa:owner/staging/resolute/rust-serde
+ubucargo package archive:resolute-proposed/rust-serde
+ubucargo package ppa:owner/staging/resolute/rust-serde
 ubucargo deps ppa:owner/staging/resolute/rust-serde --series jammy --proposed
 ```
 

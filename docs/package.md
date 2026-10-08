@@ -22,8 +22,6 @@ Ubuntu Archive and PPA inputs preserve the upstream release contained in the sel
 
 The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing orig tarball with different contents causes an error. Regeneration of Archive and PPA inputs uses the main orig tarball as its source-merge baseline.
 
-Use [`import`](import.md) to extract maintained packaging from the Ubuntu Archive or a PPA unchanged.
-
 `--package-dir` selects the destination for every input kind. It never selects the input. Orig tarballs remain beside this directory.
 
 For crates.io and local crate inputs, an existing destination supplies configuration, patches, maintainer overrides, and generated-file ownership state. A nonexistent destination creates a package with default configuration, even when the current directory is inside another package. An existing destination must be a valid source package for the same Cargo crate; an empty or unrelated directory is rejected. A crates.io input also requires configuration without `crate_src_path`; remove that setting to switch from local source to a registry release.
