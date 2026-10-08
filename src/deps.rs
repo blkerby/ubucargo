@@ -21,7 +21,8 @@ use crate::{
 use crate::apt::PackageCandidate;
 
 use self::control::{
-    DependencyOrigin, DependencySection, PackageRequirement, parse_rust_package_name,
+    DependencyOrigin, DependencyRequirement, DependencySection, PackageRequirement,
+    parse_rust_package_name,
 };
 
 const GREEN: &str = "\x1b[32m";
@@ -83,6 +84,8 @@ struct DependencyTable {
     heading: String,
     /// Dependencies in crate and semver-line order.
     dependencies: Vec<Dependency>,
+    /// Complex expressions in declaration order, displayed after checked dependencies.
+    complex_requirements: Vec<String>,
 }
 
 /// Availability of one displayed requirement component.
@@ -94,12 +97,14 @@ enum RequirementStatus {
     Incompatible,
     /// No corresponding package exists for the displayed candidate.
     Missing,
+    /// The expression is retained for inspection and its availability is unknown.
+    Unknown,
 }
 
 /// One independently colored component of a compact Debian requirement.
 #[derive(Debug, Eq, PartialEq)]
 struct RequirementPart {
-    /// Semver expression or feature name, including its `+` prefix.
+    /// Version expression, feature name with its `+` prefix, or complex relation.
     text: String,
     /// Candidate availability for this component.
     status: RequirementStatus,
@@ -124,7 +129,7 @@ struct Row {
     location: String,
     /// Debian package version.
     version: String,
-    /// Version and feature requirement components classified for this candidate.
+    /// Requirement components classified for this candidate or retained as unknown.
     requirement: Vec<RequirementPart>,
 }
 
@@ -276,9 +281,9 @@ pub fn run(args: DepArgs) -> Result<bool> {
     let mut classified = Vec::new();
     let mut unsatisfied = false;
     for table in &tables {
-        let rows = classify(&table.dependencies, &candidates);
+        let rows = classify(table, &candidates);
         for row in &rows {
-            if matches!(row.status, "incompatible" | "missing") {
+            if matches!(row.status, "incompatible" | "missing" | "unknown") {
                 unsatisfied = true;
             }
         }
@@ -295,13 +300,19 @@ fn prepare_tables(sections: Vec<DependencySection>) -> Vec<DependencyTable> {
     let mut tables = Vec::new();
     for section in sections {
         let mut shown = Vec::new();
+        let mut complex_requirements = Vec::new();
         for requirement in section.requirements {
             if seen.insert(requirement.clone()) || section.origin == DependencyOrigin::Package {
-                shown.push(requirement);
+                match requirement {
+                    DependencyRequirement::Package(requirement) => shown.push(requirement),
+                    DependencyRequirement::Complex(expression) => {
+                        complex_requirements.push(expression);
+                    }
+                }
             }
         }
         let dependencies = group_dependencies(shown);
-        if !dependencies.is_empty() {
+        if !dependencies.is_empty() || !complex_requirements.is_empty() {
             let label = match section.origin {
                 DependencyOrigin::Package => "Package",
                 DependencyOrigin::Source => "Source",
@@ -310,6 +321,7 @@ fn prepare_tables(sections: Vec<DependencySection>) -> Vec<DependencyTable> {
             tables.push(DependencyTable {
                 heading: format!("{label}: {}", section.name),
                 dependencies,
+                complex_requirements,
             });
         }
     }
@@ -341,8 +353,8 @@ fn group_dependencies(requirements: Vec<PackageRequirement>) -> Vec<Dependency> 
     dependencies
 }
 
-/// Classifies all candidates for each dependency in deterministic order.
-fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec<Row> {
+/// Classifies candidates in deterministic order and appends unknown complex expressions.
+fn classify(table: &DependencyTable, candidates: &[PackageCandidate]) -> Vec<Row> {
     let mut candidates_by_crate: BTreeMap<&str, Vec<&PackageCandidate>> = BTreeMap::new();
     for candidate in candidates {
         let mut crate_names = BTreeSet::new();
@@ -357,7 +369,7 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
     }
 
     let mut rows = Vec::new();
-    for dependency in dependencies {
+    for dependency in &table.dependencies {
         let mut matching = candidates_by_crate
             .get(dependency.name.as_str())
             .cloned()
@@ -403,6 +415,18 @@ fn classify(dependencies: &[Dependency], candidates: &[PackageCandidate]) -> Vec
                 requirement: make_requirement(dependency, Some(candidate)),
             });
         }
+    }
+    for expression in &table.complex_requirements {
+        rows.push(Row {
+            dependency: "(complex dependency)".to_owned(),
+            status: "unknown",
+            location: "-".to_owned(),
+            version: "-".to_owned(),
+            requirement: vec![RequirementPart {
+                text: expression.clone(),
+                status: RequirementStatus::Unknown,
+            }],
+        });
     }
     rows
 }
@@ -634,7 +658,7 @@ fn format_tables(tables: &[(&DependencyTable, Vec<Row>)], color: bool) -> String
             let status = if color {
                 let code = match row.status {
                     "preferred" => GREEN,
-                    "available" => GRAY,
+                    "available" | "unknown" => GRAY,
                     "incompatible" => YELLOW,
                     "missing" => RED,
                     _ => "",
@@ -653,6 +677,7 @@ fn format_tables(tables: &[(&DependencyTable, Vec<Row>)], color: bool) -> String
                         RequirementStatus::Satisfied => "",
                         RequirementStatus::Incompatible => YELLOW,
                         RequirementStatus::Missing => RED,
+                        RequirementStatus::Unknown => GRAY,
                     }
                 } else {
                     ""

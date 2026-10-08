@@ -107,16 +107,17 @@ Statuses have the following meanings:
 
 - `preferred`: the first compatible candidate in descending version order;
 - `available`: another version or origin also satisfies the dependency;
-- `incompatible`: packages for the crate exist, but none satisfy the required Debian version constraints and features; and
-- `missing`: no package for the crate exists in the selected sources.
+- `incompatible`: packages for the crate exist, but none satisfy the required Debian version constraints and features;
+- `missing`: no package for the crate exists in the selected sources; and
+- `unknown`: requires manual assessment; see [dependency alternatives](#dependency-alternatives).
 
-When standard output is a terminal, statuses are colored green for `preferred`, gray for `available`, yellow for `incompatible`, and red for `missing`. The version expression and each `+feature` in `REQUIREMENT` are colored independently: yellow when a corresponding package exists but is incompatible, and red when it is missing. A hidden default-feature requirement is reflected in the base version color. `-default` has the same color as the base version because it is contextual information rather than a requirement that candidates must satisfy. Satisfied components remain neutral on every row, reserving green for the `preferred` status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
+When standard output is a terminal, statuses are colored green for `preferred`, dark gray for `available` and `unknown`, yellow for `incompatible`, and red for `missing`. The version expression and each `+feature` in `REQUIREMENT` are colored independently: yellow when a corresponding package exists but is incompatible, and red when it is missing. A hidden default-feature requirement is reflected in the base version color. `-default` has the same color as the base version because it is contextual information rather than a requirement that candidates must satisfy. Satisfied components remain neutral on every row, reserving green for the `preferred` status. Set `NO_COLOR` to disable colors; redirected output is always plain text.
 
-When a dependency requires multiple feature packages, one candidate must provide all of them for the dependency to be preferred or available. After architecture and build-profile filtering, `|` alternatives involving Rust libraries are rejected (debcargo does not generate such forms), while wholly non-Rust groups are ignored.
+When a dependency requires multiple feature packages, one candidate must provide all of them for the dependency to be preferred or available.
 
 Ubuntu Archive locations are shown as `suite/component`, while PPA locations appear as `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.
 
-The report checks direct Rust dependency candidate availability in the APT sources constructed from the command arguments. Each dependency is checked independently against its required package names, Debian version constraints, and features. `preferred` identifies the highest-version compatible candidate for that dependency. Use `sbuild` and `autopkgtest` to validate complete build and test environments, including transitive dependencies and joint installability.
+The report checks direct Rust dependency candidate availability in the APT sources constructed from the command arguments. For supported Rust relations, each dependency is checked independently against its required package names, Debian version constraints, and features. `preferred` identifies the highest-version compatible candidate for that dependency. Use `sbuild` and `autopkgtest` to validate complete build and test environments, including transitive dependencies and joint installability.
 
 In all modes, candidates are ordered deterministically from the local APT indexes.
 
@@ -130,4 +131,19 @@ Every invocation asks APT to update the selected indexes. APT reuses unchanged f
 
 ## Exit status
 
-`deps` exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when at least one dependency in any table is incompatible or missing, and 2 on command, staging, network, or metadata errors.
+`deps` exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when at least one dependency in any table is incompatible, missing, or unknown, and 2 on command, staging, network, or metadata errors. The report completes before returning status 1.
+
+## Dependency alternatives
+
+For each comma-separated dependency group, `deps` first filters its alternatives by architecture and build profile. A group contributes to the Rust report when at least one applicable alternative names a `librust-*-dev` package. A group with a single applicable Rust alternative is checked and displayed normally.
+
+A group with multiple applicable alternatives and at least one Rust library appears as a single `(complex dependency)` row with status `unknown`. This applies equally to alternatives between versions or features of the same crate, between different crates, and between Rust and non-Rust packages. `unknown` marks the group for manual assessment, regardless of candidate availability in the selected repositories. `debcargo` does not normally generate requirements of this form, but they could arise from manual dependency overrides in `debcargo.toml` or edits to the generated control files.
+
+The row shows `-` for location and version and the full declared alternative expression in `REQUIREMENT`, including any architecture and build-profile restrictions, colored dark gray on a terminal. Complex rows follow checked dependencies in their table and use the same rules for suppressing repeated relations across tables. Other dependencies are checked normally.
+
+```text
+DEPENDENCY            STATUS   LOCATION  VERSION  REQUIREMENT
+(complex dependency)  unknown  -         -        librust-foo-1-dev | librust-foo-2-dev
+(complex dependency)  unknown  -         -        librust-foo-dev | librust-bar-dev
+(complex dependency)  unknown  -         -        librust-foo-dev | libfoo-dev
+```

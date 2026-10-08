@@ -19,6 +19,15 @@ pub struct PackageRequirement {
     pub version: Option<(VersionConstraint, Version)>,
 }
 
+/// A Rust dependency that can be checked or retained as a complex expression.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DependencyRequirement {
+    /// A single applicable Rust package relation.
+    Package(PackageRequirement),
+    /// The declared alternative expression involving applicable Rust packages.
+    Complex(String),
+}
+
 /// Origin of dependency requirements in Debian packaging files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DependencyOrigin {
@@ -38,7 +47,7 @@ pub struct DependencySection {
     /// Binary package name, or source package name for the source and tests.
     pub name: String,
     /// Parsed relations in declaration order, including duplicates.
-    pub requirements: Vec<PackageRequirement>,
+    pub requirements: Vec<DependencyRequirement>,
 }
 
 /// Reads binary Depends, source Build-Depends fields, and autopkgtest Depends.
@@ -121,12 +130,11 @@ pub fn read_dependency_sections(
     Ok(sections)
 }
 
-/// Adds the applicable Rust relations from one relation field,
-/// rejecting `|` alternatives involving Rust packages, which debcargo never generates.
+/// Adds applicable Rust relations, retaining alternatives as complex expressions.
 fn collect_requirements(
     value: &str,
     architecture: &str,
-    requirements: &mut Vec<PackageRequirement>,
+    requirements: &mut Vec<DependencyRequirement>,
 ) -> Result<()> {
     // Debcargo writes substitution variables only in entries such as `${misc:Depends}` and in
     // relations to its own packages, such as `librust-foo-dev (= ${binary:Version})`, and
@@ -149,16 +157,21 @@ fn collect_requirements(
         let [relation] = applicable.as_slice() else {
             for relation in &applicable {
                 if parse_rust_package_name(&relation.name).is_some() {
-                    bail!("Rust dependency alternatives are not supported: {entry:?}");
+                    let mut alternatives = Vec::new();
+                    for relation in &entry {
+                        alternatives.push(relation.to_string());
+                    }
+                    requirements.push(DependencyRequirement::Complex(alternatives.join(" | ")));
+                    break;
                 }
             }
             continue;
         };
         if parse_rust_package_name(&relation.name).is_some() {
-            requirements.push(PackageRequirement {
+            requirements.push(DependencyRequirement::Package(PackageRequirement {
                 name: relation.name.clone(),
                 version: relation.version.clone(),
-            });
+            }));
         }
     }
     Ok(())
