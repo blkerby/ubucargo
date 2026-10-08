@@ -3,16 +3,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
+    fmt::Write,
     fs,
-    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
 };
 
 use crate::util::write_file;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::output::{is_auto_patch, is_package_managed};
 
@@ -34,38 +34,16 @@ struct Manifest {
     files: BTreeMap<String, Option<Fingerprint>>,
 }
 
-/// Hashes captured bytes through sha256sum, without rereading the file.
-fn compute_fingerprint(state: &FileState) -> Result<Fingerprint> {
-    let mut child = Command::new("sha256sum")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("run sha256sum")?;
-    let written = child.stdin.take().unwrap().write_all(&state.contents);
-    let output = child.wait_with_output().context("wait for sha256sum")?;
-    if !output.status.success() {
-        bail!(
-            "sha256sum failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Hashes captured bytes in process, without rereading the file.
+fn compute_fingerprint(state: &FileState) -> Fingerprint {
+    let mut sha256 = String::with_capacity(64);
+    for byte in Sha256::digest(&state.contents) {
+        write!(sha256, "{byte:02x}").unwrap();
     }
-    written.context("write contents to sha256sum")?;
-    let stdout = String::from_utf8(output.stdout).context("read sha256sum output")?;
-    let sha256 = stdout
-        .strip_suffix("  -\n")
-        .context("invalid sha256sum output")?;
-    if sha256.len() != 64
-        || !sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!("invalid sha256sum digest");
-    }
-    Ok(Fingerprint {
-        sha256: sha256.to_owned(),
+    Fingerprint {
+        sha256,
         executable: state.is_executable(),
-    })
+    }
 }
 
 /// Reads and validates the ownership manifest before any package changes.
@@ -311,8 +289,8 @@ pub fn build_plan(
             });
             continue;
         }
-        let old_fingerprint = old.as_ref().map(compute_fingerprint).transpose()?;
-        let hint_fingerprint = hint_before.as_ref().map(compute_fingerprint).transpose()?;
+        let old_fingerprint = old.as_ref().map(compute_fingerprint);
+        let hint_fingerprint = hint_before.as_ref().map(compute_fingerprint);
         // Some(None) is a known absence; None is an unknown baseline:
         let recorded = manifest.files.get(name);
         // An existing hint should agree with the manifest; otherwise it means one of the
@@ -377,10 +355,9 @@ pub fn build_plan(
         } else {
             None
         };
-        manifest.files.insert(
-            name.to_owned(),
-            new.as_ref().map(compute_fingerprint).transpose()?,
-        );
+        manifest
+            .files
+            .insert(name.to_owned(), new.as_ref().map(compute_fingerprint));
 
         paths.push(PathPlan {
             path: path.clone(),
