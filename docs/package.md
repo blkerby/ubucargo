@@ -16,13 +16,13 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 
 The input crate/package can be specified as a crates.io crate (`crate:<NAME>`), local Debian source package (`pkg:<PATH>`), local Cargo crate (`local:<PATH>`), Ubuntu Archive source (`archive:<SUITE>/<SOURCE>`), or PPA source (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](inputs.md) for details and shorthand forms.
 
-When a package input is used, `pkg:<PATH>`, it updates the package in place by default.  `--package-dir` can be used to specify a different, new directory, in which case it receives a regenerated copy while the input remains untouched. A different existing destination is rejected. Published Archive/PPA inputs download the selected Debian source version and regenerate its maintained packaging in staging before writing to the destination. They require a new destination, defaulting to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). Use `--package-dir` to select another new directory; parent-package discovery does not apply to published inputs. Omitting the input selects the nearest parent package and fails if none is found. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
+When a package input is used, `pkg:<PATH>`, it updates the package in place by default.  `--package-dir` can be used to specify a different, new directory, in which case it receives a regenerated copy while the input remains untouched. A different existing destination is rejected. Ubuntu Archive and PPA inputs download the selected Debian source version and regenerate its maintained packaging in staging before writing to the destination. They require a new destination, defaulting to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). Use `--package-dir` to select another new directory; parent-package discovery does not apply to Archive and PPA inputs. Omitting the input selects the nearest parent package and fails if none is found. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
 
-Published inputs preserve the selected upstream release rather than upgrading to the latest crate. Their positional `VERSION` is the published Debian version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same update rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. Acquisition and regeneration failures leave the destination untouched.
+Ubuntu Archive and PPA inputs preserve the upstream release contained in the selected source package. Their positional `VERSION` selects the published Debian source version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same update rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. Acquisition and regeneration failures leave the destination untouched.
 
-The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing orig tarball with different contents causes an error. Published regeneration supports a single main orig baseline; supplementary orig components are not merged into that baseline.
+The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing orig tarball with different contents causes an error. Regeneration of Archive and PPA inputs uses the main orig tarball as its source-merge baseline.
 
-Use [`import`](import.md) to extract maintained published packaging without regenerating it.
+Use [`import`](import.md) to extract maintained packaging from the Ubuntu Archive or a PPA unchanged.
 
 `--package-dir` selects the destination for every input kind. It never selects the input. Orig tarballs remain beside this directory.
 
@@ -30,11 +30,11 @@ For crates.io and local crate inputs, an existing destination supplies configura
 
 Without `--package-dir`, a crates.io input uses the nearest parent containing `debian/debcargo.toml` as its destination; if none is found, the destination defaults to the generated Debian source name in the current directory. Explicit and default destinations follow the same rules: create when absent, update when an existing package is found. Paths referring to the same directory through symlinks are treated alike.
 
-Output identifies the operation as `Create new package: DIR`, `Update existing package: DIR`, or `Create package from existing packaging: DIR`. The last form describes a package copy or published input that carries maintained packaging into a new destination.
+Output identifies the operation as `Create new package: DIR`, `Update existing package: DIR`, or `Create package from existing packaging: DIR`. The last form describes a package copy or an Archive or PPA input that carries maintained packaging into a new destination.
 
 To select an existing package from outside its directory, use `ubucargo package pkg:PATH`. Supplying only `--package-dir PATH` outside a package fails because no input has been selected.
 
-Package copies use the same staging and writing flow as in-place updates and published inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. Existing orig tarballs with different contents cause an error before writing to the destination.
+Package copies use the same staging and writing flow as in-place updates, Archive inputs, and PPA inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. Existing orig tarballs with different contents cause an error before writing to the destination.
 
 For an existing package:
 
@@ -304,7 +304,7 @@ Restoring a primary to its hint contents and permissions relinquishes the overri
 
 The command exits 0 on success and 2 on errors or unresolved ambiguities.
 
-Ubucargo stages the complete candidate before modifying the destination. In-place updates, package copies, and published inputs use the same staging and writing flow. The temporary debcargo overlay contains the durable maintainer-owned packaging needed for generation, including the changelog and patch stack. Existing generated packaging and hints do not affect generation.
+Ubucargo stages the complete candidate before modifying the destination. In-place updates, package copies, Archive inputs, and PPA inputs use the same staging and writing flow. The temporary debcargo overlay contains the durable maintainer-owned packaging needed for generation, including the changelog and patch stack. Existing generated packaging and hints do not affect generation.
 
 The staged invocation is equivalent to:
 
