@@ -9,8 +9,8 @@ mod generate;
 mod import;
 mod input;
 mod package;
-mod published;
 mod resolve;
+mod source;
 mod util;
 
 use std::process::ExitCode;
@@ -35,7 +35,7 @@ enum Command {
     /// Import a published source package without regenerating it.
     Import(import::ImportArgs),
 
-    /// Create or reconcile a complete source package.
+    /// Create or update a complete source package.
     Package(package::PackageArgs),
 }
 

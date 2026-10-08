@@ -26,7 +26,7 @@ pub enum Input {
     },
     /// An existing maintained source package.
     Package(PathBuf),
-    /// Current local Cargo contents, ignoring maintained packaging.
+    /// Current local Cargo contents, ignoring packaging in the input tree.
     Local(PathBuf),
 }
 

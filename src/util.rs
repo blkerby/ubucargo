@@ -4,7 +4,7 @@ use std::{
     fs,
     io::{self, Write},
     os::{fd::AsFd, unix::fs::PermissionsExt},
-    path::Path,
+    path::{Component, Path, PathBuf},
     process::{Command, Output, Stdio},
 };
 
@@ -127,4 +127,24 @@ pub fn files_differ(first: &Path, second: &Path) -> Result<bool> {
         .output()
         .context("run cmp")?;
     Ok(!output.status.success())
+}
+
+/// Resolves symlinks and normalizes a path even when its final directories do not exist.
+pub fn resolve_path(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    match absolute.canonicalize() {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut parent = resolve_path(absolute.parent().context("path has no parent")?)?;
+            match absolute.components().next_back().context("path is empty")? {
+                Component::ParentDir => {
+                    parent.pop();
+                }
+                Component::Normal(name) => parent.push(name),
+                _ => unreachable!(),
+            }
+            Ok(parent)
+        }
+        Err(error) => Err(error).with_context(|| format!("resolve {}", path.display())),
+    }
 }

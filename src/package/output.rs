@@ -64,7 +64,7 @@ pub fn generated_patch_changes(plan: &super::managed::ManagedPlan) -> bool {
     false
 }
 
-/// Reads fresh debcargo outputs proposed for reconciliation.
+/// Reads fresh debcargo outputs proposed for update.
 pub fn read_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
     let output_debian = source.join("debian");
     if !output_debian.is_dir() {

@@ -1,7 +1,7 @@
-//! Offline CLI tests for source-package creation and reconciliation.
+//! Offline CLI tests for source-package creation and update.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
@@ -15,9 +15,18 @@ use tempfile::TempDir;
 /// Filesystem state used to detect writes during checks and rejected operations.
 #[derive(Debug, PartialEq, Eq)]
 enum TreeEntry {
-    Directory(u32),
-    File(Vec<u8>, u32, SystemTime),
-    Symlink(PathBuf, SystemTime),
+    Directory {
+        mode: u32,
+    },
+    File {
+        contents: Vec<u8>,
+        mode: u32,
+        modified: SystemTime,
+    },
+    Symlink {
+        target: PathBuf,
+        modified: SystemTime,
+    },
 }
 
 /// Creates a dependency-free local crate and a private Cargo cache.
@@ -51,19 +60,25 @@ fn write_crate_manifest(root: &Path, version: &str) {
     .unwrap();
 }
 
+/// Creates a package command with offline Cargo and an isolated cache.
+fn create_package_command(root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ubucargo"));
+    command
+        .arg("package")
+        .current_dir(root)
+        .env("CARGO_HOME", root.join("cargo-home"))
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("DEBFULLNAME", "Example Maintainer")
+        .env("DEBEMAIL", "example@example.com")
+        .env("LC_ALL", "C.UTF-8")
+        .env("TZ", "UTC");
+    command
+}
+
 /// Runs the package CLI with offline Cargo and an isolated cache.
 fn run_package(root: &Path, arguments: &[&str], expected_status: i32) -> Output {
     run_command(
-        Command::new(env!("CARGO_BIN_EXE_ubucargo"))
-            .arg("package")
-            .args(arguments)
-            .current_dir(root)
-            .env("CARGO_HOME", root.join("cargo-home"))
-            .env("CARGO_NET_OFFLINE", "true")
-            .env("DEBFULLNAME", "Example Maintainer")
-            .env("DEBEMAIL", "example@example.com")
-            .env("LC_ALL", "C.UTF-8")
-            .env("TZ", "UTC"),
+        create_package_command(root).args(arguments),
         expected_status,
     )
 }
@@ -94,11 +109,18 @@ fn read_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntry> {
             for child in fs::read_dir(&path).unwrap() {
                 directories.push(relative.join(child.unwrap().file_name()));
             }
-            TreeEntry::Directory(mode)
+            TreeEntry::Directory { mode }
         } else if metadata.is_symlink() {
-            TreeEntry::Symlink(fs::read_link(&path).unwrap(), modified)
+            TreeEntry::Symlink {
+                target: fs::read_link(&path).unwrap(),
+                modified,
+            }
         } else {
-            TreeEntry::File(fs::read(&path).unwrap(), mode, modified)
+            TreeEntry::File {
+                contents: fs::read(&path).unwrap(),
+                mode,
+                modified,
+            }
         };
         tree.insert(relative, entry);
     }
@@ -106,15 +128,16 @@ fn read_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntry> {
 }
 
 /// Reports the first changed path when a check or rejected operation alters package state.
-fn assert_tree_unchanged(root: &Path, before: &BTreeMap<PathBuf, TreeEntry>) {
+fn assert_tree_eq(root: &Path, expected: &BTreeMap<PathBuf, TreeEntry>) {
     let after = read_tree(root);
-    assert_eq!(
-        after.len(),
-        before.len(),
-        "number of filesystem entries changed"
-    );
-    for (path, entry) in before {
-        assert_eq!(after.get(path), Some(entry), "{} changed", path.display());
+    let keys: BTreeSet<_> = expected.keys().chain(after.keys()).collect();
+    for path in keys {
+        assert_eq!(
+            after.get(path),
+            expected.get(path),
+            "{} changed",
+            path.display()
+        );
     }
 }
 
@@ -125,6 +148,12 @@ fn create_and_upgrade_package() {
     let root = fixture.path();
     let packages = root.join("packages");
     let package = packages.join("rust-example");
+    let output = run_package(root, &["--package-dir", "packages/rust-example"], 2);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("not inside a source package; supply INPUT")
+    );
+    assert!(!packages.exists());
     run_package(
         root,
         &[
@@ -157,12 +186,27 @@ fn create_and_upgrade_package() {
 
     let before = read_tree(&packages);
     run_package(root, &["pkg:packages/rust-example", "--check"], 0);
-    run_package(root, &["--package-dir", "packages/rust-example"], 0);
-    assert_tree_unchanged(&packages, &before);
+    let output = run_package(root, &["--package-dir", "packages/rust-example"], 2);
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("not inside a source package; supply INPUT")
+    );
+    // An omitted input selects the nearest parent package, independently of the destination.
+    run_command(
+        create_package_command(root).current_dir(package.join("src")),
+        0,
+    );
+    run_command(
+        create_package_command(root)
+            .current_dir(package.join("src"))
+            .args(["--package-dir", ".."]),
+        0,
+    );
+    assert_tree_eq(&packages, &before);
 
     write_crate_manifest(root, "1.0.1");
     run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert!(packages.join("rust-example_1.0.1.orig.tar.gz").is_file());
     assert!(packages.join("rust-example_1.0.0.orig.tar.gz").is_file());
@@ -186,7 +230,7 @@ fn create_and_upgrade_package() {
     let before = read_tree(&packages);
     run_package(root, &["pkg:packages/rust-example", "--check"], 0);
     run_package(root, &["pkg:packages/rust-example"], 0);
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
 }
 
 /// Preserves edits, deletions, and modes, and resolves unknown or conflicting ownership.
@@ -218,7 +262,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
 
     let before = read_tree(&packages);
     run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert_eq!(fs::read_to_string(debian.join("control")).unwrap(), edited);
     assert!(!debian.join("copyright").exists());
@@ -266,7 +310,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
     let before = read_tree(&packages);
     let output = run_package(root, &["pkg:packages/rust-example"], 2);
     assert!(String::from_utf8_lossy(&output.stdout).contains("ambiguous debian/control"));
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &[
@@ -277,7 +321,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
         ],
         1,
     );
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &["pkg:packages/rust-example", "--keep", "debian/control"],
@@ -303,7 +347,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
         ],
         1,
     );
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &["pkg:packages/rust-example", "--replace", "debian/control"],
@@ -350,13 +394,13 @@ fn preserve_local_source_and_reject_conflicts() {
     for path in ["src/lib.rs", "data.txt", "collision.txt"] {
         assert!(error.contains(path), "{error}");
     }
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &["pkg:packages/rust-example", "--force", "--check"],
         1,
     );
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example", "--force"], 0);
     assert_eq!(
         fs::read(package.join("src/lib.rs")).unwrap(),
@@ -393,7 +437,7 @@ fn preserve_local_source_and_reject_conflicts() {
     );
     let before = read_tree(&packages);
     run_package(root, &["pkg:packages/rust-example", "--check"], 0);
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
 }
 
 /// Repacks orig archives while retaining maintainer patches and verifying their application.
@@ -433,7 +477,7 @@ fn repack_source_and_preserve_patches() {
 
     let before = read_tree(&packages);
     run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     let repacked_orig = packages.join("rust-example_1.0.0+dfsg.orig.tar.gz");
     assert!(repacked_orig.is_file());
@@ -500,5 +544,5 @@ fn repack_source_and_preserve_patches() {
     let before = read_tree(&packages);
     let output = run_package(root, &["pkg:packages/rust-example", "--check"], 2);
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrefreshed changes"));
-    assert_tree_unchanged(&packages, &before);
+    assert_tree_eq(&packages, &before);
 }

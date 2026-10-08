@@ -16,7 +16,7 @@ use crate::changelog::TopChangelog;
 pub struct OrigBaseline {
     /// Existing or downloaded orig tarball.
     pub path: PathBuf,
-    /// Download directory, retained until reconciliation is complete.
+    /// Download directory, retained until update is complete.
     _temporary: Option<TempDir>,
 }
 

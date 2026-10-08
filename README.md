@@ -51,7 +51,7 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | `ubucargo import` | Import a published source package unchanged | [`docs/import.md`](docs/import.md) |
 | `ubucargo deps`    | Inspect dependency candidates     | [`docs/deps.md`](docs/deps.md)       |
 
-These commands share a common syntax for specifying an input crate or syntax, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](docs/inputs.md) for details.
+These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](docs/inputs.md) for details.
 
 ### `package`
 
@@ -61,10 +61,10 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
-- Run `ubucargo package CRATE [VERSION]` outside a package to create a new source tree and orig tarball.
+- Run `ubucargo package CRATE [VERSION]` outside a package to create or update its default source-package directory.
 - Run `ubucargo package` inside an existing package to regenerate its current release.
 - Run `ubucargo package CRATE VERSION` against an existing package to select another release.
-- Run `ubucargo package local:CRATE-DIR --package-dir PACKAGE-DIR` to create a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
+- Run `ubucargo package local:CRATE-DIR --package-dir PACKAGE-DIR` to create or update a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
 - After changing `debcargo.toml`, run `ubucargo package` again.
 - `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
 

@@ -18,7 +18,7 @@ use crate::{
         get_package_config_path, get_staged_config_path, has_debcargo_config, read_package_config,
         write_staged_config,
     },
-    util::{require_absent, run_command},
+    util::{require_absent, resolve_path, run_command},
 };
 
 const DEBCARGO_VERSION_REQUIREMENT: &str = "^2.8.4";
@@ -39,7 +39,7 @@ struct PackageTarget {
     existing: bool,
 }
 
-/// Existing source and validated quilt state used during generation and reconciliation.
+/// Existing source and validated quilt state used during generation and update.
 pub struct ExistingPackage {
     /// Resolved directory containing the existing source package.
     pub root: PathBuf,
@@ -75,62 +75,37 @@ fn resolve_package_target(
     crate_name: Option<&str>,
     local_crate: Option<&Path>,
 ) -> Result<PackageTarget> {
-    if let Some(package_dir) = package_dir {
-        let requested_dir = current_dir.join(package_dir);
-        match fs::symlink_metadata(&requested_dir) {
-            Ok(metadata) if metadata.is_dir() => {
-                let root = requested_dir
-                    .canonicalize()
-                    .with_context(|| format!("resolve {}", requested_dir.display()))?;
-                if !has_debcargo_config(&root) {
-                    bail!(
-                        "{} is not a source-package root with {}",
-                        root.display(),
-                        get_package_config_path(Path::new("")).display()
-                    );
-                }
-                return Ok(PackageTarget {
-                    destination: root,
-                    existing: true,
-                });
-            }
-            Ok(_) => bail!("{} is not a directory", requested_dir.display()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if crate_name.is_none() && local_crate.is_none() {
-                    bail!(
-                        "CRATE or local: input is required when creating {}",
-                        requested_dir.display()
-                    );
-                }
-                return Ok(PackageTarget {
-                    destination: requested_dir,
-                    existing: false,
-                });
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("inspect {}", requested_dir.display()));
-            }
+    let destination = if let Some(package_dir) = package_dir {
+        current_dir.join(package_dir)
+    } else if let Some(root) = find_parent_package(current_dir) {
+        root
+    } else {
+        let crate_name = crate_name.context("CRATE is required to select a default destination")?;
+        // Default source names have no semver suffix until configuration is read.
+        current_dir.join(get_crate_source_name(crate_name, None))
+    };
+    let destination = resolve_path(&destination)?;
+    let existing = destination.try_exists()?;
+    if existing {
+        if !has_debcargo_config(&destination) {
+            bail!(
+                "{} is not a source-package root with {}",
+                destination.display(),
+                get_package_config_path(Path::new("")).display()
+            );
+        }
+    } else {
+        require_absent(&destination)?;
+        if crate_name.is_none() && local_crate.is_none() {
+            bail!(
+                "CRATE or local: input is required when creating {}",
+                destination.display()
+            );
         }
     }
-
-    if let Some(root) = find_parent_package(current_dir) {
-        return Ok(PackageTarget {
-            destination: root,
-            existing: true,
-        });
-    }
-    let Some(crate_name) = crate_name else {
-        bail!(
-            "{} is not inside a source package; CRATE is required to create one",
-            current_dir.display()
-        );
-    };
-    // New registry packages use the default configuration, without a semver suffix.
-    let destination = current_dir.join(get_crate_source_name(crate_name, None));
-    require_absent(&destination)?;
     Ok(PackageTarget {
         destination,
-        existing: false,
+        existing,
     })
 }
 
@@ -168,10 +143,10 @@ fn check_patch_state(source: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Rejects local crate and source-package trees that overlap or contain one another.
-fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()> {
-    if local_crate.starts_with(package_root) || package_root.starts_with(local_crate) {
-        bail!("local: input and --package-dir must be separate, non-nested directory trees");
+/// Rejects input and destination trees that overlap or contain one another.
+pub fn validate_separate_trees(input: &Path, destination: &Path) -> Result<()> {
+    if input.starts_with(destination) || destination.starts_with(input) {
+        bail!("input and --package-dir must be separate, non-nested directory trees");
     }
     Ok(())
 }
@@ -180,8 +155,7 @@ fn validate_separate_trees(local_crate: &Path, package_root: &Path) -> Result<()
 /// `current_dir` is the canonical working directory used for relative paths and
 /// parent-package discovery. `None` selects crate inspection without a destination;
 /// relative local paths then resolve against the process working directory.
-/// - Local sources (`local_crate` for new packages or configured `crate_src_path`
-///   for existing packages) use the local source's Cargo.toml version.
+/// - Local sources (explicit `local_crate` or configured `crate_src_path`) use the local source's Cargo.toml version.
 /// - Without `local_crate` or a configured `crate_src_path`, the source is
 ///   crates.io. A requested crate name selects the requested exact version,
 ///   or the latest release if no version is requested.
@@ -214,9 +188,6 @@ pub fn resolve_package(
         }
         None
     };
-    if local_crate.is_some() && target.as_ref().is_some_and(|target| target.existing) {
-        bail!("local: input applies only when creating a package");
-    }
     let debcargo_version = check_debcargo_version()?;
 
     let existing_root = match &target {
@@ -230,7 +201,7 @@ pub fn resolve_package(
         let current_upstream = cargo_to_debian_upstream_version(&current_version, None);
         let top = read_top_changelog(&debian.join("changelog"))?;
         validate_top_changelog(&top, &current_package.version, &current_upstream)?;
-        let config = read_package_config(root)?;
+        let config = read_package_config(root, local_crate)?;
         let existing = ExistingPackage {
             root: root.to_path_buf(),
             top_changelog: top,
@@ -240,13 +211,7 @@ pub fn resolve_package(
     } else if let Some(local_crate) = local_crate {
         let root = target.as_ref().map(|target| target.destination.as_path());
         let local_crate = current_dir.unwrap_or(Path::new("")).join(local_crate);
-        if let Some(root) = root {
-            validate_separate_trees(&local_crate, root)?;
-        }
-        let source = local_crate
-            .canonicalize()
-            .with_context(|| format!("resolve local crate {}", local_crate.display()))?;
-        let config = get_new_local_package_config(&source, root)?;
+        let config = get_new_local_package_config(&local_crate, root)?;
         (config, None, None)
     } else {
         (get_new_package_config()?, None, None)
@@ -254,11 +219,11 @@ pub fn resolve_package(
 
     // The effective configuration selects local input for both new and existing packages.
     let crate_selection = if let Some(local_crate) = &config.resolved_crate_src_path {
-        if let Some(root) = existing_root {
-            if requested_name.is_some() || requested_version.is_some() {
-                bail!("CRATE and VERSION may not be used with crate_src_path");
-            }
-            validate_separate_trees(local_crate, root)?;
+        if requested_name.is_some() || requested_version.is_some() {
+            bail!("CRATE and VERSION may not be used with crate_src_path");
+        }
+        if let Some(target) = &target {
+            validate_separate_trees(local_crate, &target.destination)?;
         }
         let package = read_root_package(local_crate)?;
         CrateSelection {

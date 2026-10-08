@@ -45,11 +45,14 @@ pub fn has_debcargo_config(package_root: &Path) -> bool {
     get_package_config_path(package_root).is_file()
 }
 
-/// Reads and validates the in-tree debcargo configuration.
-pub fn read_package_config(package_root: &Path) -> Result<PackageConfig> {
+/// Reads configuration, using an explicit local crate in preference to its saved source path.
+pub fn read_package_config(
+    package_root: &Path,
+    local_crate: Option<&Path>,
+) -> Result<PackageConfig> {
     let path = get_package_config_path(package_root);
     let contents = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    parse_package_config(&contents, &package_root.join("debian"), None)
+    parse_package_config(&contents, &package_root.join("debian"), local_crate)
         .with_context(|| format!("read configuration {}", path.display()))
 }
 
@@ -67,19 +70,20 @@ pub fn get_new_local_package_config(
 ) -> Result<PackageConfig> {
     let mut document = DocumentMut::new();
     document["maintainer"] = value(UBUNTU_MAINTAINER);
-    document["crate_src_path"] = value(require_utf8_path(crate_root)?);
     let config_dir = package_root.map(|root| root.join("debian"));
-    // Resolve the source before making its path relative to a destination that may not exist.
-    parse_package_config(&document.to_string(), Path::new(""), config_dir.as_deref())
+    parse_package_config(
+        &document.to_string(),
+        config_dir.as_deref().unwrap_or(Path::new("")),
+        Some(crate_root),
+    )
 }
 
-/// Parses configuration and resolves its effective values before creating a snapshot.
-/// Paths are read relative to `config_dir`. For new local packages, `new_config_dir`
-/// selects where to make the persisted source path relative; that directory need not exist.
+/// Parses configuration, resolving paths relative to `config_dir`.
+/// An explicit local source replaces the saved path and is persisted relative to that directory.
 fn parse_package_config(
     contents: &str,
     config_dir: &Path,
-    new_config_dir: Option<&Path>,
+    local_crate: Option<&Path>,
 ) -> Result<PackageConfig> {
     let mut config: DocumentMut = contents.parse().context("parse debcargo configuration")?;
     if let Some(overlay) = config.get("overlay")
@@ -87,7 +91,13 @@ fn parse_package_config(
     {
         bail!("overlay must be omitted or \".\"");
     }
-    let resolved_crate_src_path = if let Some(item) = config.get("crate_src_path") {
+    let resolved_crate_src_path = if let Some(local_crate) = local_crate {
+        Some(
+            local_crate
+                .canonicalize()
+                .with_context(|| format!("resolve local crate {}", local_crate.display()))?,
+        )
+    } else if let Some(item) = config.get("crate_src_path") {
         let path = config_dir.join(item.as_str().context("crate_src_path must be a string")?);
         Some(
             path.canonicalize()
@@ -96,6 +106,27 @@ fn parse_package_config(
     } else {
         None
     };
+    if local_crate.is_some()
+        && let Some(source) = &resolved_crate_src_path
+    {
+        let path = if config_dir.as_os_str().is_empty() {
+            source.clone()
+        } else {
+            pathdiff::diff_paths(source, config_dir)
+                .context("make crate_src_path relative to package destination")?
+        };
+        let path = require_utf8_path(&path)?;
+        if config.get("crate_src_path").and_then(|item| item.as_str()) != Some(path) {
+            let mut item = value(path);
+            if let Some(previous) = config
+                .get("crate_src_path")
+                .and_then(|item| item.as_value())
+            {
+                *item.as_value_mut().unwrap().decor_mut() = previous.decor().clone();
+            }
+            config["crate_src_path"] = item;
+        }
+    }
     let semver_suffix = config
         .get("semver_suffix")
         .and_then(|item| item.as_bool())
@@ -111,20 +142,12 @@ fn parse_package_config(
     } else {
         None
     };
-    if let Some(config_dir) = new_config_dir
-        && let Some(crate_root) = &resolved_crate_src_path
-    {
-        let relative = pathdiff::diff_paths(crate_root, config_dir).with_context(|| {
-            format!(
-                "cannot express {} relative to {}",
-                crate_root.display(),
-                config_dir.display()
-            )
-        })?;
-        config["crate_src_path"] = value(require_utf8_path(&relative)?);
-    }
     Ok(PackageConfig {
-        original_contents: config.to_string(),
+        original_contents: if local_crate.is_some() {
+            config.to_string()
+        } else {
+            contents.to_owned()
+        },
         semver_suffix,
         effective_repack_suffix,
         resolved_crate_src_path,
@@ -147,4 +170,22 @@ pub fn write_staged_config(config: &PackageConfig, stage: &Path) -> Result<()> {
 fn require_utf8_path(path: &Path) -> Result<&str> {
     path.to_str()
         .with_context(|| format!("path is not valid UTF-8: {}", path.display()))
+}
+
+/// Rebases a relative local-crate path for a package's new location.
+pub fn relocate_package_config(config: &mut PackageConfig, package_root: &Path) -> Result<()> {
+    let Some(crate_root) = &config.resolved_crate_src_path else {
+        return Ok(());
+    };
+    let mut document: DocumentMut = config.original_contents.parse()?;
+    let source = document["crate_src_path"]
+        .as_str()
+        .context("crate_src_path must be a string")?;
+    if Path::new(source).is_relative() {
+        let relative = pathdiff::diff_paths(crate_root, package_root.join("debian"))
+            .context("make crate_src_path relative to package destination")?;
+        document["crate_src_path"] = value(require_utf8_path(&relative)?);
+        config.original_contents = document.to_string();
+    }
+    Ok(())
 }

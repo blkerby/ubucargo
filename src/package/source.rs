@@ -19,10 +19,10 @@ pub struct SourceFile {
     origin: PathBuf,
 }
 
-/// Source-tree entry relevant to three-way reconciliation.
+/// Source-tree entry relevant to three-way merging.
 #[derive(Clone, Debug)]
 pub enum TreeNode {
-    /// Directory; its permissions do not participate in reconciliation.
+    /// Directory; its permissions do not participate in comparisons.
     Directory,
     /// Regular file metadata backed by an on-disk path.
     File(SourceFile),

@@ -131,7 +131,7 @@ impl PartialEq for FileState {
     }
 }
 
-/// Planned reconciliation result for one managed primary file and its hint.
+/// Planned update result for one managed primary file and its hint.
 #[derive(Debug)]
 pub struct PathPlan {
     /// Package-relative path of the primary file.
@@ -166,7 +166,7 @@ impl PathPlan {
 pub struct ManagedPlan {
     /// Resolved directory containing the package's Debian files.
     debian: PathBuf,
-    /// Per-path reconciliation results in deterministic order.
+    /// Per-path update results in deterministic order.
     pub paths: Vec<PathPlan>,
     /// Manifest bytes observed before planning.
     manifest_before: Option<FileState>,
@@ -275,7 +275,7 @@ impl ManagedPlan {
 ///
 /// - `debian`: Existing Debian packaging directory from which to read primary files,
 ///   hints, and `ubucargo-state.json`, and to which the returned plan will apply changes.
-/// - `managed`: Paths to reconcile, augmented with any paths retained in the manifest.
+/// - `managed`: Paths to update, augmented with any paths retained in the manifest.
 /// - `generated`: Latest generated contents. A managed path missing from
 ///   this map represents generated absence, so an unmodified primary may be removed.
 /// - `inferred_bases`: Candidate baselines used only when both a manifest entry and a

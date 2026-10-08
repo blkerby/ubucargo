@@ -1,10 +1,10 @@
 //! Imports published Debian source packages without regeneration.
 
 use crate::{
-    input::{parse_input, validate_version},
-    published::{acquire_package, install_package},
+    input::{Input, parse_input, validate_version},
+    source::{acquire_package, install_package},
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::path::PathBuf;
 
 /// Import a published source package unchanged.
@@ -28,6 +28,9 @@ pub struct ImportArgs {
 pub fn run(args: ImportArgs) -> Result<bool> {
     let input = parse_input(&args.input, &std::env::current_dir()?)?;
     validate_version(&input, args.version.as_deref())?;
+    if !matches!(input, Input::Archive { .. } | Input::Ppa { .. }) {
+        bail!("expected an Archive or PPA source input");
+    }
     let package = acquire_package(
         &input,
         args.version.as_deref(),

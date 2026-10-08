@@ -1,4 +1,4 @@
-//! Creates and reconciles Debian source packages from staged output.
+//! Creates and updates Debian source packages from staged output.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,15 +11,15 @@ use debian_control::lossless::control::Control;
 
 use crate::{
     changelog::read_top_changelog,
-    config::PackageConfig,
+    config::{PackageConfig, relocate_package_config, write_package_config},
     generate::{GeneratedPackage, generate_package},
     resolve::{ExistingPackage, resolve_package},
+    source::{acquire_old_orig, acquire_package, install_package},
     util::{copy_tree, extract_tree, files_differ, require_absent},
 };
 
 use self::{
     managed::{FileState, ManagedPlan, build_plan, install_state, read_state},
-    orig::acquire_old_orig,
     output::{
         build_patch_series_plan, collect_managed_paths, generated_patch_changes,
         initialize_package, read_generated_candidates, remove_generated_vcs_fields,
@@ -29,11 +29,10 @@ use self::{
 };
 
 mod managed;
-mod orig;
 mod output;
 mod source;
 
-/// Create or reconcile a complete source package.
+/// Create or update a complete source package.
 #[derive(clap::Args)]
 pub struct PackageArgs {
     /// Crate, published source, package, or local input; defaults to the nearest package.
@@ -44,7 +43,7 @@ pub struct PackageArgs {
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Source-package directory to create or update.
+    /// Destination directory; package inputs default to their existing directory.
     #[arg(long = "package-dir", value_name = "DIR")]
     pub package_dir: Option<PathBuf>,
 
@@ -69,79 +68,95 @@ pub struct PackageArgs {
     pub replace: Vec<PathBuf>,
 }
 
-/// Creates or reconciles one source package, returning true when check mode finds changes.
+/// Creates or updates one source package, returning true when check mode finds changes.
 pub fn run(mut args: PackageArgs) -> Result<bool> {
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
         .context("resolve current directory")?;
     let (keep_paths, replace_paths) = collect_decisions(&args.keep, &args.replace)?;
-    let input = args
-        .input
-        .as_deref()
-        .map(|value| crate::input::parse_input(value, &current))
-        .transpose()?;
-    if let Some(input) = &input {
-        crate::input::validate_version(input, args.version.as_deref())?;
-    }
-    if let Some(input @ (crate::input::Input::Archive { .. } | crate::input::Input::Ppa { .. })) =
-        &input
-    {
-        let imported = crate::published::acquire_package(
-            input,
+    let input = if let Some(value) = &args.input {
+        crate::input::parse_input(value, &current)?
+    } else {
+        crate::input::Input::Package(
+            crate::resolve::find_parent_package(&current)
+                .context("not inside a source package; supply INPUT")?,
+        )
+    };
+    crate::input::validate_version(&input, args.version.as_deref())?;
+    let acquired = match &input {
+        crate::input::Input::Package(_)
+        | crate::input::Input::Archive { .. }
+        | crate::input::Input::Ppa { .. } => Some(acquire_package(
+            &input,
             args.version.as_deref(),
             args.package_dir.as_deref(),
             args.keep_staging,
-        )?;
-        // dpkg-source applies quilt patches on extraction. Regeneration works
-        // against the unpatched upstream tree and reads the maintained stack.
-        let applied = imported.root.join(".pc/applied-patches");
-        if applied.is_file() && !fs::read_to_string(&applied)?.trim().is_empty() {
-            crate::util::run_command(
-                std::process::Command::new("quilt")
-                    .args(["pop", "--quiltrc=-", "-a"])
-                    .env("QUILT_PATCHES", "debian/patches")
-                    .current_dir(&imported.root),
-                "pop imported quilt patches",
-            )?;
-        }
-        let check = args.check;
-        args.input = None;
+        )?),
+        _ => None,
+    };
+    let check = args.check;
+    if let Some(package) = &acquired {
         args.version = None;
-        args.package_dir = Some(imported.root.clone());
-        // Reconcile only staging, even in check mode, so installation always
-        // uses the same validated result without touching the destination.
-        args.check = false;
-        run(args)?;
-        return crate::published::install_package(&imported, check);
+        if package.root != package.destination {
+            // Extracted or copied packages regenerate against unpatched upstream
+            // source. Only staging is changed, including during --check.
+            let applied = package.root.join(".pc/applied-patches");
+            if applied.is_file() && !fs::read_to_string(&applied)?.trim().is_empty() {
+                crate::util::run_command(
+                    std::process::Command::new("quilt")
+                        .args(["pop", "--quiltrc=-", "-a"])
+                        .env("QUILT_PATCHES", "debian/patches")
+                        .current_dir(&package.root),
+                    "pop staged quilt patches",
+                )?;
+            }
+            args.check = false;
+        }
     }
-    let mut destination = args.package_dir.as_deref();
+    let destination = acquired
+        .as_ref()
+        .map(|package| package.root.as_path())
+        .or(args.package_dir.as_deref());
     let mut name = None;
     let mut local = None;
     match &input {
-        Some(crate::input::Input::Crate(value)) => name = Some(value.as_str()),
-        Some(crate::input::Input::Package(path)) => {
-            if destination.is_some() {
-                bail!("pkg: inputs cannot be combined with --package-dir");
-            }
-            destination = Some(path.as_path());
-        }
-        Some(crate::input::Input::Local(path)) => {
+        crate::input::Input::Crate(value) => name = Some(value.as_str()),
+        crate::input::Input::Local(path) => {
             if destination.is_none() {
                 bail!("local: inputs require --package-dir");
             }
             local = Some(path.as_path());
         }
-        Some(_) => unreachable!(),
-        None => {}
+        _ => {}
     }
-    let resolved = resolve_package(
+    let mut resolved = resolve_package(
         Some(&current),
         destination,
         name,
         args.version.as_deref(),
         local,
     )?;
+    let destination = acquired
+        .as_ref()
+        .map(|package| package.destination.as_path())
+        .or(resolved.destination.as_deref())
+        .context("package destination is missing")?;
+    let action = if resolved.existing.is_none() {
+        "Create new package"
+    } else if acquired
+        .as_ref()
+        .is_some_and(|package| package.root != package.destination)
+    {
+        "Create package from existing packaging"
+    } else {
+        "Update existing package"
+    };
+    println!(
+        "{}{action}: {}",
+        if check { "Check: " } else { "" },
+        destination.display()
+    );
     if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
         bail!("--keep and --replace apply only to existing packages");
     }
@@ -160,11 +175,12 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
 
-    if let Some((existing, base)) = &baseline {
-        reconcile_existing(
+    let changed = if let Some((existing, base)) = &baseline {
+        update_existing(
             existing,
             base.path(),
             &generated,
+            &resolved.config,
             raw_control,
             &args,
             &keep_paths,
@@ -180,7 +196,15 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
             &generated,
             args.check,
         )
+    }?;
+    if let Some(package) = &acquired
+        && package.root != package.destination
+    {
+        relocate_package_config(&mut resolved.config, &package.destination)?;
+        write_package_config(&resolved.config, &package.root)?;
+        return install_package(package, check);
     }
+    Ok(changed)
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -205,20 +229,22 @@ fn collect_decisions(
     Ok((keep_paths, replace_paths))
 }
 
-/// Reconciles an existing package against the generated source and old orig baseline.
-fn reconcile_existing(
+/// Updates an existing package using the generated source and old orig baseline.
+fn update_existing(
     existing: &ExistingPackage,
     base: &Path,
     generated: &GeneratedPackage,
+    config: &PackageConfig,
     raw_control: Option<FileState>,
     args: &PackageArgs,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<bool> {
-    let plan = build_reconciliation_plan(
+    let plan = build_update_plan(
         existing,
         base,
         generated,
+        config,
         raw_control,
         args.force,
         keep,
@@ -237,22 +263,23 @@ fn reconcile_existing(
 }
 
 /// Builds source and packaging changes against the old orig without modifying the package.
-fn build_reconciliation_plan(
+fn build_update_plan(
     existing: &ExistingPackage,
     base: &Path,
     generated: &GeneratedPackage,
+    config: &PackageConfig,
     raw_control: Option<FileState>,
     force: bool,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
-) -> Result<ReconciliationPlan> {
+) -> Result<UpdatePlan> {
     let root = &existing.root;
     let debian = root.join("debian");
     let base_tree = scan_tree(base)?;
     let old_tree = scan_tree(root)?;
     let new_tree = scan_tree(&generated.source)?;
     if !trees_match(&base_tree, &new_tree) && existing.patches_applied {
-        bail!("pop the complete quilt stack before reconciling changed upstream source");
+        bail!("pop the complete quilt stack before updating changed upstream source");
     }
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
 
@@ -296,7 +323,7 @@ fn build_reconciliation_plan(
             let source = control.source().and_then(|source| source.name());
             if source.as_deref() != Some(prepared_top.source.as_str()) {
                 eprintln!(
-                    "warning: debian/control Source does not match {}; the package will not build until reconciled with debian/control.debcargo.hint",
+                    "warning: debian/control Source does not match {}; the package will not build until updated to match debian/control.debcargo.hint",
                     prepared_top.source
                 );
             }
@@ -312,7 +339,11 @@ fn build_reconciliation_plan(
             .file_name()
             .context("candidate orig has no file name")?,
     );
-    Ok(ReconciliationPlan {
+    let old_config =
+        read_state(&debian.join("debcargo.toml"))?.context("package configuration is missing")?;
+    let mut new_config = old_config.clone();
+    new_config.contents = config.original_contents.as_bytes().to_vec();
+    Ok(UpdatePlan {
         root: root.clone(),
         orig: if files_differ(&generated.orig, &orig_destination)? {
             Some((generated.orig.clone(), orig_destination))
@@ -321,6 +352,11 @@ fn build_reconciliation_plan(
         },
         source: source_plan,
         managed: generated_plan,
+        config: if new_config != old_config {
+            Some(new_config)
+        } else {
+            None
+        },
         changelog: if old_changelog.as_ref() != Some(&prepared_changelog) {
             Some(prepared_changelog)
         } else {
@@ -330,7 +366,7 @@ fn build_reconciliation_plan(
 }
 
 /// Complete changes to an existing package; staged source files must remain until applied.
-struct ReconciliationPlan {
+struct UpdatePlan {
     root: PathBuf,
     /// Staged orig and destination paths, or None when the tarball already matches.
     orig: Option<(PathBuf, PathBuf)>,
@@ -338,18 +374,21 @@ struct ReconciliationPlan {
     managed: ManagedPlan,
     /// Updated changelog, or None when the current changelog already matches.
     changelog: Option<FileState>,
+    /// Updated configuration, including an explicitly selected local source path.
+    config: Option<FileState>,
 }
 
-impl ReconciliationPlan {
+impl UpdatePlan {
     /// Reports whether any part of the package needs updating.
     fn has_changes(&self) -> bool {
         self.orig.is_some()
             || self.source.has_changes()
             || self.managed.has_changes()
             || self.changelog.is_some()
+            || self.config.is_some()
     }
 
-    /// Prints orig, source, managed-file, and changelog changes, or reports a clean package.
+    /// Prints package changes or reports a clean package.
     fn print_report(&self) {
         if let Some((_, destination)) = &self.orig {
             println!("create {}", destination.display());
@@ -359,12 +398,15 @@ impl ReconciliationPlan {
         if self.changelog.is_some() {
             println!("update debian/changelog");
         }
+        if self.config.is_some() {
+            println!("update debian/debcargo.toml");
+        }
         if !self.has_changes() {
             println!("clean");
         }
     }
 
-    /// Installs the orig, source, managed files, and changelog in that order.
+    /// Installs the orig, source, managed files, changelog, and configuration.
     fn apply(&self) -> Result<()> {
         if let Some((source, destination)) = &self.orig {
             fs::copy(source, destination)
@@ -380,6 +422,9 @@ impl ReconciliationPlan {
         }
         if let Some(changelog) = &self.changelog {
             install_state(&self.root.join("debian/changelog"), Some(changelog))?;
+        }
+        if let Some(config) = &self.config {
+            install_state(&self.root.join("debian/debcargo.toml"), Some(config))?;
         }
         Ok(())
     }
