@@ -262,9 +262,8 @@ impl ManagedPlan {
 ///   output (before Ubuntu-specific changes to 'Maintainers' and VCS fields), allowing it
 ///   to be smoothly migrated without needing a manual '--keep' or '--replace' decision.
 /// - `keep`: Ambiguous paths for which to preserve the current primary, including absence.
-/// - `replace`: Ambiguous paths for which to adopt the latest generated state, including
-///   absence. A path cannot appear in both `keep` and `replace`; decisions for paths
-///   that are not ambiguous are rejected.
+/// - `replace`: Managed paths for which to adopt the latest generated state, including
+///   absence. A path cannot appear in both `keep` and `replace`; `keep` requires ambiguity.
 ///
 /// Ambiguities without a decision remain in the returned plan and prevent it from being applied.
 /// Auto patches always take the generated state, without hints or ownership baselines.
@@ -277,11 +276,19 @@ pub fn build_plan(
     replace: &BTreeSet<PathBuf>,
 ) -> Result<ManagedPlan> {
     let mut paths = Vec::new();
-    let mut used_decisions = BTreeSet::new();
+    let mut used_keep = BTreeSet::new();
     let (mut manifest, manifest_before) = read_manifest(debian)?;
     let mut managed = managed.clone();
     for path in manifest.files.keys() {
         managed.insert(PathBuf::from(path));
+    }
+    for path in replace {
+        let name = path.to_str().context("replacement path is not UTF-8")?;
+        if name.split('/').any(|part| matches!(part, "" | "." | "..")) || !is_package_managed(path)
+        {
+            bail!("--replace requires a managed path: {}", path.display());
+        }
+        managed.insert(path.clone());
     }
 
     for path in &managed {
@@ -335,16 +342,13 @@ pub fn build_plan(
                 _ => false,
             }
         };
-        let decision_replace = if ambiguous {
+        let decision_replace = if ambiguous || replace.contains(path) {
             match (keep.contains(path), replace.contains(path)) {
                 (true, false) => {
-                    used_decisions.insert(path.clone());
+                    used_keep.insert(path.clone());
                     Some(false)
                 }
-                (false, true) => {
-                    used_decisions.insert(path.clone());
-                    Some(true)
-                }
+                (false, true) => Some(true),
                 (false, false) => None,
                 (true, true) => bail!(
                     "{} cannot be named by both --keep and --replace",
@@ -357,12 +361,10 @@ pub fn build_plan(
 
         // Resolve conflicting evidence before considering any apparent match.
         let unresolved = ambiguous && decision_replace.is_none();
-        let primary_after = if ambiguous {
-            if decision_replace == Some(true) {
-                new.clone()
-            } else {
-                old.clone()
-            }
+        let primary_after = if decision_replace == Some(true) {
+            new.clone()
+        } else if ambiguous {
+            old.clone()
         } else {
             match effective_base {
                 Some(base) if old_fingerprint == base => new.clone(),
@@ -395,8 +397,8 @@ pub fn build_plan(
     }
 
     let mut unused = Vec::new();
-    for path in keep.union(replace) {
-        if !used_decisions.contains(path) {
+    for path in keep {
+        if !used_keep.contains(path) {
             unused.push(path);
         }
     }
@@ -406,7 +408,7 @@ pub fn build_plan(
             names.push(path.display().to_string());
         }
         bail!(
-            "--keep/--replace only accept ambiguous paths; not ambiguous: {}",
+            "--keep only accepts ambiguous paths; not ambiguous: {}",
             names.join(", ")
         );
     }

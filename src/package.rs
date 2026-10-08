@@ -61,7 +61,7 @@ pub struct PackageArgs {
     #[arg(long, value_name = "PATH")]
     pub keep: Vec<PathBuf>,
 
-    /// Resolve an ambiguous primary by taking the generated state.
+    /// Adopt the generated state for a managed path, including deletion.
     #[arg(long, value_name = "PATH")]
     pub replace: Vec<PathBuf>,
 }

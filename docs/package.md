@@ -294,7 +294,7 @@ ubucargo package --keep debian/control
 ubucargo package --replace debian/control
 ```
 
-`--keep` preserves the primary and writes a hint if the generated alternative exists and differs. `--replace` takes the generated state, including deletion, and removes any hint. Both record fresh generated state in the manifest. The options are accepted only for ambiguous paths, cannot both name the same path, and may be repeated to resolve several paths.
+`--keep` accepts ambiguous paths, preserves the primary, and writes a hint if the generated alternative exists and differs. `--replace` accepts any managed path and adopts its freshly generated state: it installs the generated contents and permissions when present, or deletes the primary when generation produces absence. It also removes any hint. Both options record fresh generated state in the manifest for files that support overrides. They may be repeated for several paths; each path may be named by only one option.
 
 If any ambiguity remains, `package` reports every affected path and makes no changes.
 
