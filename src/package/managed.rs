@@ -342,28 +342,25 @@ pub fn build_plan(
                 _ => false,
             }
         };
-        let decision_replace = if ambiguous || replace.contains(path) {
-            match (keep.contains(path), replace.contains(path)) {
-                (true, false) => {
-                    used_keep.insert(path.clone());
-                    Some(false)
-                }
-                (false, true) => Some(true),
-                (false, false) => None,
-                (true, true) => bail!(
-                    "{} cannot be named by both --keep and --replace",
-                    path.display()
-                ),
-            }
-        } else {
-            None
-        };
+        let keep_requested = keep.contains(path);
+        let replace_requested = replace.contains(path);
+
+        if keep_requested && replace_requested {
+            bail!(
+                "{} cannot be named by both --keep and --replace",
+                path.display()
+            );
+        }
+
+        let unresolved = ambiguous && !keep_requested && !replace_requested;
 
         // Resolve conflicting evidence before considering any apparent match.
-        let unresolved = ambiguous && decision_replace.is_none();
-        let primary_after = if decision_replace == Some(true) {
+        let primary_after = if replace_requested {
             new.clone()
         } else if ambiguous {
+            if keep_requested {
+                used_keep.insert(path.clone());
+            }
             old.clone()
         } else {
             match effective_base {
