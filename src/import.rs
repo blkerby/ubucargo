@@ -2,7 +2,7 @@
 
 use crate::{
     input::{Input, parse_input, validate_version},
-    source::{acquire_package, install_package},
+    source::{acquire_package, write_package},
 };
 use anyhow::{Result, bail};
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ pub struct ImportArgs {
     pub keep_staging: bool,
 }
 
-/// Downloads and installs the selected source without modifying its packaging.
+/// Downloads and writes the selected source without modifying its packaging.
 pub fn run(args: ImportArgs) -> Result<bool> {
     let input = parse_input(&args.input, &std::env::current_dir()?)?;
     validate_version(&input, args.version.as_deref())?;
@@ -37,5 +37,5 @@ pub fn run(args: ImportArgs) -> Result<bool> {
         args.package_dir.as_deref(),
         args.keep_staging,
     )?;
-    install_package(&package, false)
+    write_package(&package, false)
 }

@@ -52,18 +52,6 @@ pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
     fs::write(&path, control.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
-/// Reports whether generated automatic patches or their series change.
-pub fn generated_patch_changes(plan: &super::managed::ManagedPlan) -> bool {
-    for path in &plan.paths {
-        let generated_patch_changed =
-            path.path == Path::new("debian/patches/series") || is_auto_patch(&path.path);
-        if generated_patch_changed && path.old != path.primary_after {
-            return true;
-        }
-    }
-    false
-}
-
 /// Reads fresh debcargo outputs proposed for update.
 pub fn read_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
     let output_debian = source.join("debian");

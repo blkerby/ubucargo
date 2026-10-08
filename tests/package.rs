@@ -440,6 +440,224 @@ fn preserve_local_source_and_reject_conflicts() {
     assert_tree_eq(&packages, &before);
 }
 
+/// Preserves partial quilt stacks through updates and copies, with usable backups and clean reruns.
+#[test]
+fn preserve_applied_quilt_state() {
+    let fixture = create_fixture();
+    let root = fixture.path();
+    run_package(
+        root,
+        &["local:crate", "--package-dir", "packages/rust-example"],
+        0,
+    );
+    let packages = root.join("packages");
+    let package = packages.join("rust-example");
+    let debian = package.join("debian");
+    fs::create_dir_all(debian.join("patches/nested")).unwrap();
+    let first = indoc! {"
+        Description: Change the example value.
+        --- a/src/lib.rs
+        +++ b/src/lib.rs
+        @@ -1,2 +1,2 @@
+         /// Example value.
+        -pub const VALUE: u8 = 1;
+        +pub const VALUE: u8 = 2;
+    "};
+    let second = first.replace("= 2;", "= 3;").replace("= 1;", "= 2;");
+    fs::write(debian.join("patches/nested/first.patch"), first).unwrap();
+    fs::write(debian.join("patches/second.patch"), second).unwrap();
+    fs::write(
+        debian.join("patches/series"),
+        "nested/first.patch\nsecond.patch\n",
+    )
+    .unwrap();
+    run_command(
+        Command::new("quilt")
+            .args(["push", "--quiltrc=-", "nested/first.patch"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&package),
+        0,
+    );
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
+
+    write_crate_manifest(root, "1.0.1");
+    fs::write(
+        root.join("crate/src/lib.rs"),
+        "/// Example value.\npub const VALUE: u8 = 1;\n// New upstream comment.\n",
+    )
+    .unwrap();
+    run_package(root, &["pkg:packages/rust-example", "--check"], 1);
+    assert_tree_eq(&packages, &before);
+    run_package(
+        root,
+        &["local:crate", "--package-dir", "packages/rust-example"],
+        0,
+    );
+    assert_eq!(
+        fs::read_to_string(package.join(".pc/applied-patches")).unwrap(),
+        "nested/first.patch\n"
+    );
+    assert!(
+        fs::read_to_string(package.join("src/lib.rs"))
+            .unwrap()
+            .contains("VALUE: u8 = 2")
+    );
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
+
+    run_package(
+        root,
+        &[
+            "pkg:packages/rust-example",
+            "--package-dir",
+            "copies/rust-example",
+            "--check",
+        ],
+        1,
+    );
+    assert!(!root.join("copies").exists());
+    assert_tree_eq(&packages, &before);
+    run_package(
+        root,
+        &[
+            "pkg:packages/rust-example",
+            "--package-dir",
+            "copies/rust-example",
+        ],
+        0,
+    );
+    assert_tree_eq(&packages, &before);
+    let copy = root.join("copies/rust-example");
+    assert_eq!(
+        fs::read_to_string(copy.join(".pc/applied-patches")).unwrap(),
+        "nested/first.patch\n"
+    );
+    run_command(
+        Command::new("quilt")
+            .args(["pop", "--quiltrc=-", "-a"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&copy),
+        0,
+    );
+    assert!(
+        fs::read_to_string(copy.join("src/lib.rs"))
+            .unwrap()
+            .contains("VALUE: u8 = 1")
+    );
+    run_command(
+        Command::new("quilt")
+            .args(["pop", "--quiltrc=-", "-a"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&package),
+        0,
+    );
+    assert!(
+        fs::read_to_string(package.join("src/lib.rs"))
+            .unwrap()
+            .contains("VALUE: u8 = 1")
+    );
+    assert!(
+        fs::read_to_string(package.join("src/lib.rs"))
+            .unwrap()
+            .contains("// New upstream comment.")
+    );
+    run_command(
+        Command::new("quilt")
+            .args(["push", "--quiltrc=-", "-a"])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&package),
+        0,
+    );
+    assert!(
+        fs::read_to_string(package.join("src/lib.rs"))
+            .unwrap()
+            .contains("VALUE: u8 = 3")
+    );
+    // A patch that no longer applies must fail before writing the staged upgrade.
+    write_crate_manifest(root, "1.0.2");
+    fs::write(
+        root.join("crate/src/lib.rs"),
+        "/// Example value.\npub const VALUE: u8 = 99;\n",
+    )
+    .unwrap();
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example", "--check"], 2);
+    run_package(root, &["pkg:packages/rust-example"], 2);
+    assert_tree_eq(&packages, &before);
+    fs::write(
+        package.join("src/lib.rs"),
+        "/// Example value.\npub const VALUE: u8 = 4;\n",
+    )
+    .unwrap();
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example", "--check"], 2);
+    run_package(root, &["pkg:packages/rust-example"], 2);
+    assert_tree_eq(&packages, &before);
+}
+
+/// Rejects removal of the top generated patch before writing any package changes.
+#[test]
+fn reject_missing_top_patch() {
+    let fixture = create_fixture();
+    let root = fixture.path();
+    let manifest_path = root.join("crate/Cargo.toml");
+    let mut manifest = fs::read_to_string(&manifest_path).unwrap();
+    manifest.push_str("\n[features]\nremoved = []\n");
+    fs::write(&manifest_path, manifest).unwrap();
+    run_package(
+        root,
+        &["local:crate", "--package-dir", "packages/rust-example"],
+        0,
+    );
+    let packages = root.join("packages");
+    let package = packages.join("rust-example");
+    let debian = package.join("debian");
+    fs::create_dir_all(debian.join("patches")).unwrap();
+    fs::write(
+        debian.join("patches/maintainer.patch"),
+        indoc! {"
+        --- a/src/lib.rs
+        +++ b/src/lib.rs
+        @@ -1,2 +1,2 @@
+         /// Example value.
+        -pub const VALUE: u8 = 1;
+        +pub const VALUE: u8 = 2;
+    "},
+    )
+    .unwrap();
+    fs::write(debian.join("patches/series"), "maintainer.patch\n").unwrap();
+    let config_path = debian.join("debcargo.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(
+        &config_path,
+        format!("{config}remove_features = [\"removed\"]\n"),
+    )
+    .unwrap();
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    let series = fs::read_to_string(debian.join("patches/series")).unwrap();
+    let top = series.lines().next().unwrap();
+    assert!(top.starts_with("auto/"), "{series}");
+    run_command(
+        Command::new("quilt")
+            .args(["push", "--quiltrc=-", top])
+            .env("QUILT_PATCHES", "debian/patches")
+            .current_dir(&package),
+        0,
+    );
+    fs::write(&config_path, config).unwrap();
+    let before = read_tree(&packages);
+    let output = run_package(root, &["pkg:packages/rust-example", "--check"], 2);
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("restore staged quilt patches"), "{error}");
+    run_package(root, &["pkg:packages/rust-example"], 2);
+    assert_tree_eq(&packages, &before);
+}
+
 /// Repacks orig archives while retaining maintainer patches and verifying their application.
 #[test]
 fn repack_source_and_preserve_patches() {

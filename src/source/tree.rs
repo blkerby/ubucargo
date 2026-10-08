@@ -1,4 +1,4 @@
-//! Plans and applies updates to the upstream source tree.
+//! Compares directory trees and plans conservative upstream source merges.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::util::files_differ;
+use crate::util::{files_differ, write_file};
 use anyhow::{Context, Result, bail};
 
 /// Regular file metadata and its backing path on disk.
@@ -30,14 +30,14 @@ pub enum TreeNode {
     Symlink(PathBuf),
 }
 
-/// Complete source-tree update outside `debian/`.
-pub struct SourcePlan {
+/// Complete changes between two directory trees.
+pub struct TreePlan {
     /// Changed path transitions in deterministic order; retained directories are excluded.
-    paths: BTreeMap<PathBuf, (Option<TreeNode>, Option<TreeNode>)>,
+    pub paths: BTreeMap<PathBuf, (Option<TreeNode>, Option<TreeNode>)>,
 }
 
-impl SourcePlan {
-    /// Reports whether applying the source plan changes any path.
+impl TreePlan {
+    /// Reports whether applying the tree plan changes any path.
     pub fn has_changes(&self) -> bool {
         !self.paths.is_empty()
     }
@@ -54,10 +54,16 @@ impl SourcePlan {
         }
     }
 
-    /// Removes old entries, copies new files with their permissions, and creates new directories.
+    /// Removes old entries, atomically writes regular files, and creates directories and links.
     pub fn apply(&self, root: &Path) -> Result<()> {
         // Reverse path order removes descendants before their parents.
-        for (path, (old, _)) in self.paths.iter().rev() {
+        for (path, (old, new)) in self.paths.iter().rev() {
+            if matches!(
+                (old, new),
+                (Some(TreeNode::File(_)), Some(TreeNode::File(_)))
+            ) {
+                continue;
+            }
             let destination = root.join(path);
             match old {
                 Some(TreeNode::Directory) => fs::remove_dir(&destination),
@@ -67,7 +73,7 @@ impl SourcePlan {
             .with_context(|| format!("remove {}", destination.display()))?;
         }
 
-        // Forward path order creates parents before installing their contents.
+        // Forward path order creates parents before writing their contents.
         for (path, (_, new)) in &self.paths {
             let destination = root.join(path);
             match new {
@@ -76,7 +82,12 @@ impl SourcePlan {
                         .with_context(|| format!("create {}", destination.display()))?;
                 }
                 Some(TreeNode::File(file)) => {
-                    fs::copy(&file.origin, &destination).with_context(|| {
+                    write_file(
+                        &destination,
+                        &fs::read(&file.origin)?,
+                        Some(fs::metadata(&file.origin)?.permissions().mode()),
+                    )
+                    .with_context(|| {
                         format!(
                             "copy {} to {}",
                             file.origin.display(),
@@ -96,8 +107,8 @@ impl SourcePlan {
     }
 }
 
-/// Scans a tree outside `debian/` into path order, rejecting special files.
-pub fn scan_tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeNode>> {
+/// Scans a tree into path order, optionally excluding one subtree and rejecting special files.
+pub fn scan_tree(root: &Path, exclude: Option<&Path>) -> Result<BTreeMap<PathBuf, TreeNode>> {
     let root = fs::canonicalize(root).with_context(|| format!("resolve {}", root.display()))?;
     let mut tree = BTreeMap::new();
     let mut directories = vec![PathBuf::new()];
@@ -108,7 +119,7 @@ pub fn scan_tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeNode>> {
         {
             let entry = entry?;
             let path = relative.join(entry.file_name());
-            if path == Path::new("debian") {
+            if Some(path.as_path()) == exclude {
                 continue;
             }
             let metadata = fs::symlink_metadata(entry.path())?;
@@ -153,19 +164,6 @@ pub fn states_match(first: &TreeNode, second: &TreeNode) -> bool {
     }
 }
 
-/// Reports whether two scanned trees contain equivalent states.
-pub fn trees_match(
-    first: &BTreeMap<PathBuf, TreeNode>,
-    second: &BTreeMap<PathBuf, TreeNode>,
-) -> bool {
-    first.len() == second.len()
-        && first.iter().zip(second.iter()).all(
-            |((first_path, first_node), (second_path, second_node))| {
-                first_path == second_path && states_match(first_node, second_node)
-            },
-        )
-}
-
 /// Reports whether two optional states are equivalent.
 fn option_states_match(first: Option<&TreeNode>, second: Option<&TreeNode>) -> bool {
     match (first, second) {
@@ -185,7 +183,7 @@ pub fn build_source_plan(
     old: &BTreeMap<PathBuf, TreeNode>,
     new: &BTreeMap<PathBuf, TreeNode>,
     force: bool,
-) -> Result<SourcePlan> {
+) -> Result<TreePlan> {
     let mut all = BTreeSet::new();
     all.extend(base.keys().cloned());
     all.extend(old.keys().cloned());
@@ -251,13 +249,30 @@ pub fn build_source_plan(
         after.insert(path, None);
     }
 
+    let mut result = BTreeMap::new();
+    for path in all {
+        if let Some(state) = after.remove(&path).unwrap() {
+            result.insert(path, state);
+        }
+    }
+    Ok(build_tree_plan(old, &result))
+}
+
+/// Plans exact tree differences for writing, without applying source ownership rules.
+pub fn build_tree_plan(
+    old: &BTreeMap<PathBuf, TreeNode>,
+    new: &BTreeMap<PathBuf, TreeNode>,
+) -> TreePlan {
+    let mut all = BTreeSet::new();
+    all.extend(old.keys().cloned());
+    all.extend(new.keys().cloned());
     let mut paths = BTreeMap::new();
     for path in all {
         let old_state = old.get(&path);
-        let after_state = after.remove(&path).unwrap();
-        if !option_states_match(old_state, after_state.as_ref()) {
-            paths.insert(path, (old_state.cloned(), after_state));
+        let new_state = new.get(&path);
+        if !option_states_match(old_state, new_state) {
+            paths.insert(path, (old_state.cloned(), new_state.cloned()));
         }
     }
-    Ok(SourcePlan { paths })
+    TreePlan { paths }
 }

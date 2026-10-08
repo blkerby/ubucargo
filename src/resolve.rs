@@ -39,14 +39,12 @@ struct PackageTarget {
     existing: bool,
 }
 
-/// Existing source and validated quilt state used during generation and update.
+/// Existing source and changelog used during generation and update.
 pub struct ExistingPackage {
     /// Resolved directory containing the existing source package.
     pub root: PathBuf,
     /// Top changelog entry describing the current upstream source.
     pub top_changelog: TopChangelog,
-    /// Whether the working source has refreshed quilt patches applied.
-    pub patches_applied: bool,
 }
 
 /// Validated inputs for generating one exact crate release.
@@ -119,30 +117,6 @@ pub fn find_parent_package(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Rejects unrefreshed top-patch edits and reports whether any patches are applied.
-fn check_patch_state(source: &Path) -> Result<bool> {
-    let path = source.join(".pc/applied-patches");
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-    };
-    if !contents.lines().any(|line| !line.trim().is_empty()) {
-        return Ok(false);
-    }
-    let output = run_command(
-        Command::new("quilt")
-            .args(["diff", "--quiltrc=-", "-z", "--no-timestamps", "--no-index"])
-            .env("QUILT_PATCHES", "debian/patches")
-            .current_dir(source),
-        "quilt diff -z",
-    )?;
-    if !output.stdout.is_empty() {
-        bail!("the current quilt patch has unrefreshed changes; run `quilt refresh`");
-    }
-    Ok(true)
-}
-
 /// Rejects input and destination trees that overlap or contain one another.
 pub fn validate_separate_trees(input: &Path, destination: &Path) -> Result<()> {
     if input.starts_with(destination) || destination.starts_with(input) {
@@ -205,7 +179,6 @@ pub fn resolve_package(
         let existing = ExistingPackage {
             root: root.to_path_buf(),
             top_changelog: top,
-            patches_applied: check_patch_state(root)?,
         };
         (config, Some(current_package), Some(existing))
     } else if let Some(local_crate) = local_crate {

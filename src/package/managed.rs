@@ -108,7 +108,7 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
     Ok((manifest, state))
 }
 
-/// File content and installation mode, compared using only contents and executable status.
+/// File contents and permissions, compared using only contents and executable status.
 #[derive(Clone, Debug, Eq)]
 pub struct FileState {
     /// Complete file contents.
@@ -175,7 +175,7 @@ pub struct ManagedPlan {
 }
 
 impl ManagedPlan {
-    /// Reports whether the ownership manifest needs installation.
+    /// Reports whether the ownership manifest needs to be written.
     fn has_manifest_changed(&self) -> bool {
         self.manifest_before.as_ref() != Some(&self.manifest_after)
     }
@@ -200,34 +200,12 @@ impl ManagedPlan {
         ambiguities
     }
 
-    /// Prints the deterministic, path-oriented summary of the plan.
-    pub fn print_report(&self) {
+    /// Identifies preserved overrides; the final write reports actual file differences.
+    pub fn print_overrides(&self) {
         for path in &self.paths {
-            if path.has_primary_changed() {
-                println!(
-                    "{} {}",
-                    describe_change(&path.old, &path.primary_after),
-                    path.path.display()
-                );
-            } else if path.overridden {
+            if path.overridden {
                 println!("Preserve override {}", path.path.display());
             }
-
-            if path.has_hint_changed() {
-                println!(
-                    "{} {}",
-                    describe_change(&path.hint_before, &path.hint_after),
-                    make_hint_path(&path.path).display()
-                );
-            }
-        }
-        if self.has_manifest_changed() {
-            let verb = if self.manifest_before.is_some() {
-                "Update"
-            } else {
-                "Create"
-            };
-            println!("{verb} debian/{MANIFEST_NAME}");
         }
     }
 
@@ -236,14 +214,14 @@ impl ManagedPlan {
         if !self.collect_ambiguities().is_empty() {
             bail!("unresolved ambiguities");
         }
-        // Install files (including the new patch series) before removing obsolete
+        // Write files (including the new patch series) before removing obsolete
         // files, so an interruption cannot leave the series naming a missing patch.
         // Update hints after primaries, and write the manifest last: in case of
         // an interrupted run, a rerun must see the old baseline until the planned
         // file changes are complete.
         for path in &self.paths {
             if path.has_primary_changed() && path.primary_after.is_some() {
-                install_state(
+                write_state(
                     &resolve_managed_path(&self.debian, &path.path)?,
                     path.primary_after.as_ref(),
                 )?;
@@ -251,19 +229,19 @@ impl ManagedPlan {
         }
         for path in &self.paths {
             if path.has_primary_changed() && path.primary_after.is_none() {
-                install_state(&resolve_managed_path(&self.debian, &path.path)?, None)?;
+                write_state(&resolve_managed_path(&self.debian, &path.path)?, None)?;
             }
         }
         for path in &self.paths {
             if path.has_hint_changed() {
-                install_state(
+                write_state(
                     &resolve_managed_path(&self.debian, &make_hint_path(&path.path))?,
                     path.hint_after.as_ref(),
                 )?;
             }
         }
         if self.has_manifest_changed() {
-            install_state(&self.debian.join(MANIFEST_NAME), Some(&self.manifest_after))?;
+            write_state(&self.debian.join(MANIFEST_NAME), Some(&self.manifest_after))?;
         }
         Ok(())
     }
@@ -456,8 +434,8 @@ fn resolve_managed_path(debian: &Path, path: &Path) -> Result<PathBuf> {
     ))
 }
 
-/// Atomically installs captured contents and permissions, or removes the file.
-pub fn install_state(path: &Path, state: Option<&FileState>) -> Result<()> {
+/// Atomically writes captured contents and permissions, or removes the file.
+pub fn write_state(path: &Path, state: Option<&FileState>) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
@@ -482,13 +460,4 @@ pub fn make_hint_path(path: &Path) -> PathBuf {
     let mut name: OsString = path.file_name().expect("generated path has a name").into();
     name.push(".debcargo.hint");
     path.with_file_name(name)
-}
-
-/// Selects the user-facing verb for a file-state transition.
-fn describe_change(before: &Option<FileState>, after: &Option<FileState>) -> &'static str {
-    match (before, after) {
-        (None, Some(_)) => "Create",
-        (Some(_), None) => "Remove",
-        _ => "Update",
-    }
 }

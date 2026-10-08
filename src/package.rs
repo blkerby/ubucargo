@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,26 +12,27 @@ use debian_control::lossless::control::Control;
 
 use crate::{
     changelog::read_top_changelog,
-    config::{PackageConfig, relocate_package_config, write_package_config},
+    config::{PackageConfig, relocate_package_config},
     generate::{GeneratedPackage, generate_package},
-    resolve::{ExistingPackage, resolve_package},
-    source::{acquire_old_orig, acquire_package, install_package},
-    util::{copy_tree, extract_tree, files_differ, require_absent},
+    resolve::{ExistingPackage, resolve_package, validate_separate_trees},
+    source::{
+        acquire_old_orig, acquire_package, read_top_patch,
+        tree::{TreePlan, build_source_plan, scan_tree},
+        write_package,
+    },
+    util::{copy_tree, extract_tree, files_differ, require_absent, run_command},
 };
 
 use self::{
-    managed::{FileState, ManagedPlan, build_plan, install_state, read_state},
+    managed::{FileState, ManagedPlan, build_plan, read_state, write_state},
     output::{
-        build_patch_series_plan, collect_managed_paths, generated_patch_changes,
-        initialize_package, read_generated_candidates, remove_generated_vcs_fields,
-        update_staged_maintainer,
+        build_patch_series_plan, collect_managed_paths, initialize_package,
+        read_generated_candidates, remove_generated_vcs_fields, update_staged_maintainer,
     },
-    source::{SourcePlan, build_source_plan, scan_tree, trees_match},
 };
 
 mod managed;
 mod output;
-mod source;
 
 /// Create or update a complete source package.
 #[derive(clap::Args)]
@@ -84,7 +86,7 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
         )
     };
     crate::input::validate_version(&input, args.version.as_deref())?;
-    let acquired = match &input {
+    let mut acquired = match &input {
         crate::input::Input::Package(_)
         | crate::input::Input::Archive { .. }
         | crate::input::Input::Ppa { .. } => Some(acquire_package(
@@ -95,24 +97,8 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
         )?),
         _ => None,
     };
-    let check = args.check;
-    if let Some(package) = &acquired {
+    if acquired.is_some() {
         args.version = None;
-        if package.root != package.destination {
-            // Extracted or copied packages regenerate against unpatched upstream
-            // source. Only staging is changed, including during --check.
-            let applied = package.root.join(".pc/applied-patches");
-            if applied.is_file() && !fs::read_to_string(&applied)?.trim().is_empty() {
-                crate::util::run_command(
-                    std::process::Command::new("quilt")
-                        .args(["pop", "--quiltrc=-", "-a"])
-                        .env("QUILT_PATCHES", "debian/patches")
-                        .current_dir(&package.root),
-                    "pop staged quilt patches",
-                )?;
-            }
-            args.check = false;
-        }
     }
     let destination = acquired
         .as_ref()
@@ -144,27 +130,54 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
         .context("package destination is missing")?;
     let action = if resolved.existing.is_none() {
         "Create new package"
-    } else if acquired
-        .as_ref()
-        .is_some_and(|package| package.root != package.destination)
-    {
+    } else if acquired.as_ref().is_some_and(|package| !package.update) {
         "Create package from existing packaging"
     } else {
         "Update existing package"
     };
     println!(
         "{}{action}: {}",
-        if check { "Check: " } else { "" },
+        if args.check { "Check: " } else { "" },
         destination.display()
     );
     if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
         bail!("--keep and --replace apply only to existing packages");
     }
-    let baseline = if let Some(existing) = &resolved.existing {
+    let mut top_patch = None;
+    let baseline = if let Some(existing) = &mut resolved.existing {
+        if let Some(crate_root) = &resolved.config.resolved_crate_src_path {
+            validate_separate_trees(crate_root, destination)?;
+        }
+        if acquired.is_none() {
+            acquired = Some(acquire_package(
+                &crate::input::Input::Package(existing.root.clone()),
+                None,
+                Some(destination),
+                args.keep_staging,
+            )?);
+        }
+        let package = acquired.as_mut().unwrap();
+        package.stage(args.keep_staging)?;
+        existing.root = package.root.clone();
+        top_patch = read_top_patch(&existing.root)?;
+        if top_patch.is_some() {
+            run_command(
+                Command::new("quilt")
+                    .args(["pop", "--quiltrc=-", "-a"])
+                    .env("QUILT_PATCHES", "debian/patches")
+                    .current_dir(&existing.root),
+                "pop staged quilt patches",
+            )?;
+        }
+        // All maintained packages follow the same staged update flow. Relative
+        // configuration paths keep their final destination meaning throughout.
+        if !package.update {
+            relocate_package_config(&mut resolved.config, &package.destination)?;
+        }
         let old_orig = acquire_old_orig(&existing.root, &existing.top_changelog)?;
         let base = tempfile::tempdir().context("create old-source extraction directory")?;
         extract_tree(&old_orig.path, base.path())?;
-        Some((existing, base))
+        Some(base)
     } else {
         None
     };
@@ -175,17 +188,22 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
 
-    let changed = if let Some((existing, base)) = &baseline {
-        update_existing(
+    let changed = if let (Some(existing), Some(base)) = (&resolved.existing, &baseline) {
+        let plan = build_update_plan(
             existing,
             base.path(),
             &generated,
             &resolved.config,
             raw_control,
-            &args,
+            args.force,
             &keep_paths,
             &replace_paths,
-        )
+        )?;
+        plan.managed.print_overrides();
+        if plan.has_changes() {
+            plan.apply()?;
+        }
+        false
     } else {
         create_new(
             resolved
@@ -195,14 +213,23 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
             &resolved.config,
             &generated,
             args.check,
-        )
-    }?;
-    if let Some(package) = &acquired
-        && package.root != package.destination
-    {
-        relocate_package_config(&mut resolved.config, &package.destination)?;
-        write_package_config(&resolved.config, &package.root)?;
-        return install_package(package, check);
+        )?
+    };
+    if let Some(package) = &acquired {
+        if let Some(top) = top_patch {
+            run_command(
+                Command::new("quilt")
+                    .args(["push", "--quiltrc=-", "--"])
+                    .arg(Path::new("debian/patches").join(&top))
+                    .env("QUILT_PATCHES", "debian/patches")
+                    .current_dir(&package.root),
+                "restore staged quilt patches",
+            )?;
+            if read_top_patch(&package.root)?.as_deref() != Some(top.as_str()) {
+                bail!("could not restore the original top quilt patch {top}");
+            }
+        }
+        return write_package(package, args.check);
     }
     Ok(changed)
 }
@@ -229,39 +256,6 @@ fn collect_decisions(
     Ok((keep_paths, replace_paths))
 }
 
-/// Updates an existing package using the generated source and old orig baseline.
-fn update_existing(
-    existing: &ExistingPackage,
-    base: &Path,
-    generated: &GeneratedPackage,
-    config: &PackageConfig,
-    raw_control: Option<FileState>,
-    args: &PackageArgs,
-    keep: &BTreeSet<PathBuf>,
-    replace: &BTreeSet<PathBuf>,
-) -> Result<bool> {
-    let plan = build_update_plan(
-        existing,
-        base,
-        generated,
-        config,
-        raw_control,
-        args.force,
-        keep,
-        replace,
-    )?;
-    plan.print_report();
-    if existing.patches_applied && generated_patch_changes(&plan.managed) && !args.check {
-        bail!("pop the real quilt stack before applying generated patch changes");
-    }
-    let changed = plan.has_changes();
-    if args.check || !changed {
-        return Ok(changed);
-    }
-    plan.apply()?;
-    Ok(false)
-}
-
 /// Builds source and packaging changes against the old orig without modifying the package.
 fn build_update_plan(
     existing: &ExistingPackage,
@@ -275,12 +269,10 @@ fn build_update_plan(
 ) -> Result<UpdatePlan> {
     let root = &existing.root;
     let debian = root.join("debian");
-    let base_tree = scan_tree(base)?;
-    let old_tree = scan_tree(root)?;
-    let new_tree = scan_tree(&generated.source)?;
-    if !trees_match(&base_tree, &new_tree) && existing.patches_applied {
-        bail!("pop the complete quilt stack before updating changed upstream source");
-    }
+    let exclude = Some(Path::new("debian"));
+    let base_tree = scan_tree(base, exclude)?;
+    let old_tree = scan_tree(root, exclude)?;
+    let new_tree = scan_tree(&generated.source, exclude)?;
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
 
     let generated_candidates = read_generated_candidates(&generated.source)?;
@@ -370,7 +362,7 @@ struct UpdatePlan {
     root: PathBuf,
     /// Staged orig and destination paths, or None when the tarball already matches.
     orig: Option<(PathBuf, PathBuf)>,
-    source: SourcePlan,
+    source: TreePlan,
     managed: ManagedPlan,
     /// Updated changelog, or None when the current changelog already matches.
     changelog: Option<FileState>,
@@ -388,29 +380,11 @@ impl UpdatePlan {
             || self.config.is_some()
     }
 
-    /// Prints package changes or reports a clean package.
-    fn print_report(&self) {
-        if let Some((_, destination)) = &self.orig {
-            println!("Create {}", destination.display());
-        }
-        self.source.print_report();
-        self.managed.print_report();
-        if self.changelog.is_some() {
-            println!("Update debian/changelog");
-        }
-        if self.config.is_some() {
-            println!("Update debian/debcargo.toml");
-        }
-        if !self.has_changes() {
-            println!("Clean");
-        }
-    }
-
-    /// Installs the orig, source, managed files, changelog, and configuration.
+    /// Writes the orig, source, managed files, changelog, and configuration.
     fn apply(&self) -> Result<()> {
         if let Some((source, destination)) = &self.orig {
             fs::copy(source, destination)
-                .with_context(|| format!("install {}", destination.display()))?;
+                .with_context(|| format!("write {}", destination.display()))?;
         }
         self.source
             .apply(&self.root)
@@ -421,16 +395,16 @@ impl UpdatePlan {
                 .context("package may be partially updated; rerun `ubucargo package`")?;
         }
         if let Some(changelog) = &self.changelog {
-            install_state(&self.root.join("debian/changelog"), Some(changelog))?;
+            write_state(&self.root.join("debian/changelog"), Some(changelog))?;
         }
         if let Some(config) = &self.config {
-            install_state(&self.root.join("debian/debcargo.toml"), Some(config))?;
+            write_state(&self.root.join("debian/debcargo.toml"), Some(config))?;
         }
         Ok(())
     }
 }
 
-/// Initializes and installs the generated package at the resolved destination.
+/// Initializes and writes the generated package at the resolved destination.
 fn create_new(
     root: &Path,
     config: &PackageConfig,
@@ -458,7 +432,7 @@ fn create_new(
 
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     if orig_changed {
-        fs::copy(&generated.orig, &orig).with_context(|| format!("install {}", orig.display()))?;
+        fs::copy(&generated.orig, &orig).with_context(|| format!("write {}", orig.display()))?;
     }
     copy_tree(&generated.source, root)?;
     Ok(false)
