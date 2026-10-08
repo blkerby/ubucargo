@@ -25,7 +25,7 @@ pub struct ImportArgs {
 }
 
 /// Downloads and writes the selected source without modifying its packaging.
-pub fn run(args: ImportArgs) -> Result<bool> {
+pub fn run(args: ImportArgs) -> Result<()> {
     let input = parse_input(&args.input, &std::env::current_dir()?)?;
     validate_version(&input, args.version.as_deref())?;
     if !matches!(input, Input::Archive { .. } | Input::Ppa { .. }) {
@@ -37,5 +37,5 @@ pub fn run(args: ImportArgs) -> Result<bool> {
         args.package_dir.as_deref(),
         args.keep_staging,
     )?;
-    write_package(&package, false)
+    write_package(&package)
 }

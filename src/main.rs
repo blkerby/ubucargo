@@ -42,14 +42,19 @@ enum Command {
 /// Parses the command line, runs the selected command, and maps its result to an exit status.
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
-        Command::Deps(args) => deps::run(args),
-        Command::Import(args) => import::run(args),
-        Command::Package(args) => package::run(args),
+        Command::Deps(args) => deps::run(args).map(|unsatisfied| {
+            if unsatisfied {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }),
+        Command::Import(args) => import::run(args).map(|()| ExitCode::SUCCESS),
+        Command::Package(args) => package::run(args).map(|()| ExitCode::SUCCESS),
     };
 
     match result {
-        Ok(changed) if changed => ExitCode::from(1),
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(status) => status,
         Err(error) => {
             eprintln!("error: {error:#}");
             ExitCode::from(2)

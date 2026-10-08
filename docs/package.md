@@ -4,7 +4,7 @@
 
 ```console
 ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
-  [--check] [--force] \
+  [--force] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
@@ -18,7 +18,7 @@ The input crate/package can be specified as a crates.io crate (`crate:<NAME>`), 
 
 When a package input is used, `pkg:<PATH>`, it updates the package in place by default.  `--package-dir` can be used to specify a different, new directory, in which case it receives a regenerated copy while the input remains untouched. A different existing destination is rejected. Published Archive/PPA inputs download the selected Debian source version and regenerate its maintained packaging in staging before writing to the destination. They require a new destination, defaulting to `./<SOURCE>`, where `<SOURCE>` is the published Debian source-package name (for example, `./rust-serde`). Use `--package-dir` to select another new directory; parent-package discovery does not apply to published inputs. Omitting the input selects the nearest parent package and fails if none is found. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
 
-Published inputs preserve the selected upstream release rather than upgrading to the latest crate. Their positional `VERSION` is the published Debian version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same update rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. `--check` performs the full regeneration in temporary staging and reports the planned writes without creating the destination. Acquisition and regeneration failures leave the destination untouched.
+Published inputs preserve the selected upstream release rather than upgrading to the latest crate. Their positional `VERSION` is the published Debian version. They require usable `debian/debcargo.toml`, Cargo metadata, and changelog, and use the same update rules and `--keep`/`--replace` decisions as an existing package. Extraction's applied quilt patches are popped in staging before regeneration. Acquisition and regeneration failures leave the destination untouched.
 
 The selector determines the source series and pocket. Use `archive:resolute-proposed/rust-serde` to select proposed, or `ppa:owner/staging/resolute/rust-serde` to select a PPA series. A bare Archive series considers release, updates, and security. See [input selectors](inputs.md) for the full grammar. Orig tarballs remain beside the destination; an existing orig tarball with different contents causes an error. Published regeneration supports a single main orig baseline; supplementary orig components are not merged into that baseline.
 
@@ -30,11 +30,11 @@ For crates.io and local crate inputs, an existing destination supplies configura
 
 Without `--package-dir`, a crates.io input uses the nearest parent containing `debian/debcargo.toml` as its destination; if none is found, the destination defaults to the generated Debian source name in the current directory. Explicit and default destinations follow the same rules: create when absent, update when an existing package is found. Paths referring to the same directory through symlinks are treated alike.
 
-Output identifies the operation as `Create new package: DIR`, `Update existing package: DIR`, or `Create package from existing packaging: DIR`. The last form describes a package copy or published input that carries maintained packaging into a new destination. In check mode, the message begins with `Check:`.
+Output identifies the operation as `Create new package: DIR`, `Update existing package: DIR`, or `Create package from existing packaging: DIR`. The last form describes a package copy or published input that carries maintained packaging into a new destination.
 
 To select an existing package from outside its directory, use `ubucargo package pkg:PATH`. Supplying only `--package-dir PATH` outside a package fails because no input has been selected.
 
-Package copies use the same staging and writing flow as in-place updates and published inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. `--check` reports creation without writing the destination or its parent directories. Existing orig tarballs with different contents cause an error before writing to the destination.
+Package copies use the same staging and writing flow as in-place updates and published inputs. Maintainer files, local additions, and generated-file ownership state travel with the copy. Relative `crate_src_path` settings are rebased to keep referring to the same local crate. Input and destination trees must not overlap, and the destination must remain separate from any configured local crate. Applied quilt patches are popped and their original position restored only in staging. Existing orig tarballs with different contents cause an error before writing to the destination.
 
 For an existing package:
 
@@ -46,7 +46,7 @@ When running Ubucargo on an existing package, the top `debian/changelog` entry m
 
 For a new crates.io package, `CRATE` is required. `VERSION` requests an exact Cargo version; when omitted, debcargo asks Cargo for the greatest release matching an unconstrained dependency, excluding yanked releases and prereleases. An exact request may select a prerelease or yanked release. This process does not filter releases by MSRV, but if the selected crate's `[package]` table in `Cargo.toml` declares `rust-version`, debcargo includes that minimum version in the generated Debian `rustc` dependencies.
 
-`local:DIR` creates or updates a source package from a local Cargo crate and requires an explicit `--package-dir`. The resolved crate and package directories must be separate directory trees: neither may equal, contain, or be contained by the other. Ubucargo reads the exact crate name and version from the local `Cargo.toml`. For an existing package, its other configuration, patches, and maintainer files are retained. The explicit local path replaces any saved `crate_src_path`, including one that no longer exists, and is written relative to `debian/debcargo.toml`. This configuration change is included in the update plan and is not written during `--check` or when validation fails. Later `package` runs resolve that setting without requiring an explicit local input again; `deps` reads the maintained controls directly.
+`local:DIR` creates or updates a source package from a local Cargo crate and requires an explicit `--package-dir`. The resolved crate and package directories must be separate directory trees: neither may equal, contain, or be contained by the other. Ubucargo reads the exact crate name and version from the local `Cargo.toml`. For an existing package, its other configuration, patches, and maintainer files are retained. The explicit local path replaces any saved `crate_src_path`, including one that no longer exists, and is written relative to `debian/debcargo.toml`. This configuration change is included in the update plan and written after validation succeeds. Later `package` runs resolve that setting without requiring an explicit local input again; `deps` reads the maintained controls directly.
 
 Local-source packaging retains debcargo's limitation that dependencies must be resolvable from crates.io during generation. The generated Debian package still builds against dependencies declared from the Ubuntu Archive. A local working tree is suitable for iteration, but an Archive upload should use a fixed upstream release or snapshot and may not reuse one upstream version number for differing orig-tarball contents.
 
@@ -104,7 +104,7 @@ The selected crate source, orig tarball, automatic patches, and generated packag
 
 ### Changelog
 
-The changelog remains primarily maintainer-owned, but ubucargo updates the version number using `dch --vendor Ubuntu`:
+The changelog remains primarily maintainer-owned, but each regeneration of a released package starts a new `UNRELEASED` entry, even when the rest of the package is unchanged. Subsequent runs update that entry. Ubucargo updates the version number using `dch --vendor Ubuntu`:
 
 - a new package starts at `<upstream>-0ubuntu1`;
 - a released top entry for the same upstream version is advanced with `dch --increment`, creating a new top entry;
@@ -154,7 +154,7 @@ When the source name changes, the existing changelog still identifies the old or
 
 `pull-lp-source` verifies the downloaded source files against their `.dsc`; ubucargo only checks that the expected orig tarball was produced. If no old orig can be found, ubucargo stops; `--force` does not bypass a missing merge baseline.
 
-If the candidate orig path already exists, ubucargo reuses it when its bytes match the fresh debcargo result and rejects it when they differ, before writing to the destination. This applies to both package creation and updates, including `--check`; `--force` does not bypass it. When repacking changes the orig tarball, use a new `repack_suffix`, such as `ds2`, to give the new orig a distinct upstream version and filename. Other orig tarballs beside the package are left unchanged.
+If the candidate orig path already exists, ubucargo reuses it when its bytes match the fresh debcargo result and rejects it when they differ, before writing to the destination. Conflicting orig tarballs are rejected for both package creation and updates, even with `--force`. When repacking changes the orig tarball, use a new `repack_suffix`, such as `ds2`, to give the new orig a distinct upstream version and filename. Other orig tarballs beside the package are left unchanged.
 
 ### Source merge
 
@@ -187,7 +187,7 @@ Every existing-package update uses a complete staging copy, including its `.pc` 
 
 After materializing the final staged packaging with fresh automatic patches, ubucargo pushes through the remembered patch by name. This restores the same position in the updated series, even if automatic patches earlier in the series may have changed. Inputs with no applied patches remain unapplied. A missing remembered patch or a failure to reapply the stack stops the operation without modifying the destination. Ubucargo writes the resulting source and quilt backup state together, so later `quilt pop` operations use the updated upstream baseline.
 
-`--check` performs this complete flow, including patch reapplication, without writing the destination or adjacent orig tarballs. Maintainers do not need to pop patches before either checking or updating a package.
+Maintainers can regenerate packages with applied quilt patches.
 
 Ubucargo understands ordinary on-disk quilt state but does not inspect Git history or VCS-specific patch queues. A GBP patch queue must be exported to `debian/patches` and the ordinary packaging branch checked out before running `package`.
 
@@ -204,7 +204,7 @@ Generated files may include:
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
 - `debian/patches/auto/<patch>`, for debcargo-generated source transformations
 
-During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json` for files that support maintainer overrides. It writes `<file>.debcargo.hint` only when fresh generated output differs from the resulting primary in content or executable status. The hint contains the generated alternative from that run. Automatic patches use the generator-owned rules below and have neither manifest entries nor hints. `--check` previews these changes without writing them.
+During each `ubucargo package` run, ubucargo records generated state in `debian/ubucargo-state.json` for files that support maintainer overrides. It writes `<file>.debcargo.hint` only when fresh generated output differs from the resulting primary in content or executable status. The hint contains the generated alternative from that run. Automatic patches use the generator-owned rules below and have neither manifest entries nor hints.
 
 `debian/cargo-checksum.json` uses these same ownership rules; maintainer edits are preserved. `debian/patches/series` retains the special merge behavior described below and has neither a manifest entry nor a hint.
 
@@ -300,18 +300,9 @@ If any ambiguity remains, `package` reports every affected path and makes no cha
 
 Restoring a primary to its hint contents and permissions relinquishes the override; the next run resumes automatic updates and removes the redundant hint. Generated output converging on the override also removes its hint. Ubucargo does not merge file contents or retain older history.
 
-## Check mode
-
-```console
-ubucargo package --check
-ubucargo package serde 1.0.229 --check
-```
-
-`--check` reports source-tree, orig-tarball, configuration, generated-file, manifest, hint, and patch changes without writing. It also identifies overrides, unrecorded source changes, and missing or conflicting baseline ambiguities. `--keep`, `--replace`, and `--force` may be supplied to preview their result.
-
-Check mode exits 0 when clean, 1 when the complete package would change, and 2 on errors or unresolved ambiguities.
-
 ## Staging and applying changes
+
+The command exits 0 on success and 2 on errors or unresolved ambiguities.
 
 Ubucargo stages the complete candidate before modifying the destination. In-place updates, package copies, and published inputs use the same staging and writing flow. The temporary debcargo overlay contains the durable maintainer-owned packaging needed for generation, including the changelog and patch stack. Existing generated packaging and hints do not affect generation.
 

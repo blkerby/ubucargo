@@ -141,7 +141,7 @@ pub fn acquire_package(
 }
 
 /// Writes a completed staged package, updating existing destinations by their tree differences.
-pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
+pub fn write_package(package: &SourcePackage) -> Result<()> {
     if !package.update {
         require_absent(&package.destination)?;
     }
@@ -207,12 +207,7 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
         || !orig_tarballs.is_empty();
     if !changed {
         println!("Clean");
-    }
-    if check {
-        return Ok(changed);
-    }
-    if !changed {
-        return Ok(false);
+        return Ok(());
     }
     fs::create_dir_all(parent)?;
     for (source, target) in orig_tarballs {
@@ -233,5 +228,5 @@ pub fn write_package(package: &SourcePackage, check: bool) -> Result<bool> {
     } else {
         copy_tree(&package.root, &package.destination)?;
     }
-    Ok(false)
+    Ok(())
 }

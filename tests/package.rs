@@ -12,7 +12,7 @@ use std::{
 use indoc::{formatdoc, indoc};
 use tempfile::TempDir;
 
-/// Filesystem state used to detect writes during checks and rejected operations.
+/// Filesystem state used to detect writes during reruns and rejected operations.
 #[derive(Debug, PartialEq, Eq)]
 enum TreeEntry {
     Directory {
@@ -127,7 +127,7 @@ fn read_tree(root: &Path) -> BTreeMap<PathBuf, TreeEntry> {
     tree
 }
 
-/// Reports the first changed path when a check or rejected operation alters package state.
+/// Reports the first changed path when a rerun or rejected operation alters package state.
 fn assert_tree_eq(root: &Path, expected: &BTreeMap<PathBuf, TreeEntry>) {
     let after = read_tree(root);
     let keys: BTreeSet<_> = expected.keys().chain(after.keys()).collect();
@@ -154,17 +154,6 @@ fn create_and_upgrade_package() {
             .contains("not inside a source package; supply INPUT")
     );
     assert!(!packages.exists());
-    run_package(
-        root,
-        &[
-            "local:crate",
-            "--package-dir",
-            "packages/rust-example",
-            "--check",
-        ],
-        1,
-    );
-    assert!(!packages.exists());
 
     run_package(
         root,
@@ -185,7 +174,7 @@ fn create_and_upgrade_package() {
     assert!(!control.contains("Vcs-Browser:"));
 
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    run_package(root, &["pkg:packages/rust-example"], 0);
     let output = run_package(root, &["--package-dir", "packages/rust-example"], 2);
     assert!(
         String::from_utf8_lossy(&output.stderr)
@@ -205,8 +194,6 @@ fn create_and_upgrade_package() {
     assert_tree_eq(&packages, &before);
 
     write_crate_manifest(root, "1.0.1");
-    run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert!(packages.join("rust-example_1.0.1.orig.tar.gz").is_file());
     assert!(packages.join("rust-example_1.0.0.orig.tar.gz").is_file());
@@ -228,7 +215,6 @@ fn create_and_upgrade_package() {
     assert!(changelog.ends_with(&released));
 
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert_tree_eq(&packages, &before);
 }
@@ -260,9 +246,6 @@ fn preserve_overrides_and_resolve_ambiguities() {
     .unwrap();
     fs::write(debian.join("local-notes"), "Maintainer notes.\n").unwrap();
 
-    let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert_eq!(fs::read_to_string(debian.join("control")).unwrap(), edited);
     assert!(!debian.join("copyright").exists());
@@ -281,7 +264,9 @@ fn preserve_overrides_and_resolve_ambiguities() {
     for name in ["control", "copyright", "rules"] {
         assert!(debian.join(format!("{name}.debcargo.hint")).is_file());
     }
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
 
     // Adopting the generated alternatives relinquishes the overrides.
     for name in ["control", "copyright", "rules"] {
@@ -313,17 +298,6 @@ fn preserve_overrides_and_resolve_ambiguities() {
     assert_tree_eq(&packages, &before);
     run_package(
         root,
-        &[
-            "pkg:packages/rust-example",
-            "--keep",
-            "debian/control",
-            "--check",
-        ],
-        1,
-    );
-    assert_tree_eq(&packages, &before);
-    run_package(
-        root,
         &["pkg:packages/rust-example", "--keep", "debian/control"],
         0,
     );
@@ -336,17 +310,7 @@ fn preserve_overrides_and_resolve_ambiguities() {
     // Changing the hint conflicts with the recorded baseline; replacement restores ownership.
     fs::write(debian.join("control.debcargo.hint"), "Conflicting hint.\n").unwrap();
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 2);
-    run_package(
-        root,
-        &[
-            "pkg:packages/rust-example",
-            "--replace",
-            "debian/control",
-            "--check",
-        ],
-        1,
-    );
+    run_package(root, &["pkg:packages/rust-example"], 2);
     assert_tree_eq(&packages, &before);
     run_package(
         root,
@@ -355,7 +319,9 @@ fn preserve_overrides_and_resolve_ambiguities() {
     );
     assert_eq!(fs::read_to_string(debian.join("control")).unwrap(), control);
     assert!(!debian.join("control.debcargo.hint").exists());
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
 }
 
 /// Rejects source conflicts before writing, and preserves local additions during a forced upgrade.
@@ -395,12 +361,6 @@ fn preserve_local_source_and_reject_conflicts() {
         assert!(error.contains(path), "{error}");
     }
     assert_tree_eq(&packages, &before);
-    run_package(
-        root,
-        &["pkg:packages/rust-example", "--force", "--check"],
-        1,
-    );
-    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example", "--force"], 0);
     assert_eq!(
         fs::read(package.join("src/lib.rs")).unwrap(),
@@ -436,7 +396,7 @@ fn preserve_local_source_and_reject_conflicts() {
         Path::new("notes.txt")
     );
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    run_package(root, &["pkg:packages/rust-example"], 0);
     assert_tree_eq(&packages, &before);
 }
 
@@ -479,7 +439,6 @@ fn preserve_applied_quilt_state() {
         0,
     );
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert_tree_eq(&packages, &before);
 
@@ -489,8 +448,6 @@ fn preserve_applied_quilt_state() {
         "/// Example value.\npub const VALUE: u8 = 1;\n// New upstream comment.\n",
     )
     .unwrap();
-    run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &["local:crate", "--package-dir", "packages/rust-example"],
@@ -506,22 +463,9 @@ fn preserve_applied_quilt_state() {
             .contains("VALUE: u8 = 2")
     );
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
     run_package(root, &["pkg:packages/rust-example"], 0);
     assert_tree_eq(&packages, &before);
 
-    run_package(
-        root,
-        &[
-            "pkg:packages/rust-example",
-            "--package-dir",
-            "copies/rust-example",
-            "--check",
-        ],
-        1,
-    );
-    assert!(!root.join("copies").exists());
-    assert_tree_eq(&packages, &before);
     run_package(
         root,
         &[
@@ -586,7 +530,6 @@ fn preserve_applied_quilt_state() {
     )
     .unwrap();
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 2);
     run_package(root, &["pkg:packages/rust-example"], 2);
     assert_tree_eq(&packages, &before);
     fs::write(
@@ -595,7 +538,6 @@ fn preserve_applied_quilt_state() {
     )
     .unwrap();
     let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 2);
     run_package(root, &["pkg:packages/rust-example"], 2);
     assert_tree_eq(&packages, &before);
 }
@@ -651,10 +593,9 @@ fn reject_missing_top_patch() {
     );
     fs::write(&config_path, config).unwrap();
     let before = read_tree(&packages);
-    let output = run_package(root, &["pkg:packages/rust-example", "--check"], 2);
+    let output = run_package(root, &["pkg:packages/rust-example"], 2);
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("restore staged quilt patches"), "{error}");
-    run_package(root, &["pkg:packages/rust-example"], 2);
     assert_tree_eq(&packages, &before);
 }
 
@@ -693,9 +634,6 @@ fn repack_source_and_preserve_patches() {
         format!("{original_config}excludes = [\"bundled.txt\"]\nrepack_suffix = \"dfsg\"\n");
     fs::write(&config_path, &repack_config).unwrap();
 
-    let before = read_tree(&packages);
-    run_package(root, &["pkg:packages/rust-example", "--check"], 1);
-    assert_tree_eq(&packages, &before);
     run_package(root, &["pkg:packages/rust-example"], 0);
     let repacked_orig = packages.join("rust-example_1.0.0+dfsg.orig.tar.gz");
     assert!(repacked_orig.is_file());
@@ -725,7 +663,9 @@ fn repack_source_and_preserve_patches() {
         fs::read_to_string(debian.join("patches/series")).unwrap(),
         series
     );
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
 
     // Removing the filter on the next release restores the file and drops the suffix.
     fs::write(&config_path, &original_config).unwrap();
@@ -739,7 +679,9 @@ fn repack_source_and_preserve_patches() {
             .unwrap()
             .starts_with("rust-example (1.0.1-0ubuntu1) UNRELEASED;")
     );
-    run_package(root, &["pkg:packages/rust-example", "--check"], 0);
+    let before = read_tree(&packages);
+    run_package(root, &["pkg:packages/rust-example"], 0);
+    assert_tree_eq(&packages, &before);
 
     run_command(
         Command::new("quilt")
@@ -760,7 +702,7 @@ fn repack_source_and_preserve_patches() {
     )
     .unwrap();
     let before = read_tree(&packages);
-    let output = run_package(root, &["pkg:packages/rust-example", "--check"], 2);
+    let output = run_package(root, &["pkg:packages/rust-example"], 2);
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrefreshed changes"));
     assert_tree_eq(&packages, &before);
 }

@@ -57,7 +57,7 @@ These commands share a common syntax for specifying an input crate, including cr
 
 ```console
 ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
-  [--check] [--force] \
+  [--force] \
   [--keep-staging] [--keep PATH]... [--replace PATH]...
 ```
 
@@ -66,7 +66,8 @@ ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
 - Run `ubucargo package CRATE VERSION` against an existing package to select another release.
 - Run `ubucargo package local:CRATE-DIR --package-dir PACKAGE-DIR` to create or update a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
 - After changing `debcargo.toml`, run `ubucargo package` again.
-- `--check` exits 0 when clean, 1 when files would change, and 2 on errors or unresolved ambiguities.
+- Regenerating a released package creates a new `UNRELEASED` changelog entry; subsequent runs update that entry.
+- `package` exits 0 on success and 2 on errors.
 
 ```sh
 ubucargo package serde

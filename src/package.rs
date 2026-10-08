@@ -49,10 +49,6 @@ pub struct PackageArgs {
     #[arg(long = "package-dir", value_name = "DIR")]
     pub package_dir: Option<PathBuf>,
 
-    /// Report changes without writing them.
-    #[arg(long)]
-    pub check: bool,
-
     /// Resolve source-tree conflicts in favor of the selected crate release.
     #[arg(long)]
     pub force: bool,
@@ -70,8 +66,8 @@ pub struct PackageArgs {
     pub replace: Vec<PathBuf>,
 }
 
-/// Creates or updates one source package, returning true when check mode finds changes.
-pub fn run(mut args: PackageArgs) -> Result<bool> {
+/// Creates or updates one source package.
+pub fn run(mut args: PackageArgs) -> Result<()> {
     let current = std::env::current_dir()
         .context("get current directory")?
         .canonicalize()
@@ -135,11 +131,7 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
     } else {
         "Update existing package"
     };
-    println!(
-        "{}{action}: {}",
-        if args.check { "Check: " } else { "" },
-        destination.display()
-    );
+    println!("{action}: {}", destination.display());
     if resolved.existing.is_none() && (!keep_paths.is_empty() || !replace_paths.is_empty()) {
         bail!("--keep and --replace apply only to existing packages");
     }
@@ -188,7 +180,7 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
     remove_generated_vcs_fields(generated.stage.path())?;
     update_staged_maintainer(generated.stage.path())?;
 
-    let changed = if let (Some(existing), Some(base)) = (&resolved.existing, &baseline) {
+    if let (Some(existing), Some(base)) = (&resolved.existing, &baseline) {
         let plan = build_update_plan(
             existing,
             base.path(),
@@ -203,7 +195,6 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
         if plan.has_changes() {
             plan.apply()?;
         }
-        false
     } else {
         create_new(
             resolved
@@ -212,9 +203,8 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
                 .context("package destination is missing")?,
             &resolved.config,
             &generated,
-            args.check,
-        )?
-    };
+        )?;
+    }
     if let Some(package) = &acquired {
         if let Some(top) = top_patch {
             run_command(
@@ -229,9 +219,9 @@ pub fn run(mut args: PackageArgs) -> Result<bool> {
                 bail!("could not restore the original top quilt patch {top}");
             }
         }
-        return write_package(package, args.check);
+        write_package(package)?;
     }
-    Ok(changed)
+    Ok(())
 }
 
 /// Validates and deduplicates generated-file decisions.
@@ -405,12 +395,7 @@ impl UpdatePlan {
 }
 
 /// Initializes and writes the generated package at the resolved destination.
-fn create_new(
-    root: &Path,
-    config: &PackageConfig,
-    generated: &GeneratedPackage,
-    check: bool,
-) -> Result<bool> {
+fn create_new(root: &Path, config: &PackageConfig, generated: &GeneratedPackage) -> Result<()> {
     let parent = root.parent().context("package root has no parent")?;
     initialize_package(&generated.source, config)?;
 
@@ -429,14 +414,10 @@ fn create_new(
     if orig_changed {
         println!("Create {}", orig.display());
     }
-    if check {
-        return Ok(true);
-    }
-
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     if orig_changed {
         fs::copy(&generated.orig, &orig).with_context(|| format!("write {}", orig.display()))?;
     }
     copy_tree(&generated.source, root)?;
-    Ok(false)
+    Ok(())
 }
