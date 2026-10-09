@@ -6,7 +6,7 @@ use anyhow::Result;
 use indoc::formatdoc;
 
 use super::{get_ppa_key, parse_ppa, validate_name};
-use crate::input::split_archive_suite;
+use crate::input::{Distribution, Suite, split_archive_suite};
 
 /// Repository selection expanded into authenticated APT source entries.
 pub enum Repository<'a> {
@@ -18,7 +18,18 @@ pub enum Repository<'a> {
     Ppa { ppa: &'a str, series: &'a str },
 }
 
-impl Repository<'_> {
+impl<'a> Repository<'a> {
+    /// Selects the repository configuration for a distribution-qualified archive suite.
+    pub fn select_archive(suite: &'a Suite, proposed: bool) -> Self {
+        match suite.distribution {
+            Distribution::Ubuntu => Self::Ubuntu {
+                suite: &suite.name,
+                proposed,
+            },
+            Distribution::Debian => Self::Debian { suite: &suite.name },
+        }
+    }
+
     /// Appends source entries, retrieving PPA keys into the locked view when needed.
     pub fn append_sources(
         &self,

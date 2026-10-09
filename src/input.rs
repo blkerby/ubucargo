@@ -1,6 +1,9 @@
 //! Shared input notation for package generation and dependency inspection.
 use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 /// Distribution publishing an archive source package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +14,41 @@ pub enum Distribution {
     Debian,
 }
 
+/// Distribution and suite identifying a source or dependency archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suite {
+    /// Distribution providing the repository.
+    pub distribution: Distribution,
+    /// Exact suite name, including an explicit Ubuntu pocket when selected.
+    pub name: String,
+}
+
+impl fmt::Display for Suite {
+    /// Formats the suite as a distribution-qualified selector.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = match self.distribution {
+            Distribution::Ubuntu => "ubuntu",
+            Distribution::Debian => "debian",
+        };
+        write!(formatter, "{prefix}:{}", self.name)
+    }
+}
+
+/// Parses a qualified suite or an Ubuntu suite shorthand.
+pub fn parse_suite(value: &str) -> Result<Suite> {
+    let (prefix, name) = value.split_once(':').unwrap_or(("ubuntu", value));
+    let distribution = match prefix {
+        "ubuntu" => Distribution::Ubuntu,
+        "debian" => Distribution::Debian,
+        _ => bail!("unknown suite prefix {prefix:?}; expected ubuntu:SUITE or debian:SUITE"),
+    };
+    validate_name("suite", name)?;
+    Ok(Suite {
+        distribution,
+        name: name.to_owned(),
+    })
+}
+
 /// Input selected independently of a package command's destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
@@ -18,10 +56,8 @@ pub enum Input {
     Crate(String),
     /// A published distribution source package in a suite.
     Archive {
-        /// Distribution providing the source indexes.
-        distribution: Distribution,
         /// Input series or suite, independent of dependency checking overrides.
-        suite: String,
+        suite: Suite,
         /// Exact Debian source-package name.
         source: String,
     },
@@ -56,8 +92,7 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
                 validate_name("crate", rest)?;
                 Ok(Input::Crate(rest.to_owned()))
             }
-            "ubuntu" => parse_archive(rest, Distribution::Ubuntu),
-            "debian" => parse_archive(rest, Distribution::Debian),
+            "ubuntu" | "debian" => parse_archive(value),
             "ppa" => {
                 let fields: Vec<_> = rest.split('/').collect();
                 let [owner, name, series, source] = fields.as_slice() else {
@@ -117,20 +152,19 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
         );
     }
     if value.contains('/') {
-        return parse_archive(value, Distribution::Ubuntu);
+        return parse_archive(value);
     }
     validate_name("crate", value)?;
     Ok(Input::Crate(value.to_owned()))
 }
 
 /// Parses a series or suite and exact source-package name.
-fn parse_archive(value: &str, distribution: Distribution) -> Result<Input> {
+fn parse_archive(value: &str) -> Result<Input> {
     let (suite, source) = value.split_once('/').context("expected SUITE/SOURCE")?;
-    validate_name("suite", suite)?;
+    let suite = parse_suite(suite)?;
     validate_name("source", source)?;
     Ok(Input::Archive {
-        distribution,
-        suite: suite.to_owned(),
+        suite,
         source: source.to_owned(),
     })
 }
@@ -145,15 +179,23 @@ pub fn split_archive_suite(suite: &str) -> (&str, Option<&str>) {
     (suite, None)
 }
 
-/// Returns the input's Ubuntu base series for dependency checking defaults.
-pub fn read_input_series(input: &Input) -> Option<&str> {
+/// Returns the input's checking suite, using the base series for Ubuntu pockets.
+pub fn read_input_suite(input: &Input) -> Option<Suite> {
     match input {
-        Input::Archive {
+        Input::Archive { suite, .. } => {
+            let name = match suite.distribution {
+                Distribution::Ubuntu => split_archive_suite(&suite.name).0,
+                Distribution::Debian => &suite.name,
+            };
+            Some(Suite {
+                distribution: suite.distribution,
+                name: name.to_owned(),
+            })
+        }
+        Input::Ppa { series, .. } => Some(Suite {
             distribution: Distribution::Ubuntu,
-            suite,
-            ..
-        } => Some(split_archive_suite(suite).0),
-        Input::Ppa { series, .. } => Some(series),
+            name: series.clone(),
+        }),
         _ => None,
     }
 }

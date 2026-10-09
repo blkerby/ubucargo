@@ -43,7 +43,7 @@ For Debian inputs, `<SUITE>` selects exactly that suite from `https://deb.debian
 
 For crates.io inputs, omitting `<VERSION>` asks debcargo and Cargo for the greatest release matching an unconstrained dependency, excluding yanked releases and prereleases. An exact request may select a prerelease or yanked release.
 
-For dependency-checking series, pockets, and additional PPAs, see [`ubucargo deps`](deps.md).
+For dependency-checking suites, pockets, and additional PPAs, see [`ubucargo deps`](deps.md).
 
 ## Destination selection
 

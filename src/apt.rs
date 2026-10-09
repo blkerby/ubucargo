@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    input::{Distribution, Input},
+    input::Input,
     util::{run_command, run_streaming_command, write_file},
 };
 use deb822_fast::{Deb822, FromDeb822Paragraph};
@@ -209,18 +209,8 @@ pub fn load_records(
 pub fn load_source_records(input: &Input, architecture: &str) -> Result<Vec<SourceCandidate>> {
     let mut repositories = Vec::new();
     match input {
-        Input::Archive {
-            distribution,
-            suite,
-            ..
-        } => {
-            repositories.push(match distribution {
-                Distribution::Ubuntu => Repository::Ubuntu {
-                    suite,
-                    proposed: false,
-                },
-                Distribution::Debian => Repository::Debian { suite },
-            });
+        Input::Archive { suite, .. } => {
+            repositories.push(Repository::select_archive(suite, false));
         }
         Input::Ppa { ppa, series, .. } => {
             repositories.push(Repository::Ppa { ppa, series });
@@ -299,12 +289,12 @@ pub fn read_development_series() -> Result<String> {
         Command::new("ubuntu-distro-info").arg("--devel"),
         "ubuntu-distro-info --devel",
     )
-    .context("cannot determine the Ubuntu development series; supply --series explicitly")?;
+    .context("cannot determine the Ubuntu development series; supply --suite explicitly")?;
     let series = String::from_utf8(output.stdout)
-        .context("invalid development-series output; supply --series explicitly")?;
+        .context("invalid development-series output; supply --suite explicitly")?;
     let series = series.trim();
     validate_name("development series", series)
-        .context("cannot determine the Ubuntu development series; supply --series explicitly")?;
+        .context("cannot determine the Ubuntu development series; supply --suite explicitly")?;
     Ok(series.to_owned())
 }
 

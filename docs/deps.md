@@ -5,7 +5,7 @@ The command reports the direct Rust library dependencies, represented by `librus
 ## Synopsis
 
 ```console
-ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
+ubucargo deps [<INPUT> [<VERSION>]] [--suite <SUITE>] \
   [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>] [--keep-staging]
 ```
 
@@ -13,26 +13,37 @@ Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
 
-An Ubuntu Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. For other inputs, including Debian sources, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
+`--suite` selects the checking environment as `ubuntu:<SUITE>` or `debian:<SUITE>`. A bare suite name is Ubuntu shorthand, so `--suite resolute` and `--suite ubuntu:resolute` select the same environment. An explicit option takes precedence over the input's default.
 
-The input selector determines the source location; `--series`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `ubuntu:resolute-proposed/rust-serde --series jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
+A Debian input defaults to its exact Debian suite: `debian:unstable/rust-serde` checks against `debian:unstable`. An Ubuntu Archive input defaults to its base Ubuntu series, and a PPA input defaults to its Ubuntu series. Crates.io and local inputs default to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Development-series detection runs only when both an explicit suite and a published-input default are absent; if it fails, supply `--suite` explicitly.
+
+For Ubuntu checking suites, a PPA input automatically adds its PPA to the checking repositories, using the checking suite's base series. Repeated PPA arguments are deduplicated. A PPA input checked against Debian supplies the maintained packaging, while the checking repositories come from Debian.
+
+The input selector determines the source location; `--suite`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `ubuntu:resolute-proposed/rust-serde --suite jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
 
 ```console
-ubucargo deps --series resolute
+ubucargo deps --suite resolute
 ubucargo deps serde
-ubucargo deps serde --series resolute
-ubucargo deps serde 1.0.220 --series resolute
+ubucargo deps serde --suite resolute
+ubucargo deps serde 1.0.220 --suite resolute
 ubucargo deps ubuntu:resolute/rust-serde
-ubucargo deps debian:unstable/rust-serde --series resolute
-ubucargo deps resolute/rust-serde --series jammy
-ubucargo deps ppa:myuser/rust-staging/resolute/rust-serde --series resolute
-ubucargo deps pkg:./rust-serde --series resolute
-ubucargo deps local:../serde --series resolute
+ubucargo deps debian:unstable/rust-serde
+ubucargo deps debian:unstable/rust-serde --suite resolute
+ubucargo deps ubuntu:resolute/rust-serde --suite debian:unstable
+ubucargo deps serde --suite debian:unstable
+ubucargo deps resolute/rust-serde --suite jammy
+ubucargo deps ppa:myuser/rust-staging/resolute/rust-serde --suite resolute
+ubucargo deps pkg:./rust-serde --suite resolute
+ubucargo deps local:../serde --suite resolute
 ```
 
 `--keep-staging` retains and prints staging directories for generated packaging or extracted published sources, including on failure. Existing local package inspection creates no staging directory.
 
-`--series` selects the dependency environment: release, updates, and security pockets in `main` and `universe`. `--proposed` adds proposed. Each public `--ppa ppa:<OWNER>/<NAME>` adds `main`; private PPAs are unsupported. `--architecture` selects the Debian architecture used for dependency checking. It defaults to the host's native architecture, as reported by `dpkg --print-architecture`.
+A base Ubuntu checking suite selects release, updates, and security pockets in `main` and `universe`; a suite with a pocket suffix selects that pocket alone. `--proposed` adds proposed to a base Ubuntu suite. Each public `--ppa ppa:<OWNER>/<NAME>` adds `main` for the checking suite's base series.
+
+A Debian checking suite selects exactly the named suite in `main` from `https://deb.debian.org/debian`, using `debian-archive-keyring`. `--proposed` and explicit `--ppa` options require an Ubuntu checking suite.
+
+`--architecture` selects the Debian architecture used for dependency checking. It defaults to the host's native architecture, as reported by `dpkg --print-architecture`.
 
 ## Output
 
@@ -47,18 +58,20 @@ Input: rand 0.8.5 from local:../rand (generated packaging)
 Input: rust-rand 0.8.5-1 from pkg:./rust-rand
 ```
 
-Local-package identity and version come from the top changelog entry; a missing or malformed changelog is an error. Unusable Cargo metadata or debcargo configuration does not prevent inspection. Cross-series checks show the actual input location. The header is present even when all dependency tables are empty. Advisory availability lines follow the input header, for example:
+Local-package identity and version come from the top changelog entry; a missing or malformed changelog is an error. Unusable Cargo metadata or debcargo configuration does not prevent inspection. Checks across distributions or suites show the actual input location. The header is present even when all dependency tables are empty. Advisory availability lines follow the input header, for example:
 
 ```text
 crates.io availability: 0.9.2
-resolute availability: rust-rand 0.8.5-1
+ubuntu:resolute availability: rust-rand 0.8.5-1
 ```
+
+For a Debian checking suite, the archive line uses its qualified selector, for example `debian:unstable availability: rust-rand 0.8.5-1`.
 
 Crates.io information comes from its metadata API, selecting the highest non-yanked stable version without downloading a crate archive. A missing crate displays `not published`, a crate with no eligible stable version displays `no stable release`, and request or metadata failures display `unavailable`. Requests have an eight-second overall timeout. These outcomes do not change dependency results or exit status.
 
-The Archive entry describes the checking series and its selected pockets/components, excludes PPAs, and shows the highest full Debian version for each matching source package, retaining parallel semver lines grouped under a single series label. Matching uses conventional Rust source names and declared Rust library binaries; absence displays `not packaged`. Local package and published inputs infer the crate name from control-file Rust binaries or conventional source names without requiring usable Cargo metadata.
+The archive entry describes the qualified checking suite and its selected pockets/components, excludes PPAs, and shows the highest full Debian version for each matching source package, retaining parallel semver lines grouped under a single suite label. Matching uses conventional Rust source names and declared Rust library binaries; absence displays `not packaged`. Local package and published inputs infer the crate name from control-file Rust binaries or conventional source names without requiring usable Cargo metadata.
 
-An entry is omitted when that origin already supplied an implicitly selected latest input. An unversioned crates.io input reuses its resolved version and avoids another API request. An unversioned Archive input omits its matching Archive entry only when the checking series and version match; parallel source packages remain visible. Explicit versions, local inputs, and cross-series checks retain their relevant latest entries.
+An unversioned crates.io input reuses its resolved version and avoids another API request. An unversioned archive input omits the archive availability line when its source is the only matching package and the distribution, exact suite, source name, and version match. When parallel source packages exist, the line includes every matching source, including the selected input. Explicit versions, local inputs, and checks across distributions or suites retain their relevant latest entries.
 
 The report contains one table for each of these, in order, omitting empty tables:
 

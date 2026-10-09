@@ -1,4 +1,4 @@
-//! Inspects Ubuntu binary package candidates for direct Rust dependencies.
+//! Inspects archive binary package candidates for direct Rust dependencies.
 
 mod control;
 mod latest;
@@ -9,14 +9,17 @@ use std::{
     io::{self, IsTerminal},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use debian_control::relations::VersionConstraint;
 
 use crate::{
     apt,
     config::{get_new_local_package_config, get_new_package_config},
     generate,
-    input::{Input, parse_input, validate_version},
+    input::{
+        Distribution, Input, Suite, parse_input, parse_suite, read_input_suite,
+        split_archive_suite, validate_version,
+    },
     resolve,
 };
 
@@ -34,7 +37,7 @@ const RED: &str = "\x1b[31m";
 const BOLD_CYAN: &str = "\x1b[1;36m";
 const RESET: &str = "\x1b[0m";
 
-/// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
+/// Inspect archive candidates for a crate's direct Rust dependencies.
 #[derive(clap::Args)]
 pub struct DepArgs {
     /// Input selector: crate:NAME, ubuntu:SUITE/SOURCE, debian:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
@@ -45,9 +48,9 @@ pub struct DepArgs {
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Checking series; defaults to the input's Ubuntu series, otherwise the current Ubuntu development series.
-    #[arg(long, value_name = "SERIES")]
-    pub series: Option<String>,
+    /// Checking suite: ubuntu:SUITE, debian:SUITE, or an Ubuntu shorthand. Defaults to the input's Debian suite or Ubuntu base series, otherwise Ubuntu development.
+    #[arg(long, value_name = "SUITE", value_parser = parse_suite)]
+    pub suite: Option<Suite>,
 
     /// Include the Ubuntu proposed pocket.
     #[arg(long)]
@@ -150,15 +153,19 @@ pub fn run(args: DepArgs) -> Result<bool> {
         )
     };
     validate_version(&input, args.version.as_deref())?;
-    let default_series;
-    let series = if let Some(series) = args.series.as_deref() {
-        series
-    } else if let Some(series) = crate::input::read_input_series(&input) {
-        series
+    let suite = if let Some(suite) = args.suite {
+        suite
+    } else if let Some(suite) = read_input_suite(&input) {
+        suite
     } else {
-        default_series = apt::read_development_series()?;
-        &default_series
+        Suite {
+            distribution: Distribution::Ubuntu,
+            name: apt::read_development_series()?,
+        }
     };
+    if suite.distribution == Distribution::Debian && (args.proposed || !args.ppa.is_empty()) {
+        bail!("--proposed and --ppa require an Ubuntu checking suite");
+    }
     let local_changelog = match &input {
         Input::Package(root) => Some(crate::changelog::read_top_changelog(
             &root.join("debian/changelog"),
@@ -173,7 +180,9 @@ pub fn run(args: DepArgs) -> Result<bool> {
     for ppa in args.ppa {
         ppas.insert(ppa);
     }
-    if let Input::Ppa { ppa, .. } = &input {
+    if suite.distribution == Distribution::Ubuntu
+        && let Input::Ppa { ppa, .. } = &input
+    {
         ppas.insert(ppa.clone());
     }
     let input_records = if matches!(input, Input::Archive { .. } | Input::Ppa { .. }) {
@@ -183,12 +192,12 @@ pub fn run(args: DepArgs) -> Result<bool> {
     };
     let mut repositories = Vec::new();
     for ppa in &ppas {
-        repositories.push(apt::Repository::Ppa { ppa, series });
+        repositories.push(apt::Repository::Ppa {
+            ppa,
+            series: split_archive_suite(&suite.name).0,
+        });
     }
-    repositories.push(apt::Repository::Ubuntu {
-        suite: series,
-        proposed: args.proposed,
-    });
+    repositories.push(apt::Repository::select_archive(&suite, args.proposed));
     let records = apt::load_records(&repositories, &architecture)?;
     let (sections, header, mut identity) = match &input {
         Input::Crate(_) | Input::Local(_) => {
@@ -291,7 +300,7 @@ pub fn run(args: DepArgs) -> Result<bool> {
         &input,
         args.version.is_some(),
         &identity,
-        series,
+        &suite,
         &records.sources,
         release,
     );

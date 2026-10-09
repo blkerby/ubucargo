@@ -1,4 +1,4 @@
-//! Advisory crates.io and Ubuntu version information, separate from dependency classification.
+//! Advisory crates.io and archive version information, separate from dependency classification.
 use std::{collections::BTreeMap, process::Command};
 
 use anyhow::Result;
@@ -7,7 +7,10 @@ use serde::Deserialize;
 
 use super::control::parse_rust_package_name;
 use crate::apt::SourceCandidate;
-use crate::{input::Input, resolve::normalize_crate_name};
+use crate::{
+    input::{Input, Suite},
+    resolve::normalize_crate_name,
+};
 
 /// Resolved input identity used to compare available versions without changing the input.
 pub struct InputIdentity {
@@ -131,12 +134,12 @@ pub fn infer_crate_name(source: &str) -> Option<String> {
     Some(normalize_crate_name(name))
 }
 
-/// Formats latest versions, excluding PPAs and suppressing matching implicitly selected inputs.
+/// Formats latest versions, suppressing a sole matching implicitly selected archive input.
 pub fn format_latest(
     input: &Input,
     explicit_version: bool,
     identity: &InputIdentity,
-    series: &str,
+    suite: &Suite,
     sources: &[SourceCandidate],
     release: Option<LatestRelease>,
 ) -> String {
@@ -176,17 +179,17 @@ pub fn format_latest(
         }
     }
     if latest.is_empty() {
-        entries.push(format!("{series} availability: not packaged"));
+        entries.push(format!("{suite} availability: not packaged"));
     }
     let mut archive_entries = Vec::new();
     for source in latest.values() {
-        if !explicit_version
+        if latest.len() == 1
+            && !explicit_version
             && let Input::Archive {
-                distribution: crate::input::Distribution::Ubuntu,
                 suite: input_suite,
                 source: input_source,
             } = input
-            && crate::input::split_archive_suite(input_suite).0 == series
+            && input_suite == suite
             && *input_source == source.source
             && identity.version == source.version.to_string()
         {
@@ -196,7 +199,7 @@ pub fn format_latest(
     }
     if !archive_entries.is_empty() {
         entries.push(format!(
-            "{series} availability: {}",
+            "{suite} availability: {}",
             archive_entries.join(", ")
         ));
     }

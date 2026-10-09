@@ -34,7 +34,7 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 ## Sources
 
-For `deps --series resolute`, Ubucargo creates binary and source entries for `resolute`, `resolute-updates`, and `resolute-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `resolute-proposed` from the same Archive source. Each `--ppa ppa:<OWNER>/<NAME>` adds a binary and source `main` entry for Resolute. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
+For `deps --suite resolute`, Ubucargo creates binary and source entries for `resolute`, `resolute-updates`, and `resolute-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `resolute-proposed` from the same Archive source. Each `--ppa ppa:<OWNER>/<NAME>` adds a binary and source `main` entry for Resolute. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
 
 The generated deb822 entries select only their required APT targets:
 
@@ -50,7 +50,7 @@ Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
 Security pockets use the standard Ubuntu security URI. Ubucargo selects the normal Ubuntu Archive URI for the requested architecture.
 
-For `debian:unstable/<SOURCE>`, the input view selects the exact Debian suite in `main`:
+For `debian:unstable/<SOURCE>` or `deps --suite debian:unstable`, the selected view uses the exact Debian suite in `main`:
 
 ```text
 Types: deb deb-src
@@ -62,7 +62,7 @@ Targets: Packages Sources
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 ```
 
-Debian inputs use the same locked cache, index parsing, version selection, and source retrieval as Ubuntu inputs. Dependency checking uses a separate Ubuntu view selected by `--series` or the current Ubuntu development series.
+Debian sources and dependency environments use the same locked cache and index parsing as Ubuntu. Published sources share version selection and source retrieval. The input selector determines the source view; `--suite` or the input default determines the checking view. Debian inputs default to their exact suite, Ubuntu inputs to their base series, and PPA inputs to their Ubuntu series. Crates.io and local inputs default to the current Ubuntu development series.
 
 ## Repository trust
 
@@ -88,6 +88,6 @@ Ubucargo runs `apt-get update` with command-line configuration that supplies:
 
 APT updates the selected indexes on every invocation. Update failures are fatal (`APT::Update::Error-Mode=any`), so an unavailable repository cannot silently turn into a misleading absence report. It reuses unchanged files and may apply index deltas, so Ubucargo needs no freshness policy or per-view cache identity.
 
-Queries use the same source file and list directory. `apt-get indextargets` identifies the selected package indexes and their repository locations. Ubucargo reads `Packages` files for Rust versions and `Provides` and `Sources` files for source names, Debian versions, declared binaries, locations, and descriptor checksums. Dependency classification uses only checking-series binaries. Inspection of published inputs across distributions or series queries the input view and checking view sequentially, releasing the shared lock between them; parsed results remain separate. Source metadata uses the same signature verification and index cache as binary metadata. Input selectors determine source distributions, suites, and pockets independently of dependency environment flags; a bare Ubuntu Archive series selects release, updates, and security, while a suffixed Ubuntu suite selects that pocket alone. A Debian selector uses its exact suite in `main`.
+Queries use the same source file and list directory. `apt-get indextargets` identifies the selected package indexes and their repository locations. Ubucargo reads `Packages` files for Rust versions and `Provides` and `Sources` files for source names, Debian versions, declared binaries, locations, and descriptor checksums. Dependency classification uses only checking-suite binaries. Inspection of published inputs across distributions or series queries the input view and checking view sequentially, releasing the shared lock between them; parsed results remain separate. Source metadata uses the same signature verification and index cache as binary metadata. Input selectors determine source distributions, suites, and pockets independently of dependency environment flags; a bare Ubuntu Archive series selects release, updates, and security, while a suffixed Ubuntu suite selects that pocket alone. A Debian selector uses its exact suite in `main`.
 
 Only metadata operations run. Ubucargo never asks this configuration to install, upgrade, remove, or configure packages, and it does not modify the host's APT lists or dpkg status.

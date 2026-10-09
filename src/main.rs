@@ -28,7 +28,7 @@ struct Cli {
 /// Operations supported by the current Ubucargo release.
 #[derive(Subcommand)]
 enum Command {
-    /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
+    /// Inspect archive candidates for a crate's direct Rust dependencies.
     Deps(deps::DepArgs),
 
     /// Create or update a complete source package.

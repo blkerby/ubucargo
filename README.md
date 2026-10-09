@@ -77,7 +77,7 @@ See [`docs/package.md`](docs/package.md) for full behavior and options.
 ### `deps`
 
 ```console
-ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
+ubucargo deps [<INPUT> [<VERSION>]] [--suite <SUITE>] \
   [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>] [--keep-staging]
 ```
 
@@ -85,8 +85,8 @@ ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
 
 - Run `ubucargo deps <CRATE> [<VERSION>]` to inspect a crates.io release without creating a source package.
 - Run `ubucargo deps` inside a source package, or use `pkg:<PATH>` to select one explicitly.
-- Use `--series <SERIES>` to select an Ubuntu series for checking dependency candidates. This defaults to the input's Ubuntu series, otherwise the current Ubuntu development series.
-- Add `--proposed` to include the selected series' proposed pocket.
+- Use `--suite ubuntu:<SUITE>` or `--suite debian:<SUITE>` to select the dependency environment. Bare suite names select Ubuntu. Debian inputs default to their exact suite; Ubuntu and PPA inputs default to their base Ubuntu series. Crates.io and local inputs default to the current Ubuntu development series.
+- Add `--proposed` to include a base Ubuntu suite’s proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when any are incompatible, missing, or unknown, and 2 on errors. Dependencies reported as `unknown` require manual assessment.
 
@@ -96,4 +96,4 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, distro-info (for automatic development-series selection), GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, the Ubuntu archive keyring, and debcargo 2.8.4 or a later compatible 2.x release.
 
-Debian source inputs additionally require `debian-archive-keyring`, which supplies `/usr/share/keyrings/debian-archive-keyring.gpg`.
+Debian sources and dependency environments additionally require `debian-archive-keyring`, which supplies `/usr/share/keyrings/debian-archive-keyring.gpg`.
