@@ -1,0 +1,32 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Formatting, Clippy, and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy lints
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends devscripts ubuntu-dev-tools quilt pkg-config libssl-dev
+          cargo install debcargo --version 2.8.4 --locked
+
+      - name: Run tests
+        run: cargo test --locked --all-targets --all-features
