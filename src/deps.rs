@@ -37,7 +37,7 @@ const RESET: &str = "\x1b[0m";
 /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
 #[derive(clap::Args)]
 pub struct DepArgs {
-    /// Input selector: crate:NAME, archive:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
+    /// Input selector: crate:NAME, archive:SUITE/SOURCE, debian:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
     #[arg(value_name = "INPUT")]
     pub input: Option<String>,
 
@@ -45,7 +45,7 @@ pub struct DepArgs {
     #[arg(value_name = "VERSION", requires = "input")]
     pub version: Option<String>,
 
-    /// Checking series; defaults to the published input series, otherwise the current Ubuntu development series.
+    /// Checking series; defaults to the input's Ubuntu series, otherwise the current Ubuntu development series.
     #[arg(long, value_name = "SERIES")]
     pub series: Option<String>,
 
@@ -176,13 +176,20 @@ pub fn run(args: DepArgs) -> Result<bool> {
     if let Input::Ppa { ppa, .. } = &input {
         ppas.insert(ppa.clone());
     }
-    let ppas: Vec<_> = ppas.into_iter().collect();
-    let input_records = if crate::input::read_input_series(&input).is_some() {
+    let input_records = if matches!(input, Input::Archive { .. } | Input::Ppa { .. }) {
         Some(apt::load_source_records(&input, &architecture)?)
     } else {
         None
     };
-    let records = apt::load_records(series, &architecture, args.proposed, &ppas)?;
+    let mut repositories = Vec::new();
+    for ppa in &ppas {
+        repositories.push(apt::Repository::Ppa { ppa, series });
+    }
+    repositories.push(apt::Repository::Ubuntu {
+        suite: series,
+        proposed: args.proposed,
+    });
+    let records = apt::load_records(&repositories, &architecture)?;
     let (sections, header, mut identity) = match &input {
         Input::Crate(_) | Input::Local(_) => {
             let (request, config) = match &input {

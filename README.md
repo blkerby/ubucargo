@@ -50,7 +50,7 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`docs/deps.md`](docs/deps.md) |
 
-These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input and version selection](docs/package.md#input-and-version-selection) for details.
+These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input and version selection](docs/package.md#input-and-version-selection) for details.
 
 ### `package`
 
@@ -85,7 +85,7 @@ ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
 
 - Run `ubucargo deps <CRATE> [<VERSION>]` to inspect a crates.io release without creating a source package.
 - Run `ubucargo deps` inside a source package, or use `pkg:<PATH>` to select one explicitly.
-- Use `--series <SERIES>` to select an Ubuntu series for checking dependency candidates. This defaults to the published input's series, otherwise the current Ubuntu development series.
+- Use `--series <SERIES>` to select an Ubuntu series for checking dependency candidates. This defaults to the input's Ubuntu series, otherwise the current Ubuntu development series.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when any are incompatible, missing, or unknown, and 2 on errors. Dependencies reported as `unknown` require manual assessment.
@@ -94,4 +94,6 @@ See [`docs/deps.md`](docs/deps.md) for details.
 
 ## Requirements
 
-It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, distro-info (for automatic development-series selection), GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, and debcargo 2.8.4 or a later compatible 2.x release.
+It currently requires APT, Cargo, curl, GnuPG, quilt, devscripts, distro-info (for automatic development-series selection), GNU coreutils (including `sha256sum` and `sha512sum`), ubuntu-dev-tools, the Ubuntu archive keyring, and debcargo 2.8.4 or a later compatible 2.x release.
+
+Debian source inputs additionally require `debian-archive-keyring`, which supplies `/usr/share/keyrings/debian-archive-keyring.gpg`.

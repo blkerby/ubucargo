@@ -10,14 +10,19 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use crate::util::{run_command, run_streaming_command, write_file};
+use crate::{
+    input::{Distribution, Input},
+    util::{run_command, run_streaming_command, write_file},
+};
 use deb822_fast::{Deb822, FromDeb822Paragraph};
 use debian_control::{lossy::apt::Package, relations::VersionConstraint};
 use debversion::Version;
-use indoc::formatdoc;
 use serde::Deserialize;
 
-const UBUNTU_KEYRING: &str = "/usr/share/keyrings/ubuntu-archive-keyring.gpg";
+mod repository;
+
+pub use repository::Repository;
+use repository::format_location;
 
 /// One source package version from one configured repository location.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -131,14 +136,11 @@ impl AptView {
 
 /// Refreshes the selected repositories and returns their Rust package records.
 pub fn load_records(
-    series: &str,
+    repositories: &[Repository<'_>],
     architecture: &str,
-    proposed: bool,
-    ppas: &[String],
 ) -> Result<RepositoryRecords> {
-    validate_name("series", series)?;
     validate_name("architecture", architecture)?;
-    let view = prepare_view(&cache_root()?, series, architecture, proposed, ppas)?;
+    let view = prepare_view(&cache_root()?, repositories, architecture)?;
 
     let mut update = Command::new("apt-get");
     view.configure(&mut update);
@@ -169,7 +171,7 @@ pub fn load_records(
         let fields: Vec<_> = line.split('|').collect();
         let [
             filename,
-            site,
+            _site,
             repository_uri,
             release,
             component,
@@ -182,7 +184,7 @@ pub fn load_records(
                 fields.len()
             );
         };
-        let location = format_location(site, release, component);
+        let location = format_location(repository_uri, release, component);
         if *identifier == "Sources" {
             read_sources(Path::new(filename), repository_uri, &location, &mut sources)?;
             continue;
@@ -204,29 +206,39 @@ pub fn load_records(
 }
 
 /// Queries published input metadata independently of dependency environment options.
-pub fn load_source_records(
-    input: &crate::input::Input,
-    architecture: &str,
-) -> Result<Vec<SourceCandidate>> {
-    let mut ppas = Vec::new();
-    let series = match input {
-        crate::input::Input::Archive { suite, .. } => suite,
-        crate::input::Input::Ppa { ppa, series, .. } => {
-            ppas.push(ppa.clone());
-            series
+pub fn load_source_records(input: &Input, architecture: &str) -> Result<Vec<SourceCandidate>> {
+    let mut repositories = Vec::new();
+    match input {
+        Input::Archive {
+            distribution,
+            suite,
+            ..
+        } => {
+            repositories.push(match distribution {
+                Distribution::Ubuntu => Repository::Ubuntu {
+                    suite,
+                    proposed: false,
+                },
+                Distribution::Debian => Repository::Debian { suite },
+            });
+        }
+        Input::Ppa { ppa, series, .. } => {
+            repositories.push(Repository::Ppa { ppa, series });
+            repositories.push(Repository::Ubuntu {
+                suite: series,
+                proposed: false,
+            });
         }
         _ => bail!("expected a published source input"),
-    };
-    Ok(load_records(series, architecture, false, &ppas)?.sources)
+    }
+    Ok(load_records(&repositories, architecture)?.sources)
 }
 
 /// Locks the shared APT view, replacing its sources only when their contents change.
 fn prepare_view(
     cache: &Path,
-    series: &str,
+    repositories: &[Repository<'_>],
     architecture: &str,
-    proposed: bool,
-    ppas: &[String],
 ) -> Result<AptView> {
     fs::create_dir_all(cache).context("create APT cache directory")?;
     let cache = cache.canonicalize()?;
@@ -249,72 +261,8 @@ fn prepare_view(
     }
 
     let mut sources = String::new();
-    for ppa in ppas {
-        let (owner, name) = parse_ppa(ppa)?;
-        let key = get_ppa_key(owner, name, &cache.join("keys"))?;
-        sources.push_str(&formatdoc! {
-            "
-            Types: deb deb-src
-            URIs: https://ppa.launchpadcontent.net/{owner}/{name}/ubuntu
-            Suites: {series}
-            Components: main
-            Architectures: {architecture}
-            Targets: Packages Sources
-            Signed-By: {}
-
-            ",
-            key.display()
-        });
-    }
-
-    let ports = !matches!(architecture, "amd64" | "i386");
-    let archive = if ports {
-        "https://ports.ubuntu.com/ubuntu-ports"
-    } else {
-        "https://archive.ubuntu.com/ubuntu"
-    };
-    let security = if ports {
-        archive
-    } else {
-        "https://security.ubuntu.com/ubuntu"
-    };
-    let (_, pocket) = crate::input::split_archive_suite(series);
-    let suites = if pocket.is_some() {
-        series.to_owned()
-    } else if proposed {
-        format!("{series} {series}-updates {series}-proposed")
-    } else {
-        format!("{series} {series}-updates")
-    };
-    let archive = if pocket == Some("security") {
-        security
-    } else {
-        archive
-    };
-    sources.push_str(&formatdoc! {
-        "
-        Types: deb deb-src
-        URIs: {archive}
-        Suites: {suites}
-        Components: main universe
-        Architectures: {architecture}
-        Targets: Packages Sources
-        Signed-By: {UBUNTU_KEYRING}
-        "
-    });
-    if pocket.is_none() {
-        sources.push_str(&formatdoc! {
-            "
-
-            Types: deb deb-src
-            URIs: {security}
-            Suites: {series}-security
-            Components: main universe
-            Architectures: {architecture}
-            Targets: Packages Sources
-            Signed-By: {UBUNTU_KEYRING}
-            "
-        });
+    for repository in repositories {
+        repository.append_sources(&mut sources, architecture, &cache.join("keys"))?;
     }
     let source_path = cache.join("sources.sources");
     let previous = match fs::read(&source_path) {
@@ -721,16 +669,4 @@ fn add_package(
         }
     }
     Ok(())
-}
-
-/// Formats repository metadata as the documented compact location.
-fn format_location(site: &str, release: &str, component: &str) -> String {
-    if let Some(path) = site
-        .strip_prefix("https://ppa.launchpadcontent.net/")
-        .or_else(|| site.strip_prefix("http://ppa.launchpadcontent.net/"))
-        && let Some(path) = path.strip_suffix("/ubuntu")
-    {
-        return format!("ppa:{path} ({release})");
-    }
-    format!("{release}/{component}")
 }

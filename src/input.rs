@@ -2,13 +2,24 @@
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
+/// Distribution publishing an archive source package.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Distribution {
+    /// Ubuntu Archive, with release and update pockets.
+    Ubuntu,
+    /// Debian archive, queried for an exact suite.
+    Debian,
+}
+
 /// Input selected independently of a package command's destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     /// A crates.io crate.
     Crate(String),
-    /// A published Ubuntu source package in a series or explicit pocket.
+    /// A published distribution source package in a suite.
     Archive {
+        /// Distribution providing the source indexes.
+        distribution: Distribution,
         /// Input series or suite, independent of dependency checking overrides.
         suite: String,
         /// Exact Debian source-package name.
@@ -45,7 +56,8 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
                 validate_name("crate", rest)?;
                 Ok(Input::Crate(rest.to_owned()))
             }
-            "archive" => parse_archive(rest),
+            "archive" => parse_archive(rest, Distribution::Ubuntu),
+            "debian" => parse_archive(rest, Distribution::Debian),
             "ppa" => {
                 let fields: Vec<_> = rest.split('/').collect();
                 let [owner, name, series, source] = fields.as_slice() else {
@@ -105,18 +117,19 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
         );
     }
     if value.contains('/') {
-        return parse_archive(value);
+        return parse_archive(value, Distribution::Ubuntu);
     }
     validate_name("crate", value)?;
     Ok(Input::Crate(value.to_owned()))
 }
 
 /// Parses a series or suite and exact source-package name.
-fn parse_archive(value: &str) -> Result<Input> {
+fn parse_archive(value: &str, distribution: Distribution) -> Result<Input> {
     let (suite, source) = value.split_once('/').context("expected SUITE/SOURCE")?;
     validate_name("suite", suite)?;
     validate_name("source", source)?;
     Ok(Input::Archive {
+        distribution,
         suite: suite.to_owned(),
         source: source.to_owned(),
     })
@@ -132,10 +145,14 @@ pub fn split_archive_suite(suite: &str) -> (&str, Option<&str>) {
     (suite, None)
 }
 
-/// Returns the input's base series when it selects a published source.
+/// Returns the input's Ubuntu base series for dependency checking defaults.
 pub fn read_input_series(input: &Input) -> Option<&str> {
     match input {
-        Input::Archive { suite, .. } => Some(split_archive_suite(suite).0),
+        Input::Archive {
+            distribution: Distribution::Ubuntu,
+            suite,
+            ..
+        } => Some(split_archive_suite(suite).0),
         Input::Ppa { series, .. } => Some(series),
         _ => None,
     }

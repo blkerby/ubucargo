@@ -182,6 +182,7 @@ pub fn format_latest(
     for source in latest.values() {
         if !explicit_version
             && let Input::Archive {
+                distribution: crate::input::Distribution::Ubuntu,
                 suite: input_suite,
                 source: input_source,
             } = input

@@ -9,11 +9,11 @@ ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
   [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>] [--keep-staging]
 ```
 
-Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages (`./rust-serde` or `pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>` or `<SUITE>/<SOURCE>`), or PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). Omitting the input reads the nearest parent package containing `debian/control` and `debian/changelog`. An optional positional `<VERSION>` selects an exact Cargo version for crates.io or Debian version for Archive and PPA inputs; these inputs default to the latest release. Package and local Cargo inputs use their current version. See [input and version selection](package.md#input-and-version-selection) for details.
+Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages (`./rust-serde` or `pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>` or `<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), or PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). Omitting the input reads the nearest parent package containing `debian/control` and `debian/changelog`. An optional positional `<VERSION>` selects an exact Cargo version for crates.io or Debian version for published inputs; these inputs default to the highest published version. Package and local Cargo inputs use their current version. See [input and version selection](package.md#input-and-version-selection) for details.
 
-Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package, Archive, and PPA inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
+Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
 
-An Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. Otherwise, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
+An Ubuntu Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. For other inputs, including Debian sources, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
 
 The input selector determines the source location; `--series`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `archive:resolute-proposed/rust-serde --series jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
 
@@ -23,13 +23,14 @@ ubucargo deps serde
 ubucargo deps serde --series resolute
 ubucargo deps serde 1.0.220 --series resolute
 ubucargo deps archive:resolute/rust-serde
+ubucargo deps debian:unstable/rust-serde --series resolute
 ubucargo deps resolute/rust-serde --series jammy
 ubucargo deps ppa:myuser/rust-staging/resolute/rust-serde --series resolute
 ubucargo deps pkg:./rust-serde --series resolute
 ubucargo deps local:../serde --series resolute
 ```
 
-`--keep-staging` retains and prints staging directories for generated packaging or extracted Archive and PPA sources, including on failure. Existing local package inspection creates no staging directory.
+`--keep-staging` retains and prints staging directories for generated packaging or extracted published sources, including on failure. Existing local package inspection creates no staging directory.
 
 `--series` selects the dependency environment: release, updates, and security pockets in `main` and `universe`. `--proposed` adds proposed. Each public `--ppa ppa:<OWNER>/<NAME>` adds `main`; private PPAs are unsupported. `--architecture` selects the Debian architecture used for dependency checking. It defaults to the host's native architecture, as reported by `dpkg --print-architecture`.
 
@@ -39,6 +40,7 @@ A single line identifies the resolved input name, version, and location:
 
 ```text
 Input: rust-rand 0.8.5-1 from resolute/universe
+Input: rust-rand 0.8.5-1 from debian:unstable/main
 Input: rust-rand 0.8.5-1 from ppa:owner/staging (resolute)
 Input: rand 0.8.5 from crates.io (generated packaging)
 Input: rand 0.8.5 from local:../rand (generated packaging)
@@ -54,7 +56,7 @@ resolute availability: rust-rand 0.8.5-1
 
 Crates.io information comes from its metadata API, selecting the highest non-yanked stable version without downloading a crate archive. A missing crate displays `not published`, a crate with no eligible stable version displays `no stable release`, and request or metadata failures display `unavailable`. Requests have an eight-second overall timeout. These outcomes do not change dependency results or exit status.
 
-The Archive entry describes the checking series and its selected pockets/components, excludes PPAs, and shows the highest full Debian version for each matching source package, retaining parallel semver lines grouped under a single series label. Matching uses conventional Rust source names and declared Rust library binaries; absence displays `not packaged`. Local package, Archive, and PPA inputs infer the crate name from control-file Rust binaries or conventional source names without requiring usable Cargo metadata.
+The Archive entry describes the checking series and its selected pockets/components, excludes PPAs, and shows the highest full Debian version for each matching source package, retaining parallel semver lines grouped under a single series label. Matching uses conventional Rust source names and declared Rust library binaries; absence displays `not packaged`. Local package and published inputs infer the crate name from control-file Rust binaries or conventional source names without requiring usable Cargo metadata.
 
 An entry is omitted when that origin already supplied an implicitly selected latest input. An unversioned crates.io input reuses its resolved version and avoids another API request. An unversioned Archive input omits its matching Archive entry only when the checking series and version match; parallel source packages remain visible. Explicit versions, local inputs, and cross-series checks retain their relevant latest entries.
 
@@ -115,7 +117,7 @@ When standard output is a terminal, statuses are colored green for `preferred`, 
 
 When a dependency requires multiple feature packages, one candidate must provide all of them for the dependency to be preferred or available.
 
-Ubuntu Archive locations are shown as `<SUITE>/<COMPONENT>`, while PPA locations appear as `ppa:<OWNER>/<NAME> (<SERIES>)` and omit the component, which is always `main`.
+Ubuntu Archive locations are shown as `<SUITE>/<COMPONENT>`, Debian archive locations as `debian:<SUITE>/<COMPONENT>`, and PPA locations appear as `ppa:<OWNER>/<NAME> (<SERIES>)` and omit the component, which is always `main`.
 
 The report checks direct Rust dependency candidate availability in the APT sources constructed from the command arguments. For supported Rust relations, each dependency is checked independently against its required package names, Debian version constraints, and features. `preferred` identifies the highest-version compatible candidate for that dependency. Use `sbuild` and `autopkgtest` to validate complete build and test environments, including transitive dependencies and joint installability.
 
@@ -125,9 +127,9 @@ In all modes, candidates are ordered deterministically from the local APT indexe
 
 `deps` downloads binary `Packages` and source `Sources` indexes through its isolated, signature-verified APT view. Packages supply versions and versioned `Provides` for dependency classification; Sources supply publication selection and authenticated `.dsc` checksums.
 
-Archive and PPA inputs are retrieved with `dget` using the descriptor URL from the selected repository and its signed Sources index. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. Input and checking APT views are queried sequentially; input-series binaries cannot enter dependency classification.
+Published inputs are retrieved with `dget` using the descriptor URL from the selected repository and its signed Sources index. Ubucargo verifies descriptor size and SHA512 (preferred) or SHA256 against the signed source index, retains downloaded-file checksum verification, and extracts with `dpkg-source`. Input and checking APT views are queried sequentially; dependency classification uses only the checking view’s binary records.
 
-Every invocation asks APT to update the selected indexes. APT reuses unchanged files and may apply index deltas. Indexes for all previously requested series and PPAs share the cache described in [`apt-cache.md`](apt-cache.md).
+Every invocation asks APT to update the selected indexes. APT reuses unchanged files and may apply index deltas. Indexes for all previously requested distributions, suites, and PPAs share the cache described in [`apt-cache.md`](apt-cache.md).
 
 ## Exit status
 
