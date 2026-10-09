@@ -50,20 +50,20 @@ Each source package contains its upstream source, generator input `debcargo.toml
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`docs/deps.md`](docs/deps.md) |
 
-These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input selectors](docs/inputs.md) for details.
+These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input and version selection](docs/package.md#input-and-version-selection) for details.
 
 ### `package`
 
 ```console
-ubucargo package [INPUT [VERSION]] [--package-dir DIR] \
+ubucargo package [<INPUT> [<VERSION>]] [--package-dir <DIR>] \
   [--force] \
-  [--keep-staging] [--keep PATH]... [--replace PATH]...
+  [--keep-staging] [--keep <PATH>]... [--replace <PATH>]...
 ```
 
-- Run `ubucargo package CRATE [VERSION]` outside a package to create or update its default source-package directory.
+- Run `ubucargo package <CRATE> [<VERSION>]` outside a package to create or update its default source-package directory.
 - Run `ubucargo package` inside an existing package to regenerate its current release.
-- Run `ubucargo package CRATE VERSION` against an existing package to select another release.
-- Run `ubucargo package local:CRATE-DIR --package-dir PACKAGE-DIR` to create or update a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
+- Run `ubucargo package <CRATE> <VERSION>` against an existing package to select another release.
+- Run `ubucargo package local:<PATH> --package-dir <DIR>` to create or update a package from a local crate that is not on crates.io. The two directories must be separate and non-nested.
 - After changing `debcargo.toml`, run `ubucargo package` again.
 - Regenerating a released package creates a new `UNRELEASED` changelog entry; subsequent runs update that entry.
 - `package` exits 0 on success and 2 on errors.
@@ -77,15 +77,15 @@ See [`docs/package.md`](docs/package.md) for full behavior and options.
 ### `deps`
 
 ```console
-ubucargo deps [INPUT [VERSION]] [--series SERIES] \
-  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH]
+ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
+  [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>]
 ```
 
 `deps` reports the direct Rust library dependencies, represented by `librust-*-dev` packages needed to build and install every binary package and to run autopkgtests applicable to the selected architecture. Each dependency is checked independently for compatible candidates in the selected repositories. Use `sbuild` and `autopkgtest` to validate complete build and test environments.
 
-- Run `ubucargo deps CRATE [VERSION]` to inspect a crates.io release without creating a source package.
-- Run `ubucargo deps` inside a source package, or use `pkg:<DIR>` to select one explicitly.
-- Use `--series SERIES` to select an Ubuntu series for checking dependency candidates. This defaults to the published input's series, otherwise the current Ubuntu development series.
+- Run `ubucargo deps <CRATE> [<VERSION>]` to inspect a crates.io release without creating a source package.
+- Run `ubucargo deps` inside a source package, or use `pkg:<PATH>` to select one explicitly.
+- Use `--series <SERIES>` to select an Ubuntu series for checking dependency candidates. This defaults to the published input's series, otherwise the current Ubuntu development series.
 - Add `--proposed` to include the selected series' proposed pocket.
 - `deps` does not modify the source package.
 - It exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when any are incompatible or missing, and 2 on errors.

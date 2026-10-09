@@ -34,7 +34,7 @@ All invocations share `lists/`. APT list cleanup is disabled so changing the req
 
 ## Sources
 
-For `deps --series resolute`, Ubucargo creates binary and source entries for `resolute`, `resolute-updates`, and `resolute-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `resolute-proposed` from the same Archive source. Each `--ppa ppa:OWNER/NAME` adds a binary and source `main` entry for Resolute. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
+For `deps --series resolute`, Ubucargo creates binary and source entries for `resolute`, `resolute-updates`, and `resolute-security`, using `main` and `universe` for the selected architecture. `--proposed` adds `resolute-proposed` from the same Archive source. Each `--ppa ppa:<OWNER>/<NAME>` adds a binary and source `main` entry for Resolute. Only public Launchpad PPAs are supported; ubucargo does not read or manage credentials for private PPAs.
 
 The generated deb822 entries select only their required APT targets:
 

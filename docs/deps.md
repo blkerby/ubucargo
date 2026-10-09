@@ -5,17 +5,17 @@ The command reports the direct Rust library dependencies, represented by `librus
 ## Synopsis
 
 ```console
-ubucargo deps [INPUT [VERSION]] [--series SERIES] \
-  [--proposed] [--ppa ppa:OWNER/NAME]... [--architecture ARCH] [--keep-staging]
+ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
+  [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>] [--keep-staging]
 ```
 
-See [input selectors](inputs.md) for the shared explicit grammar, automatic precedence, and version rules. Omitting the input reads the nearest parent package. Local package selection requires `debian/control` and `debian/changelog` files; inspection reads maintained control files and a valid top changelog entry for the source identity and version. Local Cargo crates require explicit `local:PATH`; unprefixed directory paths select only existing source packages.
+Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages (`./rust-serde` or `pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>` or `<SUITE>/<SOURCE>`), or PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). Omitting the input reads the nearest parent package containing `debian/control` and `debian/changelog`. An optional positional `<VERSION>` selects an exact Cargo version for crates.io or Debian version for Archive and PPA inputs; these inputs default to the latest release. Package and local Cargo inputs use their current version. See [input and version selection](package.md#input-and-version-selection) for details.
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package, Archive, and PPA inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
 
-An Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. `resolute-proposed/rust-serde --series jammy` reads Resolute proposed packaging and checks its dependencies against Jammy. Otherwise, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
+An Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. Otherwise, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
 
-Source selection is independent of `--series` and `--proposed`. A bare Archive series considers release, updates, and security in `main` and `universe`. A suffixed suite (for example, `resolute-proposed`) selects only that pocket. PPA selectors require their own series. Additional PPAs cannot replace an Archive input's source. An explicit Debian source version must exist in the input's source indexes. Otherwise the highest Debian version wins, with deterministic location ordering for ties.
+The input selector determines the source location; `--series`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `archive:resolute-proposed/rust-serde --series jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
 
 ```console
 ubucargo deps --series resolute
@@ -31,7 +31,7 @@ ubucargo deps local:../serde --series resolute
 
 `--keep-staging` retains and prints staging directories for generated packaging or extracted Archive and PPA sources, including on failure. Existing local package inspection creates no staging directory.
 
-`--series` selects the dependency environment: release, updates, and security pockets in `main` and `universe`. `--proposed` adds proposed. Each public `--ppa ppa:OWNER/NAME` adds `main`; private PPAs are unsupported. `--architecture` defaults to `dpkg --print-architecture`.
+`--series` selects the dependency environment: release, updates, and security pockets in `main` and `universe`. `--proposed` adds proposed. Each public `--ppa ppa:<OWNER>/<NAME>` adds `main`; private PPAs are unsupported. `--architecture` selects the Debian architecture used for dependency checking. It defaults to the host's native architecture, as reported by `dpkg --print-architecture`.
 
 ## Output
 
@@ -60,9 +60,9 @@ An entry is omitted when that origin already supplied an implicitly selected lat
 
 The report contains one table for each of these, in order, omitting empty tables:
 
-- `Package: NAME`: the `Depends` of each binary package, in control-file order;
-- `Source: NAME`: the source paragraph's `Build-Depends`, `Build-Depends-Arch`, and `Build-Depends-Indep`; and
-- `Tests: NAME`: the `Depends` of autopkgtests applicable to the selected architecture, which contain the crate's development dependencies.
+- `Package: <NAME>`: the `Depends` of each binary package, in control-file order;
+- `Source: <NAME>`: the source paragraph's `Build-Depends`, `Build-Depends-Arch`, and `Build-Depends-Indep`; and
+- `Tests: <NAME>`: the `Depends` of autopkgtests applicable to the selected architecture, which contain the crate's development dependencies.
 
 The `Source` and `Tests` tables show only relations that no earlier table lists identically. For a library crate, the default build's relations already appear in its binary packages, so the `Source` table usually lists only binaries' dependencies and manual `build_depends` overrides. The report covers external Rust package relations with concrete package names and version constraints. Test `Architecture` fields filter whole test paragraphs before their dependencies are read, using Debian architecture names, wildcards, and exclusions. An omitted field includes the test on every architecture.
 
@@ -115,7 +115,7 @@ When standard output is a terminal, statuses are colored green for `preferred`, 
 
 When a dependency requires multiple feature packages, one candidate must provide all of them for the dependency to be preferred or available.
 
-Ubuntu Archive locations are shown as `suite/component`, while PPA locations appear as `ppa:OWNER/NAME (series)` and omit the component, which is always `main`.
+Ubuntu Archive locations are shown as `<SUITE>/<COMPONENT>`, while PPA locations appear as `ppa:<OWNER>/<NAME> (<SERIES>)` and omit the component, which is always `main`.
 
 The report checks direct Rust dependency candidate availability in the APT sources constructed from the command arguments. For supported Rust relations, each dependency is checked independently against its required package names, Debian version constraints, and features. `preferred` identifies the highest-version compatible candidate for that dependency. Use `sbuild` and `autopkgtest` to validate complete build and test environments, including transitive dependencies and joint installability.
 

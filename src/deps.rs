@@ -57,7 +57,7 @@ pub struct DepArgs {
     #[arg(long, value_name = "ppa:OWNER/NAME")]
     pub ppa: Vec<String>,
 
-    /// Debian architecture; defaults to dpkg --print-architecture.
+    /// Debian architecture; defaults to the host's native architecture, as reported by dpkg --print-architecture.
     #[arg(long, value_name = "ARCH")]
     pub architecture: Option<String>,
 
