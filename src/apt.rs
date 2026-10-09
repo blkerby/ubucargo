@@ -536,20 +536,20 @@ fn read_sources(
         let mut descriptor = None;
         for line in checksums.lines() {
             let fields: Vec<_> = line.split_whitespace().collect();
-            if let [hash, size, filename] = fields.as_slice() {
-                if filename.ends_with(".dsc") {
-                    if filename.contains('/')
-                        || hash.len() != digest_length
-                        || !hash.bytes().all(|c| c.is_ascii_hexdigit())
-                    {
-                        bail!("invalid source descriptor metadata");
-                    }
-                    descriptor = Some((
-                        filename.to_string(),
-                        hash.to_ascii_lowercase(),
-                        size.parse()?,
-                    ));
+            if let [hash, size, filename] = fields.as_slice()
+                && filename.ends_with(".dsc")
+            {
+                if filename.contains('/')
+                    || hash.len() != digest_length
+                    || !hash.bytes().all(|c| c.is_ascii_hexdigit())
+                {
+                    bail!("invalid source descriptor metadata");
                 }
+                descriptor = Some((
+                    filename.to_string(),
+                    hash.to_ascii_lowercase(),
+                    size.parse()?,
+                ));
             }
         }
         let (dsc, checksum, size) = descriptor.with_context(|| {
@@ -655,7 +655,7 @@ pub fn retrieve_source(
 
 /// Checks a downloaded descriptor against authenticated source-index size and its strong digest.
 fn verify_descriptor(descriptor: &Path, source: &SourceCandidate) -> Result<()> {
-    if fs::metadata(&descriptor)?.len() != source.size {
+    if fs::metadata(descriptor)?.len() != source.size {
         bail!("source descriptor size mismatch");
     }
     let command = match source.checksum_algorithm {

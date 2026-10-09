@@ -185,13 +185,11 @@ pub fn format_latest(
                 suite: input_suite,
                 source: input_source,
             } = input
+            && crate::input::split_archive_suite(input_suite).0 == series
+            && *input_source == source.source
+            && identity.version == source.version.to_string()
         {
-            if crate::input::split_archive_suite(input_suite).0 == series
-                && *input_source == source.source
-                && identity.version == source.version.to_string()
-            {
-                continue;
-            }
+            continue;
         }
         archive_entries.push(format!("{} {}", source.source, source.version));
     }

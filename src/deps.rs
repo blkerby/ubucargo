@@ -264,11 +264,11 @@ pub fn run(args: DepArgs) -> Result<bool> {
     };
     if identity.crate_name.is_none() {
         for section in &sections {
-            if section.origin == DependencyOrigin::Package {
-                if let Some((name, _, _)) = parse_rust_package_name(&section.name) {
-                    identity.crate_name = Some(name.to_owned());
-                    break;
-                }
+            if section.origin == DependencyOrigin::Package
+                && let Some((name, _, _)) = parse_rust_package_name(&section.name)
+            {
+                identity.crate_name = Some(name.to_owned());
+                break;
             }
         }
         if identity.crate_name.is_none() {

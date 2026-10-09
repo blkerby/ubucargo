@@ -19,7 +19,7 @@ use crate::{
     generate::{GeneratedPackage, generate_package},
     input::Input,
     resolve::{
-        CrateRequest, ExistingPackage, find_parent_package, get_crate_source_name,
+        CrateRequest, ResolvedPackage, find_parent_package, get_crate_source_name,
         read_existing_package, resolve_package, validate_separate_trees,
     },
     source::{
@@ -193,12 +193,11 @@ pub fn run(args: PackageArgs) -> Result<()> {
     // rebuilds .pc against the updated upstream before touching the destination.
     // The final write compares the completed, patched tree with the destination
     // so unchanged files retain their modification times.
-    if let (Some(existing), Some(base)) = (&resolved.existing, &baseline) {
+    if let (Some(_), Some(base)) = (&resolved.existing, &baseline) {
         let plan = build_update_plan(
-            existing,
+            &resolved,
             base.path(),
             &generated,
-            &resolved.config,
             raw_control,
             args.force,
             &keep_paths,
@@ -290,17 +289,17 @@ fn collect_decisions(
 }
 
 /// Builds source and packaging changes against the old orig without modifying the package.
+/// The resolved package must include existing packaging.
 fn build_update_plan(
-    existing: &ExistingPackage,
+    resolved: &ResolvedPackage,
     base: &Path,
     generated: &GeneratedPackage,
-    config: &PackageConfig,
     raw_control: Option<FileState>,
     force: bool,
     keep: &BTreeSet<PathBuf>,
     replace: &BTreeSet<PathBuf>,
 ) -> Result<UpdatePlan> {
-    let root = &existing.root;
+    let root = &resolved.existing.as_ref().unwrap().root;
     let debian = root.join("debian");
     let exclude = Some(Path::new("debian"));
     let base_tree = scan_tree(base, exclude)?;
@@ -367,7 +366,7 @@ fn build_update_plan(
     let old_config =
         read_state(&debian.join("debcargo.toml"))?.context("package configuration is missing")?;
     let mut new_config = old_config.clone();
-    new_config.contents = config.original_contents.as_bytes().to_vec();
+    new_config.contents = resolved.config.original_contents.as_bytes().to_vec();
     Ok(UpdatePlan {
         root: root.clone(),
         orig: if files_differ(&generated.orig, &orig_destination)? {
