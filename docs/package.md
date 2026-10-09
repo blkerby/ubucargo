@@ -228,6 +228,7 @@ Generated files may include:
 - `debian/copyright`
 - `debian/rules`
 - `debian/watch`
+- `debian/upstream/metadata`
 - `debian/tests/control`, for library packages
 - `debian/<feature-package>.lintian-overrides`, for each generated non-base feature package
 - `debian/patches/auto/<patch>`, for debcargo-generated source transformations
@@ -236,7 +237,7 @@ During each `ubucargo package` run, ubucargo records generated state in `debian/
 
 `debian/cargo-checksum.json` uses these same ownership rules; maintainer edits are preserved. `debian/patches/series` retains the special merge behavior described below and has neither a manifest entry nor a hint.
 
-If debcargo emits an unrecognized path, `package` warns and ignores it. The changelog, configuration, and non-automatic patch files remain maintainer-owned; an explicit `local:` input updates the configuration’s source path.
+If debcargo emits an unrecognized path under `debian/`, `package` warns and omits it during both creation and regeneration. The changelog, configuration, and non-automatic patch files remain maintainer-owned; an explicit `local:` input updates the configuration’s source path.
 
 For a new package, ubucargo retains debcargo's `debian/source/format`. On subsequent regenerations it leaves that file unchanged and does not create a `.debcargo.hint` for it.
 
@@ -245,7 +246,7 @@ For a new package, ubucargo retains debcargo's `debian/source/format`. On subseq
 Debcargo may generate patches for configuration-driven source transformations such as `remove_features`. The entire `debian/patches/auto/` namespace is exclusively generator-owned. On regeneration, ubucargo silently replaces edited patches, restores deleted generated patches, and removes files no longer generated. No ownership baseline or keep-or-replace decision is required. 
 Therefore, maintainers should not edit these automatically generated patches.
 
-`debian/patches/series` has mixed ownership and does not use a hint. Debcargo receives the complete existing series as overlay input, regenerates the `auto/` entries, and preserves all other lines; ubucargo writes that merged output directly. Generated auto-patch files are written before the series is updated; obsolete auto-patch files are removed afterward.
+`debian/patches/series` has mixed ownership. Debcargo receives the complete existing series as overlay input, regenerates the `auto/` entries, and preserves all other lines; ubucargo writes that merged output directly.
 
 ## Override detection and materialization
 
@@ -345,7 +346,7 @@ debcargo package \
 
 Ubucargo validates the selected crate identity, Debian source identity, source tree, orig filename and contents, patch stack, generated packaging, and complete materialization plan before writing.
 
-The manifest is not a generator input. Ubucargo materializes primary files, patch series, hints, and generated ownership state in staging, then restores the original quilt position. Before writing, ubucargo compares this completed tree with the destination and changes only differing paths; unchanged source and packaging files retain their modification times. Regular files are written atomically, and the ownership manifest is the final managed-state write. When writing a changed package, `.pc` is copied with its quilt backup timestamps. For files that support maintainer overrides, an interruption while applying changes may require an explicit decision on rerun; it does not authorize overwriting a changed primary.
+Ubucargo materializes primary files, patch series, hints, and generated ownership state in staging, then restores the original quilt position. Before writing, ubucargo compares this completed tree with the destination and changes only differing paths; unchanged source and packaging files retain their modification times. Regular files are written atomically. When writing a changed package, `.pc` is copied with its quilt backup timestamps. For files that support maintainer overrides, a rerun preserves changed primaries and may require an explicit decision after an interruption while applying changes.
 
 Ubucargo applies changes to files only. It does not create commits, branches, tags, pristine-tar data, `.dsc` files, source `.changes`, or `.buildinfo` files. Standard Debian and VCS tools remain responsible for those artifacts.
 

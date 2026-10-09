@@ -52,8 +52,8 @@ pub fn remove_generated_vcs_fields(stage: &Path) -> Result<()> {
     fs::write(&path, control.to_string()).with_context(|| format!("write {}", path.display()))
 }
 
-/// Reads fresh debcargo outputs proposed for update.
-pub fn read_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
+/// Reads managed candidates and removes unrecognized files from fresh debcargo output.
+pub fn prepare_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, FileState>> {
     let output_debian = source.join("debian");
     if !output_debian.is_dir() {
         bail!("debcargo produced no debian directory");
@@ -68,6 +68,9 @@ pub fn read_generated_candidates(source: &Path) -> Result<BTreeMap<PathBuf, File
             generated.insert(path, state);
         } else if !is_expected_unmanaged_output(&path) {
             eprintln!("warning: unrecognized debcargo output {}", path.display());
+            fs::remove_file(source.join(&path)).with_context(|| {
+                format!("remove unrecognized debcargo output {}", path.display())
+            })?;
         }
     }
     Ok(generated)
@@ -132,7 +135,7 @@ pub fn build_patch_series_plan(debian: &Path, stage: &Path) -> Result<PathPlan> 
 /// Adds the used Ubucargo configuration and generated-file baselines to a new staged package.
 pub fn initialize_package(source: &Path, config: &PackageConfig) -> Result<()> {
     let debian = source.join("debian");
-    let generated = read_generated_candidates(source)?;
+    let generated = prepare_generated_candidates(source)?;
     write_package_config(config, source)?;
     build_plan(
         &debian,
@@ -190,7 +193,7 @@ pub fn is_auto_patch(path: &Path) -> bool {
             .is_some_and(|name| name.to_string_lossy().ends_with(".debcargo.hint"))
 }
 
-/// Reports whether debcargo is expected to emit a path that Ubucargo intentionally ignores.
+/// Reports whether debcargo output belongs to separately handled packaging or patch files.
 fn is_expected_unmanaged_output(path: &Path) -> bool {
     path.starts_with("debian/patches")
         || EXPECTED_UNMANAGED_OUTPUTS

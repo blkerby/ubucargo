@@ -34,7 +34,7 @@ use self::{
     managed::{FileState, ManagedPlan, build_plan, read_state, write_state},
     output::{
         build_patch_series_plan, collect_managed_paths, initialize_package,
-        read_generated_candidates, remove_generated_vcs_fields, update_staged_maintainer,
+        prepare_generated_candidates, remove_generated_vcs_fields, update_staged_maintainer,
     },
 };
 
@@ -308,7 +308,7 @@ fn build_update_plan(
     let new_tree = scan_tree(&generated.source, exclude)?;
     let source_plan = build_source_plan(&base_tree, &old_tree, &new_tree, force)?;
 
-    let generated_candidates = read_generated_candidates(&generated.source)?;
+    let generated_candidates = prepare_generated_candidates(&generated.source)?;
     let managed = collect_managed_paths(&debian, &generated_candidates)?;
     let control = PathBuf::from("debian/control");
     let mut inferred_bases = BTreeMap::new();
