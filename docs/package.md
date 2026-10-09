@@ -19,7 +19,7 @@ ubucargo package [<INPUT> [<VERSION>]] [--package-dir <DIR>] \
 | Input selector | Selected input | Version selection |
 | --- | --- | --- |
 | `crate:serde` | Crates.io upstream release | Exact Cargo `<VERSION>`; default latest |
-| `archive:resolute/rust-serde` | Published Ubuntu source package | Exact Debian `<VERSION>`; default highest published |
+| `ubuntu:resolute/rust-serde` | Published Ubuntu source package | Exact Debian `<VERSION>`; default highest published |
 | `debian:unstable/rust-serde` | Published Debian source package | Exact Debian `<VERSION>`; default highest published |
 | `ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>` | Published public PPA source package | Exact Debian `<VERSION>`; default highest published |
 | `pkg:./rust-serde` | Existing maintained source package | Current package version |
@@ -98,7 +98,7 @@ ubucargo package ./rust-serde
 ubucargo package ./rust-serde --package-dir ./copies/rust-serde
 
 # Regenerate packaging from Ubuntu, Debian, or a PPA.
-ubucargo package archive:resolute-proposed/rust-serde
+ubucargo package ubuntu:resolute-proposed/rust-serde
 ubucargo package debian:unstable/rust-serde
 ubucargo package ppa:owner/staging/resolute/rust-serde
 

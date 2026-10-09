@@ -37,7 +37,7 @@ const RESET: &str = "\x1b[0m";
 /// Inspect Ubuntu candidates for a crate's direct Rust dependencies.
 #[derive(clap::Args)]
 pub struct DepArgs {
-    /// Input selector: crate:NAME, archive:SUITE/SOURCE, debian:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
+    /// Input selector: crate:NAME, ubuntu:SUITE/SOURCE, debian:SUITE/SOURCE, ppa:OWNER/NAME/SERIES/SOURCE, pkg:PATH, or local:PATH.
     #[arg(value_name = "INPUT")]
     pub input: Option<String>,
 

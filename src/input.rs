@@ -56,7 +56,7 @@ pub fn parse_input(value: &str, current: &Path) -> Result<Input> {
                 validate_name("crate", rest)?;
                 Ok(Input::Crate(rest.to_owned()))
             }
-            "archive" => parse_archive(rest, Distribution::Ubuntu),
+            "ubuntu" => parse_archive(rest, Distribution::Ubuntu),
             "debian" => parse_archive(rest, Distribution::Debian),
             "ppa" => {
                 let fields: Vec<_> = rest.split('/').collect();

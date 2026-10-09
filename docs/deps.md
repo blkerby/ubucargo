@@ -9,20 +9,20 @@ ubucargo deps [<INPUT> [<VERSION>]] [--series <SERIES>] \
   [--proposed] [--ppa ppa:<OWNER>/<NAME>]... [--architecture <ARCH>] [--keep-staging]
 ```
 
-Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages (`./rust-serde` or `pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`archive:<SUITE>/<SOURCE>` or `<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), or PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). Omitting the input reads the nearest parent package containing `debian/control` and `debian/changelog`. An optional positional `<VERSION>` selects an exact Cargo version for crates.io or Debian version for published inputs; these inputs default to the highest published version. Package and local Cargo inputs use their current version. See [input and version selection](package.md#input-and-version-selection) for details.
+Inputs can be crates.io crates (`serde` or `crate:serde`), local source packages (`./rust-serde` or `pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`ubuntu:<SUITE>/<SOURCE>` or `<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), or PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). Omitting the input reads the nearest parent package containing `debian/control` and `debian/changelog`. An optional positional `<VERSION>` selects an exact Cargo version for crates.io or Debian version for published inputs; these inputs default to the highest published version. Package and local Cargo inputs use their current version. See [input and version selection](package.md#input-and-version-selection) for details.
 
 Crates.io and `local:` inputs generate fresh packaging with default debcargo configuration in temporary directories. Local package and published inputs read maintained `debian/control` and optional `debian/tests/control` directly. For these inputs, inspection needs the maintained control files and changelog. Existing package files remain unchanged during inspection.
 
 An Ubuntu Archive or PPA input supplies the default checking series: its base Archive series or explicit PPA series. For other inputs, including Debian sources, checking defaults to the current Ubuntu development series reported by `ubuntu-distro-info --devel`. Explicit `--series` takes precedence over the Archive or PPA input's base series. Development-series detection runs only when both are absent; if it fails, supply `--series` explicitly. A PPA input automatically adds its PPA to dependency repositories, queried for the checking series. Repeated PPA arguments are deduplicated.
 
-The input selector determines the source location; `--series`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `archive:resolute-proposed/rust-serde --series jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
+The input selector determines the source location; `--series`, `--proposed`, and additional `--ppa` arguments select the repositories used to check dependencies. For example, `ubuntu:resolute-proposed/rust-serde --series jammy` selects packaging from Resolute proposed and checks it against Jammy's release, updates, and security pockets.
 
 ```console
 ubucargo deps --series resolute
 ubucargo deps serde
 ubucargo deps serde --series resolute
 ubucargo deps serde 1.0.220 --series resolute
-ubucargo deps archive:resolute/rust-serde
+ubucargo deps ubuntu:resolute/rust-serde
 ubucargo deps debian:unstable/rust-serde --series resolute
 ubucargo deps resolute/rust-serde --series jammy
 ubucargo deps ppa:myuser/rust-staging/resolute/rust-serde --series resolute
