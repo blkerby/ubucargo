@@ -6,6 +6,7 @@ mod changelog;
 mod config;
 mod crates_io;
 mod debcargo;
+mod debian_export;
 mod deps;
 mod generate;
 mod input;
@@ -39,6 +40,9 @@ struct Cli {
 /// Operations supported by the current Ubucargo release.
 #[derive(Subcommand)]
 enum Command {
+    /// Export maintained packaging into a debcargo-conf repository.
+    DebianExport(debian_export::ExportArgs),
+
     /// Inspect archive candidates for a crate's direct Rust dependencies.
     Deps(deps::DepArgs),
 
@@ -50,6 +54,7 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::DebianExport(args) => debian_export::run(args).map(|()| ExitCode::SUCCESS),
         Command::Deps(args) => deps::run(args, &cli.crates_io_api).map(|unsatisfied| {
             if unsatisfied {
                 ExitCode::from(1)

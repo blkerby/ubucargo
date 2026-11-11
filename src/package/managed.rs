@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::output::{is_auto_patch, is_package_managed};
+use super::output::{collect_managed_paths, is_auto_patch, is_package_managed};
 
 const MANIFEST_NAME: &str = "ubucargo-state.json";
 
@@ -84,6 +84,53 @@ fn read_manifest(debian: &Path) -> Result<(Manifest, Option<FileState>)> {
         }
     }
     Ok((manifest, state))
+}
+
+/// Current state of a managed file compared with its recorded generated baseline.
+pub enum ManagedFileStatus {
+    /// Current state matches the baseline, including recorded absence.
+    Unchanged,
+    /// A present file differs from the baseline.
+    Modified,
+    /// A file present in the baseline has been deleted.
+    Deleted,
+    /// A present managed file has no recorded baseline.
+    Unknown,
+}
+
+/// Compares managed files with the manifest, returning `None` when the manifest is absent.
+pub fn inspect_managed_files(
+    debian: &Path,
+) -> Result<Option<BTreeMap<PathBuf, ManagedFileStatus>>> {
+    let (manifest, state) = read_manifest(debian)?;
+    if state.is_none() {
+        return Ok(None);
+    }
+    let mut managed = collect_managed_paths(debian, &BTreeMap::new())?;
+    for path in manifest.files.keys() {
+        managed.insert(PathBuf::from(path));
+    }
+    let mut statuses = BTreeMap::new();
+    for path in managed {
+        if is_auto_patch(&path) {
+            continue;
+        }
+        let old = read_state(&resolve_managed_path(debian, &path)?)?;
+        let baseline = manifest
+            .files
+            .get(path.to_str().context("managed path is not UTF-8")?);
+        let status = match baseline {
+            Some(base) if old.as_ref().map(compute_fingerprint) == *base => {
+                ManagedFileStatus::Unchanged
+            }
+            Some(_) if old.is_none() => ManagedFileStatus::Deleted,
+            Some(_) => ManagedFileStatus::Modified,
+            None if old.is_some() => ManagedFileStatus::Unknown,
+            None => continue,
+        };
+        statuses.insert(path, status);
+    }
+    Ok(Some(statuses))
 }
 
 /// File contents and permissions, compared using only contents and executable status.

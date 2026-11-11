@@ -4,7 +4,11 @@ use std::{fs, path::Path, process::Command};
 
 use anyhow::{Context, Result, bail};
 
-use crate::{generate::GenerationMode, resolve::ResolvedPackage, util::run_command};
+use crate::{
+    generate::GenerationMode,
+    resolve::{ExistingPackage, ResolvedPackage},
+    util::run_command,
+};
 use debian_changelog::ChangeLog;
 
 /// Parsed fields from the first Debian changelog entry.
@@ -46,6 +50,57 @@ pub fn validate_top_changelog(
         );
     }
     Ok(())
+}
+
+/// Creates the initial Debian entry above published Ubuntu history for the current upstream.
+pub fn prepare_export_changelog(
+    package: &ExistingPackage,
+    source_name: &str,
+    staged_path: &Path,
+) -> Result<()> {
+    let mut history = ChangeLog::read_path(package.root.join("debian/changelog"))?;
+    loop {
+        let Some(entry) = history.iter().next() else {
+            break;
+        };
+        let distributions = entry
+            .distributions()
+            .context("changelog entry has no distribution")?;
+        if distributions != ["UNRELEASED"] {
+            break;
+        }
+        history.pop_first();
+    }
+    let history = history.to_string();
+    let mut version: debversion::Version = package.top_changelog.version.parse()?;
+    version.debian_revision = Some("1".to_owned());
+    run_command(
+        Command::new("dch")
+            .args(["--no-conf", "--vendor", "Debian", "--create", "--changelog"])
+            .arg(staged_path)
+            .args(["--check-dirname-level", "0", "--package"])
+            .arg(source_name)
+            .arg("--newversion")
+            .arg(version.to_string())
+            .args([
+                "--distribution",
+                "UNRELEASED",
+                "--force-distribution",
+                "--urgency",
+                "medium",
+            ])
+            .arg(format!(
+                "Exported using ubucargo {}.",
+                env!("CARGO_PKG_VERSION")
+            )),
+        "dch",
+    )?;
+    let mut contents = fs::read_to_string(staged_path)?;
+    if !history.is_empty() {
+        contents.push('\n');
+        contents.push_str(&history);
+    }
+    fs::write(staged_path, contents).context("write exported changelog")
 }
 
 /// Prepares the resolved package's changelog with `dch`, then normalizes its top entry.

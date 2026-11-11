@@ -28,6 +28,18 @@ pub struct MetadataPackage {
     manifest_path: PathBuf,
 }
 
+/// Checks that a crate name uses the ASCII characters accepted for registry lookups.
+pub fn validate_crate_name(crate_name: &str) -> Result<()> {
+    if crate_name.is_empty()
+        || !crate_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("invalid crate name {crate_name:?}");
+    }
+    Ok(())
+}
+
 /// Uses Cargo to identify the package defined by the root manifest.
 pub fn read_root_package(root: &Path) -> Result<MetadataPackage> {
     let manifest = root.join("Cargo.toml").canonicalize()?;

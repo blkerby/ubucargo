@@ -44,6 +44,8 @@ use self::{
 mod managed;
 mod output;
 
+pub use managed::{ManagedFileStatus, inspect_managed_files};
+
 /// Create or update a Debian source tree and orig tarball.
 #[derive(clap::Args)]
 pub struct PackageArgs {

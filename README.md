@@ -95,8 +95,9 @@ Ubucargo hides debcargo's FIXME summary, so search the generated files for `FIXM
 | --- | --- | --- |
 | `ubucargo package` | Create or update a source package | [`docs/package.md`](docs/package.md) |
 | `ubucargo deps` | Inspect dependency candidates | [`docs/deps.md`](docs/deps.md) |
+| `ubucargo debian-export` | Export packaging into debcargo-conf | [`docs/debian-export.md`](docs/debian-export.md) |
 
-These commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`ubuntu:<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input and version selection](docs/package.md#input-and-version-selection) for details.
+The `package` and `deps` commands share a common syntax for specifying an input crate, including crates.io crates (`crate:<NAME>`), local Debian source packages (`pkg:<PATH>`), local Cargo crates (`local:<PATH>`), Ubuntu Archive sources (`ubuntu:<SUITE>/<SOURCE>`), Debian archive sources (`debian:<SUITE>/<SOURCE>`), and PPA sources (`ppa:<OWNER>/<NAME>/<SERIES>/<SOURCE>`). See [input and version selection](docs/package.md#input-and-version-selection) for details.
 
 ### `package`
 
@@ -141,6 +142,16 @@ ubucargo deps [<INPUT> [<VERSION>]] [--suite <SUITE>] \
 - It exits 0 when every reported direct Rust dependency has a compatible candidate, 1 when any are incompatible, missing, or unknown, and 2 on errors. Dependencies reported as `unknown` require manual assessment.
 
 See [`docs/deps.md`](docs/deps.md) for details.
+
+### `debian-export`
+
+```console
+ubucargo debian-export [PACKAGE_DIR] --debcargo-conf DIR [--overwrite]
+```
+
+Exports a local Ubucargo source package into `DIR/src/<crate>/debian/` for contribution to debcargo-conf. Run it inside a source package or supply its directory. The destination repository must already contain `src/`. Add `--overwrite` to replace the entire previous export for that crate.
+
+The export retains maintainer overrides and published Ubuntu changelog history, and creates an initial Debian `UNRELEASED` entry. Review the result and use debcargo-conf's workflow to repackage, build, and test it. See [`docs/debian-export.md`](docs/debian-export.md) for details.
 
 ## Contributing
 

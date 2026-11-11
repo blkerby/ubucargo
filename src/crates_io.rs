@@ -5,7 +5,7 @@ use reqwest::{StatusCode, blocking::Client};
 use semver::Version;
 use serde::Deserialize;
 
-use crate::resolve::normalize_crate_name;
+use crate::{cargo::validate_crate_name, resolve::normalize_crate_name};
 
 /// Published crate identity and non-yanked stable releases.
 pub struct Crate {
@@ -43,13 +43,7 @@ struct ReleaseMetadata {
 
 /// Queries a crate's canonical name and stable releases, returning `None` for HTTP 404.
 pub fn read_crate(crate_name: &str, api: &str) -> Result<Option<Crate>> {
-    if crate_name.is_empty()
-        || !crate_name
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
-    {
-        bail!("invalid crate name {crate_name:?}");
-    }
+    validate_crate_name(crate_name)?;
     let response = Client::builder()
         .user_agent(concat!("ubucargo/", env!("CARGO_PKG_VERSION")))
         .build()?
