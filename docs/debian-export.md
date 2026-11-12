@@ -6,7 +6,7 @@ ubucargo debian-export [PACKAGE_DIR] --debcargo-conf DIR [--overwrite]
 
 `debian-export` prepares an overlay for contributing an Ubuntu Rust package to Debian through debcargo-conf. Its input is an existing local Ubucargo source package backed by a registry release. `PACKAGE_DIR` defaults to the nearest source-package directory at or above the current directory. Packages configured with `crate_src_path` require conversion to a registry release before export.
 
-`--debcargo-conf DIR` names an existing debcargo-conf root containing `src/`. The export creates `DIR/src/<crate>/debian/`, using Debian's normalized crate name and the semver suffix selected by `semver_suffix`.
+`--debcargo-conf DIR` names an existing debcargo-conf root containing `src/`. The export creates `DIR/src/<crate>/debian/`, using Debian's normalized crate name and the semver suffix selected by `semver_suffix` when applicable.
 
 ## Existing exports
 
@@ -24,7 +24,7 @@ The exporter applies these transformations:
 - An overridden `control` receives the Debian Rust team maintainer and debcargo-conf VCS fields, honoring explicit maintainer and VCS settings in the exported configuration. Ubuntu original-maintainer fields are removed. Other fields retain their contents.
 - Maintained patches and series text are retained. Automatic patches under `patches/auto/` and their series entries are omitted for debcargo to regenerate. An empty filtered series is omitted.
 - Debcargo supplies the standard `source/format` containing `3.0 (quilt)` during generation. Custom source formats and other maintained files such as `source/options` are retained in the overlay.
-- `ubucargo-state.json` and `.debcargo.hint` files are omitted.
+- `ubucargo-state.json` and `.debcargo.hint` files are omitted. The `.debcargo.hint` files are expected to be recreated in the overlay when the maintainer runs the debcargo-conf workflow.
 
 ## Changelog
 
