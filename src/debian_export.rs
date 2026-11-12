@@ -77,6 +77,7 @@ pub fn run(args: ExportArgs) -> Result<()> {
         args.overwrite,
     )?;
     println!("Exported {crate_name} to {}", destination.display());
+    println!("Use repackage.sh in debcargo-conf to finish packaging.");
     Ok(())
 }
 
